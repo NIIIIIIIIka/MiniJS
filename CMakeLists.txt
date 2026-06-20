@@ -20,7 +20,7 @@ function(minijs_enable_warnings target)
     endif()
 
     if(MSVC)
-        target_compile_options(${target} PRIVATE /W4 /permissive-)
+        target_compile_options(${target} PRIVATE /W4 /permissive- /EHsc)
     else()
         target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
     endif()
@@ -57,6 +57,10 @@ endif()
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
     add_executable(minijs src/main.cpp)
     target_link_libraries(minijs PRIVATE minijs_core)
+    target_compile_definitions(minijs
+        PRIVATE
+            MINIJS_VERSION="${PROJECT_VERSION}"
+    )
     minijs_enable_warnings(minijs)
 endif()
 
