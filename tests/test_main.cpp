@@ -1,26 +1,11 @@
 #include "minijs/diagnostic.h"
 #include "minijs/source_location.h"
+#include "test_framework.h"
 
 #include <iostream>
 #include <string>
 
-namespace
-{
-int failures = 0;
-
-void expect(bool condition, const char* expression, int line)
-{
-    if (condition)
-    {
-        return;
-    }
-
-    std::cerr << "test failure at line " << line << ": " << expression << '\n';
-    ++failures;
-}
-}
-
-#define EXPECT(expression) expect((expression), #expression, __LINE__)
+void runLexerTests();
 
 int main()
 {
@@ -34,9 +19,11 @@ int main()
     EXPECT(diagnostic.location == location);
     EXPECT(diagnostic.message == std::string("unexpected token"));
 
-    if (failures != 0)
+    runLexerTests();
+
+    if (minijs::test::failures != 0)
     {
-        std::cerr << failures << " test(s) failed\n";
+        std::cerr << minijs::test::failures << " test(s) failed\n";
         return 1;
     }
 

@@ -7,14 +7,14 @@
 
 namespace minijs
 {
-struct Diagnostic
-{
-    SourceLocation location;
-    std::string message;
-
-    Diagnostic(SourceLocation sourceLocation, std::string diagnosticMessage)
-        : location(sourceLocation), message(std::move(diagnosticMessage))
+    struct Diagnostic
     {
-    }
-};
+        SourceLocation location;
+        std::string message;
+
+        Diagnostic(SourceLocation sourceLocation, std::string diagnosticMessage)
+            : location(sourceLocation), message(std::move(diagnosticMessage))
+        {
+        }
+    };
 }
