@@ -1,8 +1,12 @@
+#include "minijs/lexer.h"
+#include "minijs/token.h"
+
 #include <fstream>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 #ifndef MINIJS_VERSION
 #define MINIJS_VERSION "unknown"
@@ -16,6 +20,7 @@ constexpr int ExitInputError = 74;
 void printUsage(std::ostream& output)
 {
     output << "Usage: minijs <file>\n"
+           << "       minijs --tokens <file>\n"
            << "       minijs --help\n"
            << "       minijs --version\n";
 }
@@ -38,18 +43,70 @@ std::string readFile(const std::string& path)
 
     return buffer.str();
 }
+
+void printTokens(std::string_view source)
+{
+    minijs::Lexer lexer(source);
+
+    while (true)
+    {
+        const minijs::Token token = lexer.nextToken();
+        std::cout << token.location.line << ':' << token.location.column << ' '
+                  << minijs::tokenTypeName(token.type) << " \""
+                  << token.lexeme << "\"\n";
+
+        if (token.type == minijs::TokenType::Eof)
+        {
+            break;
+        }
+    }
+
+    for (const minijs::Diagnostic& diagnostic : lexer.diagnostics())
+    {
+        std::cerr << diagnostic.location.line << ':' << diagnostic.location.column
+                  << ": error: " << diagnostic.message << '\n';
+    }
+}
 }
 
 int main(int argc, char* argv[])
 {
-    if (argc != 2)
+    if (argc != 2 && argc != 3)
     {
-        std::cerr << "error: expected exactly one argument\n";
+        std::cerr << "error: expected one argument, or --tokens plus a file\n";
         printUsage(std::cerr);
         return ExitUsageError;
     }
 
     const std::string argument = argv[1];
+
+    if (argc == 3 && argument != "--tokens")
+    {
+        std::cerr << "error: unknown two-argument command: " << argument << '\n';
+        printUsage(std::cerr);
+        return ExitUsageError;
+    }
+
+    if (argument == "--tokens")
+    {
+        if (argc != 3)
+        {
+            std::cerr << "error: --tokens expects a file\n";
+            printUsage(std::cerr);
+            return ExitUsageError;
+        }
+
+        try
+        {
+            printTokens(readFile(argv[2]));
+            return 0;
+        }
+        catch (const std::exception& error)
+        {
+            std::cerr << "error: " << error.what() << '\n';
+            return ExitInputError;
+        }
+    }
 
     if (argument == "--help" || argument == "-h")
     {
