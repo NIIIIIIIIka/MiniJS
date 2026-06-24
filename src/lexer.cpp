@@ -60,7 +60,7 @@ char Lexer::peek() const
 
 char Lexer::peekNext() const
 {
-    //TODO: ÊÇ·ñÐèÒª¿¼ÂÇÒç³öÎÊÌâ£¿
+    //TODO: æ˜¯å¦éœ€è¦è€ƒè™‘è¶Šç•Œé—®é¢˜ï¼Ÿ
     if (current_ + 1 >= source_.size())
     {
         return '\0';
@@ -161,7 +161,7 @@ Token Lexer::nextToken()
     case '%':
         return makeToken(TokenType::Percent, start, startLocation);
     case '/':
-        //TODO: ½è¼øÑ§³¤µÄ´úÂë£¬¶Ô±ÈÒìÍ¬£¬ÊÇ·ñÇ·¿¼ÂÇ
+        //TODO: ?????ï¿½?ï¿½?Ä´ï¿½ï¿½ï¿½???ï¿½????ï¿½????ï¿½??ï¿½???ï¿½ï¿½
         if (match('/'))
         {
             while (!isAtEnd() && peek() != '\n')
@@ -170,7 +170,7 @@ Token Lexer::nextToken()
             }
             return nextToken();
         }
-        //TODO: ¿¼ÂÇÔö¼Ó¶àÐÐ×¢ÊÍ
+        //TODO: ??ï¿½ï¿½ï¿½ï¿½?ï¿½????ï¿½??ï¿½
         return makeToken(TokenType::Slash, start, startLocation);
     case '=':
         if (match('='))

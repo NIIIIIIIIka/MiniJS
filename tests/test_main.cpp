@@ -6,6 +6,7 @@
 #include <string>
 
 void runLexerTests();
+void runParserTests();
 
 int main()
 {
@@ -20,6 +21,7 @@ int main()
     EXPECT(diagnostic.message == std::string("unexpected token"));
 
     runLexerTests();
+    runParserTests();
 
     if (minijs::test::failures != 0)
     {

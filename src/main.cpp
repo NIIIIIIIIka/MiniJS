@@ -1,4 +1,5 @@
 #include "minijs/lexer.h"
+#include "minijs/parser.h"
 #include "minijs/token.h"
 
 #include <fstream>
@@ -21,6 +22,7 @@ void printUsage(std::ostream& output)
 {
     output << "Usage: minijs <file>\n"
            << "       minijs --tokens <file>\n"
+           << "       minijs --ast <file>\n"
            << "       minijs --help\n"
            << "       minijs --version\n";
 }
@@ -67,6 +69,26 @@ void printTokens(std::string_view source)
                   << ": error: " << diagnostic.message << '\n';
     }
 }
+
+bool printAst(std::string_view source)
+{
+    minijs::Parser parser(source);
+    minijs::ExprPtr expression = parser.parse();
+
+    for (const minijs::Diagnostic& diagnostic : parser.diagnostics())
+    {
+        std::cerr << diagnostic.location.line << ':' << diagnostic.location.column
+                  << ": error: " << diagnostic.message << '\n';
+    }
+
+    if (!parser.diagnostics().empty())
+    {
+        return false;
+    }
+
+    std::cout << minijs::formatExpr(*expression) << '\n';
+    return true;
+}
 }
 
 int main(int argc, char* argv[])
@@ -80,7 +102,7 @@ int main(int argc, char* argv[])
 
     const std::string argument = argv[1];
 
-    if (argc == 3 && argument != "--tokens")
+    if (argc == 3 && argument != "--tokens" && argument != "--ast")
     {
         std::cerr << "error: unknown two-argument command: " << argument << '\n';
         printUsage(std::cerr);
@@ -100,6 +122,26 @@ int main(int argc, char* argv[])
         {
             printTokens(readFile(argv[2]));
             return 0;
+        }
+        catch (const std::exception& error)
+        {
+            std::cerr << "error: " << error.what() << '\n';
+            return ExitInputError;
+        }
+    }
+
+    if (argument == "--ast")
+    {
+        if (argc != 3)
+        {
+            std::cerr << "error: --ast expects a file\n";
+            printUsage(std::cerr);
+            return ExitUsageError;
+        }
+
+        try
+        {
+            return printAst(readFile(argv[2])) ? 0 : ExitInputError;
         }
         catch (const std::exception& error)
         {
