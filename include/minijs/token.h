@@ -1,70 +1,67 @@
 #pragma once
 
-#include "minijs/source_location.h"
-
 #include <string_view>
 
-namespace minijs
-{
-enum class TokenType
-{
-    // Single-character punctuation.
-    LeftParen,
-    RightParen,
-    LeftBracket,
-    RightBracket,
-    LeftBrace,
-    RightBrace,
-    Comma,
-    Dot,
-    Semicolon,
-    Colon,
+#include "minijs/source_location.h"
 
-    // Arithmetic operators.
-    Plus,
-    Minus,
-    Star,
-    Slash,
-    Percent,
+namespace minijs {
+enum class TokenType {
+  // Single-character punctuation.
+  LeftParen,
+  RightParen,
+  LeftBracket,
+  RightBracket,
+  LeftBrace,
+  RightBrace,
+  Comma,
+  Dot,
+  Semicolon,
+  Colon,
 
-    // Assignment, comparison, and logical-not operators.
-    Equal,
-    EqualEqual,
-    Bang,
-    BangEqual,
-    Less,
-    LessEqual,
-    Greater,
-    GreaterEqual,
+  // Arithmetic operators.
+  Plus,
+  Minus,
+  Star,
+  Slash,
+  Percent,
 
-    // Literals.
-    Identifier,
-    Number,
-    String,
-    True,
-    False,
-    Null,
-    Undefined,
+  // Assignment, comparison, and logical-not operators.
+  Equal,
+  EqualEqual,
+  Bang,
+  BangEqual,
+  Less,
+  LessEqual,
+  Greater,
+  GreaterEqual,
 
-    // Reserved words.
-    Let,
-    If,
-    Else,
-    While,
-    Function,
-    Return,
+  // Literals.
+  Identifier,
+  Number,
+  String,
+  True,
+  False,
+  Null,
+  Undefined,
 
-    Invalid,
-    Eof
+  // Reserved words.
+  Let,
+  If,
+  Else,
+  While,
+  Function,
+  Return,
+
+  Invalid,
+  Eof
 };
 
-struct Token
-{
-    TokenType type;
-    std::string_view lexeme;
-    SourceLocation location;
+struct Token {
+  TokenType type;
+  std::string_view lexeme;
+  SourceLocation location;
 };
 
 std::string_view tokenTypeName(TokenType type);
 
-}
+}  // namespace minijs

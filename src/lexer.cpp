@@ -3,10 +3,8 @@
 #include <unordered_map>
 #include <utility>
 
-namespace minijs
-{
-namespace
-{
+namespace minijs {
+namespace {
 const std::unordered_map<std::string_view, TokenType> keywordMap = {
     {"while", TokenType::While},
     {"let", TokenType::Let},
@@ -21,278 +19,220 @@ const std::unordered_map<std::string_view, TokenType> keywordMap = {
 };
 }
 
-Lexer::Lexer(std::string_view source)
-    : source_(source)
-{
+Lexer::Lexer(std::string_view source) : source_(source) {}
+
+bool Lexer::isAtEnd() const { return current_ >= source_.size(); }
+
+char Lexer::advance() {
+  const char ch = source_[current_++];
+  location_.offset = current_;
+
+  if (ch == '\n') {
+    ++location_.line;
+    location_.column = 1;
+  } else {
+    ++location_.column;
+  }
+
+  return ch;
 }
 
-bool Lexer::isAtEnd() const
-{
-    return current_ >= source_.size();
+char Lexer::peek() const {
+  if (isAtEnd()) {
+    return '\0';
+  }
+  return source_[current_];
 }
 
-char Lexer::advance()
-{
-    const char ch = source_[current_++];
-    location_.offset = current_;
+char Lexer::peekNext() const {
+  //TODO: ÊÇ·ñÐèÒª¿¼ÂÇÔ½½çÎÊÌâ£¿
+  if (current_ + 1 >= source_.size()) {
+    return '\0';
+  }
+  return source_[current_ + 1];
+}
 
-    if (ch == '\n')
-    {
-        ++location_.line;
-        location_.column = 1;
+void Lexer::skipWhitespace() {
+  while (!isAtEnd()) {
+    switch (peek()) {
+      case ' ':
+      case '\t':
+      case '\r':
+      case '\n':
+        advance();
+        break;
+
+      default:
+        return;
     }
-    else
-    {
-        ++location_.column;
-    }
-
-    return ch;
+  }
 }
 
-char Lexer::peek() const
-{
-    if (isAtEnd())
-    {
-        return '\0';
-    }
-    return source_[current_];
+Token Lexer::makeToken(TokenType type, std::size_t start, SourceLocation startLocation) const {
+  return Token{
+      type,
+      source_.substr(start, current_ - start),
+      startLocation,
+  };
 }
 
-char Lexer::peekNext() const
-{
-    //TODO: æ˜¯å¦éœ€è¦è€ƒè™‘è¶Šç•Œé—®é¢˜ï¼Ÿ
-    if (current_ + 1 >= source_.size())
-    {
-        return '\0';
-    }
-    return source_[current_ + 1];
-}
+Token Lexer::next() { return nextToken(); }
 
-void Lexer::skipWhitespace()
-{
-    while (!isAtEnd())
-    {
-        switch (peek())
-        {
-        case ' ':
-        case '\t':
-        case '\r':
-        case '\n':
-            advance();
-            break;
+const std::vector<Diagnostic>& Lexer::diagnostics() const { return diagnostics_; }
 
-        default:
-            return;
-        }
-    }
-}
+Token Lexer::nextToken() {
+  skipWhitespace();
 
-Token Lexer::makeToken(TokenType type, std::size_t start, SourceLocation startLocation) const
-{
-    return Token{
-        type,
-        source_.substr(start, current_ - start),
-        startLocation,
-    };
-}
+  const std::size_t start = current_;
+  const SourceLocation startLocation = location_;
 
-Token Lexer::next()
-{
-    return nextToken();
-}
+  if (isAtEnd()) {
+    return makeToken(TokenType::Eof, start, startLocation);
+  }
 
-const std::vector<Diagnostic>& Lexer::diagnostics() const
-{
-    return diagnostics_;
-}
+  const char ch = advance();
 
-Token Lexer::nextToken()
-{
-    skipWhitespace();
+  if (isIdentifierStart(ch)) {
+    return scanIdentifier(start, startLocation);
+  }
 
-    const std::size_t start = current_;
-    const SourceLocation startLocation = location_;
+  if (isDigit(ch)) {
+    return scanNumber(start, startLocation);
+  }
 
-    if (isAtEnd())
-    {
-        return makeToken(TokenType::Eof, start, startLocation);
-    }
-
-    const char ch = advance();
-
-    if (isIdentifierStart(ch))
-    {
-        return scanIdentifier(start, startLocation);
-    }
-
-    if (isDigit(ch))
-    {
-        return scanNumber(start, startLocation);
-    }
-
-    switch (ch)
-    {
+  switch (ch) {
     case '(':
-        return makeToken(TokenType::LeftParen, start, startLocation);
+      return makeToken(TokenType::LeftParen, start, startLocation);
     case ')':
-        return makeToken(TokenType::RightParen, start, startLocation);
+      return makeToken(TokenType::RightParen, start, startLocation);
     case '[':
-        return makeToken(TokenType::LeftBracket, start, startLocation);
+      return makeToken(TokenType::LeftBracket, start, startLocation);
     case ']':
-        return makeToken(TokenType::RightBracket, start, startLocation);
+      return makeToken(TokenType::RightBracket, start, startLocation);
     case '{':
-        return makeToken(TokenType::LeftBrace, start, startLocation);
+      return makeToken(TokenType::LeftBrace, start, startLocation);
     case '}':
-        return makeToken(TokenType::RightBrace, start, startLocation);
+      return makeToken(TokenType::RightBrace, start, startLocation);
     case ',':
-        return makeToken(TokenType::Comma, start, startLocation);
+      return makeToken(TokenType::Comma, start, startLocation);
     case '.':
-        return makeToken(TokenType::Dot, start, startLocation);
+      return makeToken(TokenType::Dot, start, startLocation);
     case ';':
-        return makeToken(TokenType::Semicolon, start, startLocation);
+      return makeToken(TokenType::Semicolon, start, startLocation);
     case ':':
-        return makeToken(TokenType::Colon, start, startLocation);
+      return makeToken(TokenType::Colon, start, startLocation);
     case '+':
-        return makeToken(TokenType::Plus, start, startLocation);
+      return makeToken(TokenType::Plus, start, startLocation);
     case '-':
-        return makeToken(TokenType::Minus, start, startLocation);
+      return makeToken(TokenType::Minus, start, startLocation);
     case '*':
-        return makeToken(TokenType::Star, start, startLocation);
+      return makeToken(TokenType::Star, start, startLocation);
     case '%':
-        return makeToken(TokenType::Percent, start, startLocation);
+      return makeToken(TokenType::Percent, start, startLocation);
     case '/':
-        //TODO: ?????ï¿½?ï¿½?Ä´ï¿½ï¿½ï¿½???ï¿½????ï¿½????ï¿½??ï¿½???ï¿½ï¿½
-        if (match('/'))
-        {
-            while (!isAtEnd() && peek() != '\n')
-            {
-                advance();
-            }
-            return nextToken();
+      //TODO:
+      if (match('/')) {
+        while (!isAtEnd() && peek() != '\n') {
+          advance();
         }
-        //TODO: ??ï¿½ï¿½ï¿½ï¿½?ï¿½????ï¿½??ï¿½
-        return makeToken(TokenType::Slash, start, startLocation);
+        return nextToken();
+      }
+      return makeToken(TokenType::Slash, start, startLocation);
+      //TODO:
     case '=':
-        if (match('='))
-        {
-            return makeToken(TokenType::EqualEqual, start, startLocation);
-        }
-        return makeToken(TokenType::Equal, start, startLocation);
+      if (match('=')) {
+        return makeToken(TokenType::EqualEqual, start, startLocation);
+      }
+      return makeToken(TokenType::Equal, start, startLocation);
     case '!':
-        if (match('='))
-        {
-            return makeToken(TokenType::BangEqual, start, startLocation);
-        }
-        return makeToken(TokenType::Bang, start, startLocation);
+      if (match('=')) {
+        return makeToken(TokenType::BangEqual, start, startLocation);
+      }
+      return makeToken(TokenType::Bang, start, startLocation);
     case '<':
-        if (match('='))
-        {
-            return makeToken(TokenType::LessEqual, start, startLocation);
-        }
-        return makeToken(TokenType::Less, start, startLocation);
+      if (match('=')) {
+        return makeToken(TokenType::LessEqual, start, startLocation);
+      }
+      return makeToken(TokenType::Less, start, startLocation);
     case '>':
-        if (match('='))
-        {
-            return makeToken(TokenType::GreaterEqual, start, startLocation);
-        }
-        return makeToken(TokenType::Greater, start, startLocation);
+      if (match('=')) {
+        return makeToken(TokenType::GreaterEqual, start, startLocation);
+      }
+      return makeToken(TokenType::Greater, start, startLocation);
     case '"':
-        return scanString(start, startLocation);
+      return scanString(start, startLocation);
     default:
-        report(startLocation, "unexpected character");
-        return makeToken(TokenType::Invalid, start, startLocation);
-    }
+      report(startLocation, "unexpected character");
+      return makeToken(TokenType::Invalid, start, startLocation);
+  }
 }
 
-Token Lexer::scanIdentifier(std::size_t start, SourceLocation startLocation)
-{
-    while (isIdentifierPart(peek()))
-    {
-        advance();
-    }
-
-    const std::string_view text = source_.substr(start, current_ - start);
-    const auto it = keywordMap.find(text);
-    const TokenType type = it == keywordMap.end() ? TokenType::Identifier : it->second;
-    return makeToken(type, start, startLocation);
-}
-
-Token Lexer::scanNumber(std::size_t start, SourceLocation startLocation)
-{
-    while (isDigit(peek()))
-    {
-        advance();
-    }
-
-    if (peek() == '.' && isDigit(peekNext()))
-    {
-        advance();
-        while (isDigit(peek()))
-        {
-            advance();
-        }
-    }
-
-    return makeToken(TokenType::Number, start, startLocation);
-}
-
-Token Lexer::scanString(std::size_t start, SourceLocation startLocation)
-{
-    while (!isAtEnd() && peek() != '"')
-    {
-        if (peek() == '\n')
-        {
-            report(startLocation, "unterminated string");
-            return makeToken(TokenType::Invalid, start, startLocation);
-        }
-
-        if (peek() == '\\' && peekNext() != '\0')
-        {
-            advance();
-        }
-        advance();
-    }
-
-    if (isAtEnd())
-    {
-        report(startLocation, "unterminated string");
-        return makeToken(TokenType::Invalid, start, startLocation);
-    }
-
+Token Lexer::scanIdentifier(std::size_t start, SourceLocation startLocation) {
+  while (isIdentifierPart(peek())) {
     advance();
-    return makeToken(TokenType::String, start, startLocation);
+  }
+
+  const std::string_view text = source_.substr(start, current_ - start);
+  const auto it = keywordMap.find(text);
+  const TokenType type = it == keywordMap.end() ? TokenType::Identifier : it->second;
+  return makeToken(type, start, startLocation);
 }
 
-bool Lexer::match(char expected)
-{
-    if (peek() == expected)
-    {
-        advance();
-        return true;
+Token Lexer::scanNumber(std::size_t start, SourceLocation startLocation) {
+  while (isDigit(peek())) {
+    advance();
+  }
+
+  if (peek() == '.' && isDigit(peekNext())) {
+    advance();
+    while (isDigit(peek())) {
+      advance();
     }
-    return false;
+  }
+
+  return makeToken(TokenType::Number, start, startLocation);
 }
 
-bool Lexer::isIdentifierStart(char ch)
-{
-    return (ch >= 'a' && ch <= 'z') ||
-           (ch >= 'A' && ch <= 'Z') ||
-           ch == '_';
+Token Lexer::scanString(std::size_t start, SourceLocation startLocation) {
+  while (!isAtEnd() && peek() != '"') {
+    if (peek() == '\n') {
+      report(startLocation, "unterminated string");
+      return makeToken(TokenType::Invalid, start, startLocation);
+    }
+
+    if (peek() == '\\' && peekNext() != '\0') {
+      advance();
+    }
+    advance();
+  }
+
+  if (isAtEnd()) {
+    report(startLocation, "unterminated string");
+    return makeToken(TokenType::Invalid, start, startLocation);
+  }
+
+  advance();
+  return makeToken(TokenType::String, start, startLocation);
 }
 
-bool Lexer::isIdentifierPart(char ch)
-{
-    return isIdentifierStart(ch) || isDigit(ch);
+bool Lexer::match(char expected) {
+  if (peek() == expected) {
+    advance();
+    return true;
+  }
+  return false;
 }
 
-bool Lexer::isDigit(char ch)
-{
-    return ch >= '0' && ch <= '9';
+bool Lexer::isIdentifierStart(char ch) {
+  return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_';
 }
 
-void Lexer::report(SourceLocation location, std::string message)
-{
-    diagnostics_.emplace_back(location, std::move(message));
+bool Lexer::isIdentifierPart(char ch) { return isIdentifierStart(ch) || isDigit(ch); }
+
+bool Lexer::isDigit(char ch) { return ch >= '0' && ch <= '9'; }
+
+void Lexer::report(SourceLocation location, std::string message) {
+  diagnostics_.emplace_back(location, std::move(message));
 }
 
-}
+}  // namespace minijs

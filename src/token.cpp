@@ -1,91 +1,88 @@
 #include "minijs/token.h"
 
-namespace minijs
-{
+namespace minijs {
 
-std::string_view tokenTypeName(TokenType type)
-{
-    switch (type)
-    {
+std::string_view tokenTypeName(TokenType type) {
+  switch (type) {
     case TokenType::LeftParen:
-        return "LeftParen";
+      return "LeftParen";
     case TokenType::RightParen:
-        return "RightParen";
+      return "RightParen";
     case TokenType::LeftBracket:
-        return "LeftBracket";
+      return "LeftBracket";
     case TokenType::RightBracket:
-        return "RightBracket";
+      return "RightBracket";
     case TokenType::LeftBrace:
-        return "LeftBrace";
+      return "LeftBrace";
     case TokenType::RightBrace:
-        return "RightBrace";
+      return "RightBrace";
     case TokenType::Comma:
-        return "Comma";
+      return "Comma";
     case TokenType::Dot:
-        return "Dot";
+      return "Dot";
     case TokenType::Semicolon:
-        return "Semicolon";
+      return "Semicolon";
     case TokenType::Colon:
-        return "Colon";
+      return "Colon";
     case TokenType::Plus:
-        return "Plus";
+      return "Plus";
     case TokenType::Minus:
-        return "Minus";
+      return "Minus";
     case TokenType::Star:
-        return "Star";
+      return "Star";
     case TokenType::Slash:
-        return "Slash";
+      return "Slash";
     case TokenType::Percent:
-        return "Percent";
+      return "Percent";
     case TokenType::Equal:
-        return "Equal";
+      return "Equal";
     case TokenType::EqualEqual:
-        return "EqualEqual";
+      return "EqualEqual";
     case TokenType::Bang:
-        return "Bang";
+      return "Bang";
     case TokenType::BangEqual:
-        return "BangEqual";
+      return "BangEqual";
     case TokenType::Less:
-        return "Less";
+      return "Less";
     case TokenType::LessEqual:
-        return "LessEqual";
+      return "LessEqual";
     case TokenType::Greater:
-        return "Greater";
+      return "Greater";
     case TokenType::GreaterEqual:
-        return "GreaterEqual";
+      return "GreaterEqual";
     case TokenType::Identifier:
-        return "Identifier";
+      return "Identifier";
     case TokenType::Number:
-        return "Number";
+      return "Number";
     case TokenType::String:
-        return "String";
+      return "String";
     case TokenType::True:
-        return "True";
+      return "True";
     case TokenType::False:
-        return "False";
+      return "False";
     case TokenType::Null:
-        return "Null";
+      return "Null";
     case TokenType::Undefined:
-        return "Undefined";
+      return "Undefined";
     case TokenType::Let:
-        return "Let";
+      return "Let";
     case TokenType::If:
-        return "If";
+      return "If";
     case TokenType::Else:
-        return "Else";
+      return "Else";
     case TokenType::While:
-        return "While";
+      return "While";
     case TokenType::Function:
-        return "Function";
+      return "Function";
     case TokenType::Return:
-        return "Return";
+      return "Return";
     case TokenType::Invalid:
-        return "Invalid";
+      return "Invalid";
     case TokenType::Eof:
-        return "Eof";
-    }
+      return "Eof";
+  }
 
-    return "Unknown";
+  return "Unknown";
 }
 
-}
+}  // namespace minijs

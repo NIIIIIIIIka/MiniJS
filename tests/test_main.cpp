@@ -1,34 +1,34 @@
+#include <iostream>
+#include <string>
+
 #include "minijs/diagnostic.h"
 #include "minijs/source_location.h"
 #include "test_framework.h"
 
-#include <iostream>
-#include <string>
-
 void runLexerTests();
 void runParserTests();
+void runInterpreterTests();
 
-int main()
-{
-    const minijs::SourceLocation defaultLocation;
-    EXPECT(defaultLocation.offset == 0);
-    EXPECT(defaultLocation.line == 1);
-    EXPECT(defaultLocation.column == 1);
+int main() {
+  const minijs::SourceLocation defaultLocation;
+  EXPECT(defaultLocation.offset == 0);
+  EXPECT(defaultLocation.line == 1);
+  EXPECT(defaultLocation.column == 1);
 
-    const minijs::SourceLocation location{12, 3, 5};
-    const minijs::Diagnostic diagnostic(location, "unexpected token");
-    EXPECT(diagnostic.location == location);
-    EXPECT(diagnostic.message == std::string("unexpected token"));
+  const minijs::SourceLocation location{12, 3, 5};
+  const minijs::Diagnostic diagnostic(location, "unexpected token");
+  EXPECT(diagnostic.location == location);
+  EXPECT(diagnostic.message == std::string("unexpected token"));
 
-    runLexerTests();
-    runParserTests();
+  runLexerTests();
+  runParserTests();
+  runInterpreterTests();
 
-    if (minijs::test::failures != 0)
-    {
-        std::cerr << minijs::test::failures << " test(s) failed\n";
-        return 1;
-    }
+  if (minijs::test::failures != 0) {
+    std::cerr << minijs::test::failures << " test(s) failed\n";
+    return 1;
+  }
 
-    std::cout << "all tests passed\n";
-    return 0;
+  std::cout << "all tests passed\n";
+  return 0;
 }

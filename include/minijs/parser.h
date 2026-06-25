@@ -1,46 +1,47 @@
 #pragma once
 
+#include <cstddef>
+#include <string>
+#include <string_view>
+#include <vector>
+
 #include "minijs/ast.h"
 #include "minijs/diagnostic.h"
 #include "minijs/token.h"
 
-#include <cstddef>
-#include <string_view>
-#include <vector>
+namespace minijs {
 
-namespace minijs
-{
+class Parser {
+ public:
+  explicit Parser(std::string_view source);
 
-class Parser
-{
-public:
-    explicit Parser(std::string_view source);
+  ExprPtr parse();
+  Program parseProgram();
 
-    ExprPtr parse();
+  const std::vector<Diagnostic>& diagnostics() const;
 
-    const std::vector<Diagnostic>& diagnostics() const;
+ private:
+  StmtPtr statement();
+  StmtPtr letDeclaration();
+  StmtPtr expressionStatement();
 
-private:
-    ExprPtr expression();
-    //最低优先级：加减（+ -）
-    ExprPtr term();
-    //中等优先级：乘除取模（* / %）
-    ExprPtr factor();
-    //最高优先级：字面量、括号
-    ExprPtr primary();
+  ExprPtr expression();
+  ExprPtr term();
+  ExprPtr factor();
+  ExprPtr primary();
 
-    bool match(TokenType type);
-    bool check(TokenType type) const;
-    bool isAtEnd() const;
-    const Token& advance();
-    const Token& peek() const;
-    const Token& previous() const;
+  bool match(TokenType type);
+  bool check(TokenType type) const;
+  bool isAtEnd() const;
+  const Token& advance();
+  const Token& peek() const;
+  const Token& previous() const;
 
-    void report(const Token& token, std::string message);
+  void report(const Token& token, std::string message);
 
-    std::vector<Token> tokens_;
-    std::vector<Diagnostic> diagnostics_;
-    std::size_t current_ = 0;
+  std::vector<Token> tokens_;
+  std::vector<Diagnostic> diagnostics_;
+  std::size_t current_ = 0;
 };
 
-}
+}  // namespace minijs

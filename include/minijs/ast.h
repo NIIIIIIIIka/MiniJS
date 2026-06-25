@@ -1,58 +1,96 @@
 #pragma once
 
-#include "minijs/token.h"
-
 #include <memory>
 #include <string>
+#include <vector>
 
-namespace minijs
-{
+#include "minijs/token.h"
 
-class Expr
-{
-public:
-    virtual ~Expr() = default;
+namespace minijs {
+
+class Expr {
+ public:
+  virtual ~Expr() = default;
 };
 
 using ExprPtr = std::unique_ptr<Expr>;
 
-class NumberExpr final : public Expr
-{
-public:
-    explicit NumberExpr(std::string value);
-
-    const std::string& value() const;
-
-private:
-    std::string value_;
+class Stmt {
+ public:
+  virtual ~Stmt() = default;
 };
 
-class BinaryExpr final : public Expr
-{
-public:
-    BinaryExpr(ExprPtr left, TokenType op, ExprPtr right);
+using StmtPtr = std::unique_ptr<Stmt>;
+using Program = std::vector<StmtPtr>;
 
-    const Expr& left() const;
-    TokenType op() const;
-    const Expr& right() const;
+class NumberExpr final : public Expr {
+ public:
+  explicit NumberExpr(std::string value);
 
-private:
-    ExprPtr left_;
-    TokenType op_;
-    ExprPtr right_;
+  const std::string& value() const;
+
+ private:
+  std::string value_;
 };
 
-class GroupingExpr final : public Expr
-{
-public:
-    explicit GroupingExpr(ExprPtr expression);
+class BinaryExpr final : public Expr {
+ public:
+  BinaryExpr(ExprPtr left, TokenType op, ExprPtr right);
 
-    const Expr& expression() const;
+  const Expr& left() const;
+  TokenType op() const;
+  const Expr& right() const;
 
-private:
-    ExprPtr expression_;
+ private:
+  ExprPtr left_;
+  TokenType op_;
+  ExprPtr right_;
+};
+
+class GroupingExpr final : public Expr {
+ public:
+  explicit GroupingExpr(ExprPtr expression);
+
+  const Expr& expression() const;
+
+ private:
+  ExprPtr expression_;
+};
+
+class VariableExpr final : public Expr {
+ public:
+  explicit VariableExpr(std::string name);
+
+  const std::string& name() const;
+
+ private:
+  std::string name_;
+};
+
+class ExprStmt final : public Stmt {
+ public:
+  explicit ExprStmt(ExprPtr expression);
+
+  const Expr& expression() const;
+
+ private:
+  ExprPtr expression_;
+};
+
+class LetStmt final : public Stmt {
+ public:
+  LetStmt(std::string name, ExprPtr initializer);
+
+  const std::string& name() const;
+  const Expr& initializer() const;
+
+ private:
+  std::string name_;
+  ExprPtr initializer_;
 };
 
 std::string formatExpr(const Expr& expression);
+std::string formatStmt(const Stmt& statement);
+std::string formatProgram(const Program& program);
 
-}
+}  // namespace minijs

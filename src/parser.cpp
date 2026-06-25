@@ -1,167 +1,178 @@
 #include "minijs/parser.h"
 
-#include "minijs/lexer.h"
-
 #include <string>
 #include <utility>
 
-namespace minijs
-{
+#include "minijs/lexer.h"
 
-Parser::Parser(std::string_view source)
-{
-    Lexer lexer(source);
+namespace minijs {
 
-    while (true)
-    {
-        Token token = lexer.nextToken();
-        tokens_.push_back(token);
+Parser::Parser(std::string_view source) {
+  Lexer lexer(source);
 
-        if (token.type == TokenType::Eof)
-        {
-            break;
-        }
+  while (true) {
+    Token token = lexer.nextToken();
+    tokens_.push_back(token);
+
+    if (token.type == TokenType::Eof) {
+      break;
     }
+  }
 
-    diagnostics_ = lexer.diagnostics();
+  diagnostics_ = lexer.diagnostics();
 }
 
-ExprPtr Parser::parse()
-{
-    ExprPtr result = expression();
+ExprPtr Parser::parse() {
+  ExprPtr result = expression();
 
-    if (match(TokenType::Semicolon))
-    {
-        return result;
-    }
-
-    if (!isAtEnd())
-    {
-        report(peek(), "expected end of expression");
-    }
-
+  if (match(TokenType::Semicolon)) {
     return result;
+  }
+
+  if (!isAtEnd()) {
+    report(peek(), "expected end of expression");
+  }
+
+  return result;
 }
 
-const std::vector<Diagnostic>& Parser::diagnostics() const
-{
-    return diagnostics_;
+Program Parser::parseProgram() {
+  Program statements;
+
+  while (!isAtEnd()) {
+    statements.push_back(statement());
+  }
+
+  return statements;
 }
 
-ExprPtr Parser::expression()
-{
-    return term();
+const std::vector<Diagnostic>& Parser::diagnostics() const { return diagnostics_; }
+
+StmtPtr Parser::statement() {
+  if (match(TokenType::Let)) {
+    return letDeclaration();
+  }
+
+  return expressionStatement();
 }
 
-ExprPtr Parser::term()
-{
-    // BinaryExpr(+ -) : (left_expr, op, right_expr)
-    ExprPtr expr = factor();
+StmtPtr Parser::letDeclaration() {
+  if (!check(TokenType::Identifier)) {
+    report(peek(), "expected variable name");
+    return nullptr;
+  }
 
-    while (match(TokenType::Plus) || match(TokenType::Minus))
-    {
-        const TokenType op = previous().type;
-        ExprPtr right = factor();
-        expr = std::make_unique<BinaryExpr>(std::move(expr), op, std::move(right));
-    }
+  const Token name = advance();
 
-    return expr;
+  if (!match(TokenType::Equal)) {
+    report(peek(), "expected '=' after variable name");
+  }
+
+  ExprPtr initializer = expression();
+
+  if (!match(TokenType::Semicolon)) {
+    report(peek(), "expected ';' after variable declaration");
+  }
+
+  return std::make_unique<LetStmt>(std::string(name.lexeme), std::move(initializer));
 }
 
-ExprPtr Parser::factor()
-{
-    // BinaryExpr(* / %) : (left_expr, op, right_expr)
-    ExprPtr expr = primary();
+StmtPtr Parser::expressionStatement() {
+  ExprPtr expr = expression();
 
-    while (match(TokenType::Star) || match(TokenType::Slash) || match(TokenType::Percent))
-    {
-        const TokenType op = previous().type;
-        ExprPtr right = primary();
-        expr = std::make_unique<BinaryExpr>(std::move(expr), op, std::move(right));
-    }
+  if (!match(TokenType::Semicolon)) {
+    report(peek(), "expected ';' after expression");
+  }
 
-    return expr;
+  return std::make_unique<ExprStmt>(std::move(expr));
 }
 
-ExprPtr Parser::primary()
-{
-    // NumberExpr : (number)
-    if (match(TokenType::Number))
-    {
-        const Token& token = previous();
-        return std::make_unique<NumberExpr>(std::string(token.lexeme));
-    }
+ExprPtr Parser::expression() { return term(); }
 
-    // GroupingExpr : ('(', expr, ')')
-    if (match(TokenType::LeftParen))
-    {
-        ExprPtr expr = expression();
+ExprPtr Parser::term() {
+  ExprPtr expr = factor();
 
-        if (!match(TokenType::RightParen))
-        {
-            report(peek(), "expected ')' after expression");
-        }
-
-        return std::make_unique<GroupingExpr>(std::move(expr));
-    }
-
-    report(peek(), "expected expression");
-    if (!isAtEnd())
-    {
-        advance();
-    }
-    return std::make_unique<NumberExpr>("0");
+  while (match(TokenType::Plus) || match(TokenType::Minus)) {
+    const TokenType op = previous().type;
+    ExprPtr right = factor();
+    expr = std::make_unique<BinaryExpr>(std::move(expr), op, std::move(right));
+  }
+  return expr;
 }
 
-bool Parser::match(TokenType type)
-{
-    if (!check(type))
-    {
-        return false;
+ExprPtr Parser::factor() {
+  ExprPtr expr = primary();
+
+  while (match(TokenType::Star) || match(TokenType::Slash) || match(TokenType::Percent)) {
+    const TokenType op = previous().type;
+    ExprPtr right = primary();
+    expr = std::make_unique<BinaryExpr>(std::move(expr), op, std::move(right));
+  }
+
+  return expr;
+}
+
+ExprPtr Parser::primary() {
+  if (match(TokenType::Number)) {
+    const Token& token = previous();
+    return std::make_unique<NumberExpr>(std::string(token.lexeme));
+  }
+
+  if (match(TokenType::Identifier)) {
+    const Token& token = previous();
+    return std::make_unique<VariableExpr>(std::string(token.lexeme));
+  }
+
+  if (match(TokenType::LeftParen)) {
+    ExprPtr expr = expression();
+
+    if (!match(TokenType::RightParen)) {
+      report(peek(), "expected ')' after expression");
     }
 
+    return std::make_unique<GroupingExpr>(std::move(expr));
+  }
+
+  report(peek(), "expected expression");
+  if (!isAtEnd()) {
     advance();
-    return true;
+  }
+  return std::make_unique<NumberExpr>("0");
 }
 
-bool Parser::check(TokenType type) const
-{
-    if (isAtEnd())
-    {
-        return type == TokenType::Eof;
-    }
+bool Parser::match(TokenType type) {
+  if (!check(type)) {
+    return false;
+  }
 
-    return peek().type == type;
+  advance();
+  return true;
 }
 
-bool Parser::isAtEnd() const
-{
-    return peek().type == TokenType::Eof;
+bool Parser::check(TokenType type) const {
+  if (isAtEnd()) {
+    return type == TokenType::Eof;
+  }
+
+  return peek().type == type;
 }
 
-const Token& Parser::advance()
-{
-    if (!isAtEnd())
-    {
-        ++current_;
-    }
+bool Parser::isAtEnd() const { return peek().type == TokenType::Eof; }
 
-    return previous();
+const Token& Parser::advance() {
+  if (!isAtEnd()) {
+    ++current_;
+  }
+
+  return previous();
 }
 
-const Token& Parser::peek() const
-{
-    return tokens_[current_];
+const Token& Parser::peek() const { return tokens_[current_]; }
+
+const Token& Parser::previous() const { return tokens_[current_ - 1]; }
+
+void Parser::report(const Token& token, std::string message) {
+  diagnostics_.emplace_back(token.location, std::move(message));
 }
 
-const Token& Parser::previous() const
-{
-    return tokens_[current_ - 1];
-}
-
-void Parser::report(const Token& token, std::string message)
-{
-    diagnostics_.emplace_back(token.location, std::move(message));
-}
-
-}
+}  // namespace minijs

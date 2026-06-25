@@ -1,75 +1,97 @@
-#include "minijs/ast.h"
-#include "minijs/parser.h"
-#include "test_framework.h"
-
 #include <memory>
 #include <string>
 #include <string_view>
 
-namespace
-{
-std::string parseToString(std::string_view source)
-{
-    minijs::Parser parser(source);
-    minijs::ExprPtr expression = parser.parse();
+#include "minijs/ast.h"
+#include "minijs/parser.h"
+#include "test_framework.h"
 
-    EXPECT(parser.diagnostics().empty());
-    return minijs::formatExpr(*expression);
+namespace {
+std::string parseToString(std::string_view source) {
+  minijs::Parser parser(source);
+  minijs::ExprPtr expression = parser.parse();
+
+  EXPECT(parser.diagnostics().empty());
+  return minijs::formatExpr(*expression);
 }
 
-void testExpressionPrecedence()
-{
-    EXPECT(parseToString("1 + 2 * 3;") == "(+ 1 (* 2 3))");
+std::string parseProgramToString(std::string_view source) {
+  minijs::Parser parser(source);
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+  return minijs::formatProgram(program);
 }
 
-void testGrouping()
-{
-    EXPECT(parseToString("(1 + 2) * 3;") == "(* (group (+ 1 2)) 3)");
+void testExpressionPrecedence() { EXPECT(parseToString("1 + 2 * 3;") == "(+ 1 (* 2 3))"); }
+
+void testGrouping() { EXPECT(parseToString("(1 + 2) * 3;") == "(* (group (+ 1 2)) 3)"); }
+
+void testLeftAssociativity() { EXPECT(parseToString("10 / 2 - 3;") == "(- (/ 10 2) 3)"); }
+
+void testPercentOperator() { EXPECT(parseToString("10 % 3 + 1;") == "(+ (% 10 3) 1)"); }
+
+void testVariableExpression() { EXPECT(parseToString("x + 20;") == "(+ x 20)"); }
+
+void testExpressionWithoutSemicolon() { EXPECT(parseToString("1 + 2") == "(+ 1 2)"); }
+
+void testLetStatement() { EXPECT(parseProgramToString("let x = 10;") == "(let x 10)"); }
+
+void testLetStatementWithVariableInitializer() {
+  EXPECT(parseProgramToString("let y = x + 20;") == "(let y (+ x 20))");
 }
 
-void testLeftAssociativity()
-{
-    EXPECT(parseToString("10 / 2 - 3;") == "(- (/ 10 2) 3)");
+void testExpressionStatement() { EXPECT(parseProgramToString("x + y;") == "(expr (+ x y))"); }
+
+void testProgram() {
+  const std::string expected =
+      "(let x 10)\n"
+      "(let y (+ x 20))\n"
+      "(expr (+ x y))";
+
+  EXPECT(parseProgramToString("let x = 10; let y = x + 20; x + y;") == expected);
 }
 
-void testPercentOperator()
-{
-    EXPECT(parseToString("10 % 3 + 1;") == "(+ (% 10 3) 1)");
+void testUnexpectedTokenDiagnostic() {
+  minijs::Parser parser("1 + ;");
+  minijs::ExprPtr expression = parser.parse();
+
+  EXPECT(expression != nullptr);
+  EXPECT(!parser.diagnostics().empty());
+  EXPECT(parser.diagnostics()[0].message == "expected expression");
 }
 
-void testExpressionWithoutSemicolon()
-{
-    EXPECT(parseToString("1 + 2") == "(+ 1 2)");
+void testMissingRightParenDiagnostic() {
+  minijs::Parser parser("(1 + 2;");
+  minijs::ExprPtr expression = parser.parse();
+
+  EXPECT(expression != nullptr);
+  EXPECT(!parser.diagnostics().empty());
+  EXPECT(parser.diagnostics()[0].message == "expected ')' after expression");
 }
 
-void testUnexpectedTokenDiagnostic()
-{
-    minijs::Parser parser("1 + ;");
-    minijs::ExprPtr expression = parser.parse();
+void testMissingVariableNameDiagnostic() {
+  minijs::Parser parser("let = 10;");
+  minijs::Program program = parser.parseProgram();
 
-    EXPECT(expression != nullptr);
-    EXPECT(!parser.diagnostics().empty());
-    EXPECT(parser.diagnostics()[0].message == "expected expression");
+  EXPECT(program.empty() || program[0] == nullptr);
+  EXPECT(!parser.diagnostics().empty());
+  EXPECT(parser.diagnostics()[0].message == "expected variable name");
 }
+}  // namespace
 
-void testMissingRightParenDiagnostic()
-{
-    minijs::Parser parser("(1 + 2;");
-    minijs::ExprPtr expression = parser.parse();
-
-    EXPECT(expression != nullptr);
-    EXPECT(!parser.diagnostics().empty());
-    EXPECT(parser.diagnostics()[0].message == "expected ')' after expression");
-}
-}
-
-void runParserTests()
-{
-    testExpressionPrecedence();
-    testGrouping();
-    testLeftAssociativity();
-    testPercentOperator();
-    testExpressionWithoutSemicolon();
-    testUnexpectedTokenDiagnostic();
-    testMissingRightParenDiagnostic();
+void runParserTests() {
+  testExpressionPrecedence();
+  testGrouping();
+  testLeftAssociativity();
+  testPercentOperator();
+  testVariableExpression();
+  testExpressionWithoutSemicolon();
+  testLetStatement();
+  testLetStatementWithVariableInitializer();
+  testExpressionStatement();
+  testProgram();
+  testUnexpectedTokenDiagnostic();
+  testMissingRightParenDiagnostic();
+  testMissingVariableNameDiagnostic();
 }
