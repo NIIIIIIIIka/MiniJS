@@ -1,7 +1,8 @@
 #include "minijs/interpreter.h"
 
 #include <cmath>
-#include <stdexcept>
+
+#include "minijs/runtime_error.h"
 
 namespace minijs {
 
@@ -24,12 +25,21 @@ void Interpreter::execute(const Stmt& statement) {
     return;
   }
 
+  if (const auto* ifStmt = dynamic_cast<const IfStmt*>(&statement)) {
+    if (evaluate(ifStmt->condition()).isTruthy()) {
+      execute(ifStmt->thenBranch());
+    } else if (ifStmt->elseBranch() != nullptr) {
+      execute(*ifStmt->elseBranch());
+    }
+    return;
+  }
+
   if (const auto* exprStmt = dynamic_cast<const ExprStmt*>(&statement)) {
     lastValue_ = evaluate(exprStmt->expression());
     return;
   }
 
-  throw std::runtime_error("unknown statement type");
+  throw RuntimeError("unknown statement type");
 }
 
 Value Interpreter::evaluate(const Expr& expression) {
@@ -60,15 +70,33 @@ Value Interpreter::evaluate(const Expr& expression) {
       case TokenType::Star:
         return Value(lhs * rhs);
       case TokenType::Slash:
+        if (rhs == 0) {
+          throw RuntimeError("division by zero");
+        }
         return Value(lhs / rhs);
       case TokenType::Percent:
+        if (rhs == 0) {
+          throw RuntimeError("modulo by zero");
+        }
         return Value(std::fmod(lhs, rhs));
+      case TokenType::Greater:
+        return Value(lhs > rhs);
+      case TokenType::GreaterEqual:
+        return Value(lhs >= rhs);
+      case TokenType::Less:
+        return Value(lhs < rhs);
+      case TokenType::LessEqual:
+        return Value(lhs <= rhs);
+      case TokenType::EqualEqual:
+        return Value(lhs == rhs);
+      case TokenType::BangEqual:
+        return Value(lhs != rhs);
       default:
-        throw std::runtime_error("unsupported binary operator");
+        throw RuntimeError("unsupported binary operator");
     }
   }
 
-  throw std::runtime_error("unknown expression type");
+  throw RuntimeError("unknown expression type");
 }
 
 }  // namespace minijs

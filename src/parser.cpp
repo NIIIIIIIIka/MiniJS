@@ -49,6 +49,9 @@ Program Parser::parseProgram() {
 const std::vector<Diagnostic>& Parser::diagnostics() const { return diagnostics_; }
 
 StmtPtr Parser::statement() {
+  if (match(TokenType::If)) {
+    return ifStatement();
+  }
   if (match(TokenType::Let)) {
     return letDeclaration();
   }
@@ -87,7 +90,47 @@ StmtPtr Parser::expressionStatement() {
   return std::make_unique<ExprStmt>(std::move(expr));
 }
 
-ExprPtr Parser::expression() { return term(); }
+StmtPtr Parser::ifStatement() {
+  if (!match(TokenType::LeftParen)) {
+    report(peek(), "expected '(' after if");
+  }
+  ExprPtr condition = expression();
+  if (!match(TokenType::RightParen)) {
+    report(peek(), "expected ')' after if condition");
+  }
+  StmtPtr thenBranch = statement();
+  StmtPtr elseBranch;
+
+  if (match(TokenType::Else)) {
+    elseBranch = statement();
+  }
+
+  return std::make_unique<IfStmt>(std::move(condition), std::move(thenBranch),
+                                  std::move(elseBranch));
+}
+
+ExprPtr Parser::expression() { return equality(); }
+
+ExprPtr Parser::equality() {
+  ExprPtr expr = comparison();
+  while (match(TokenType::EqualEqual) || match(TokenType::BangEqual)) {
+    const TokenType op = previous().type;
+    ExprPtr right = comparison();
+    expr = std::make_unique<BinaryExpr>(std::move(expr), op, std::move(right));
+  }
+  return expr;
+}
+
+ExprPtr Parser::comparison() {
+  ExprPtr expr = term();
+  while (match(TokenType::Greater) || match(TokenType::GreaterEqual) || match(TokenType::Less) ||
+         match(TokenType::LessEqual)) {
+    const TokenType op = previous().type;
+    ExprPtr right = term();
+    expr = std::make_unique<BinaryExpr>(std::move(expr), op, std::move(right));
+  }
+  return expr;
+}
 
 ExprPtr Parser::term() {
   ExprPtr expr = factor();

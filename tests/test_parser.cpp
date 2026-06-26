@@ -52,6 +52,17 @@ void testProgram() {
   EXPECT(parseProgramToString("let x = 10; let y = x + 20; x + y;") == expected);
 }
 
+void testComparisonExpression() { EXPECT(parseToString("x > 5;") == "(> x 5)"); }
+
+void testIfStatementWithElse() {
+  EXPECT(parseProgramToString("if (x > 5) x + 1; else x - 1;") ==
+         "(if (> x 5) (expr (+ x 1)) (expr (- x 1)))");
+}
+
+void testIfStatementWithoutElse() {
+  EXPECT(parseProgramToString("if (1) 10;") == "(if 1 (expr 10))");
+}
+
 void testUnexpectedTokenDiagnostic() {
   minijs::Parser parser("1 + ;");
   minijs::ExprPtr expression = parser.parse();
@@ -91,6 +102,9 @@ void runParserTests() {
   testLetStatementWithVariableInitializer();
   testExpressionStatement();
   testProgram();
+  testComparisonExpression();
+  testIfStatementWithElse();
+  testIfStatementWithoutElse();
   testUnexpectedTokenDiagnostic();
   testMissingRightParenDiagnostic();
   testMissingVariableNameDiagnostic();

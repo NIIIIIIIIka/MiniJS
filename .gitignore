@@ -5,3 +5,4 @@ build-*/
 *.exe
 *.obj
 *.pdb
+.vs/

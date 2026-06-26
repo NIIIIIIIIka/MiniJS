@@ -89,6 +89,20 @@ class LetStmt final : public Stmt {
   ExprPtr initializer_;
 };
 
+class IfStmt final : public Stmt {
+ public:
+  IfStmt(ExprPtr condition, StmtPtr thenBranch, StmtPtr elseBranch);
+
+  const Expr& condition() const;
+  const Stmt& thenBranch() const;
+  const Stmt* elseBranch() const;
+
+ private:
+  ExprPtr condition_;
+  StmtPtr thenBranch_;
+  StmtPtr elseBranch_;
+};
+
 std::string formatExpr(const Expr& expression);
 std::string formatStmt(const Stmt& statement);
 std::string formatProgram(const Program& program);

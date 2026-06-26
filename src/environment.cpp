@@ -1,7 +1,8 @@
 #include "minijs/environment.h"
 
-#include <stdexcept>
 #include <utility>
+
+#include "minijs/runtime_error.h"
 
 namespace minijs {
 
@@ -10,7 +11,7 @@ void Environment::define(std::string name, Value value) { values_[std::move(name
 Value Environment::get(const std::string& name) const {
   const auto it = values_.find(name);
   if (it == values_.end()) {
-    throw std::runtime_error("undefined variable: " + name);
+    throw RuntimeError("undefined variable: " + name);
   }
 
   return it->second;

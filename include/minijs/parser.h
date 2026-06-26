@@ -24,8 +24,11 @@ class Parser {
   StmtPtr statement();
   StmtPtr letDeclaration();
   StmtPtr expressionStatement();
+  StmtPtr ifStatement();
 
   ExprPtr expression();
+  ExprPtr equality();
+  ExprPtr comparison();
   ExprPtr term();
   ExprPtr factor();
   ExprPtr primary();

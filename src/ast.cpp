@@ -17,6 +17,18 @@ std::string binaryOpName(TokenType type) {
       return "/";
     case TokenType::Percent:
       return "%";
+    case TokenType::Greater:
+      return ">";
+    case TokenType::GreaterEqual:
+      return ">=";
+    case TokenType::Less:
+      return "<";
+    case TokenType::LessEqual:
+      return "<=";
+    case TokenType::EqualEqual:
+      return "==";
+    case TokenType::BangEqual:
+      return "!=";
     default:
       throw std::logic_error("unsupported binary operator");
   }
@@ -85,6 +97,17 @@ std::string formatStmt(const Stmt& statement) {
     return "(let " + letStmt->name() + " " + formatExpr(letStmt->initializer()) + ")";
   }
 
+  if (const auto* ifStmt = dynamic_cast<const IfStmt*>(&statement)) {
+    std::string result =
+        "(if " + formatExpr(ifStmt->condition()) + " " + formatStmt(ifStmt->thenBranch());
+
+    if (ifStmt->elseBranch() != nullptr) {
+      result += " " + formatStmt(*ifStmt->elseBranch());
+    }
+
+    result += ")";
+    return result;
+  }
   throw std::logic_error("unknown statement type");
 }
 
@@ -105,5 +128,16 @@ std::string formatProgram(const Program& program) {
 
   return result;
 }
+
+IfStmt::IfStmt(ExprPtr condition, StmtPtr thenBranch, StmtPtr elseBranch)
+    : condition_(std::move(condition)),
+      thenBranch_(std::move(thenBranch)),
+      elseBranch_(std::move(elseBranch)) {}
+
+const Expr& IfStmt::condition() const { return *condition_; }
+
+const Stmt& IfStmt::thenBranch() const { return *thenBranch_; }
+
+const Stmt* IfStmt::elseBranch() const { return elseBranch_.get(); }
 
 }  // namespace minijs
