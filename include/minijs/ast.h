@@ -102,7 +102,39 @@ class IfStmt final : public Stmt {
   StmtPtr thenBranch_;
   StmtPtr elseBranch_;
 };
+class BlockStmt final : public Stmt {
+ public:
+  explicit BlockStmt(Program statements);
 
+  const Program& statements() const;
+
+ private:
+  Program statements_;
+};
+
+class AssignExpr final : public Expr {
+ public:
+  AssignExpr(std::string name, ExprPtr value);
+
+  const std::string& name() const;
+  const Expr& value() const;
+
+ private:
+  std::string name_;
+  ExprPtr value_;
+};
+
+class WhileStmt final : public Stmt {
+ public:
+  WhileStmt(ExprPtr condition, StmtPtr body);
+
+  const Expr& condition() const;
+  const Stmt& body() const;
+
+ private:
+  ExprPtr condition_;
+  StmtPtr body_;
+};
 std::string formatExpr(const Expr& expression);
 std::string formatStmt(const Stmt& statement);
 std::string formatProgram(const Program& program);

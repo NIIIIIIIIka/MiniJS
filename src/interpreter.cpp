@@ -39,6 +39,20 @@ void Interpreter::execute(const Stmt& statement) {
     return;
   }
 
+  if (const auto* blockStmt = dynamic_cast<const BlockStmt*>(&statement)) {
+    for (const StmtPtr& inner : blockStmt->statements()) {
+      if (inner) {
+        execute(*inner);
+      }
+    }
+    return;
+  }
+  if (const auto* whileStmt = dynamic_cast<const WhileStmt*>(&statement)) {
+    while (evaluate(whileStmt->condition()).isTruthy()) {
+      execute(whileStmt->body());
+    }
+    return;
+  }
   throw RuntimeError("unknown statement type");
 }
 
@@ -46,7 +60,11 @@ Value Interpreter::evaluate(const Expr& expression) {
   if (const auto* number = dynamic_cast<const NumberExpr*>(&expression)) {
     return Value(std::stod(number->value()));
   }
-
+  if (const auto* assign = dynamic_cast<const AssignExpr*>(&expression)) {
+    Value value = evaluate(assign->value());
+    environment_.assign(assign->name(), value);
+    return value;
+  }
   if (const auto* variable = dynamic_cast<const VariableExpr*>(&expression)) {
     return environment_.get(variable->name());
   }

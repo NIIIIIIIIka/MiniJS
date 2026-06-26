@@ -42,6 +42,16 @@ void testIfWithVariableCondition() {
 
 void testIfWithoutElse() { EXPECT(run("if (0) 10;").toString() == "null"); }
 
+void testBlock() { EXPECT(run("{ let x = 10; x + 1; }").asNumber() == 11); }
+
+void testIfWithBlockBranches() {
+  EXPECT(run("let x = 10; if (x > 5) { x + 1; } else { x - 1; }").asNumber() == 11);
+}
+
+void testAssignment() { EXPECT(run("let x = 1; x = x + 2; x;").asNumber() == 3); }
+
+void testWhileLoop() { EXPECT(run("let i = 0; while (i < 3) { i = i + 1; } i;").asNumber() == 3); }
+
 void testUndefinedVariable() {
   try {
     run("x + 1;");
@@ -69,6 +79,15 @@ void testModuloByZero() {
   }
 }
 
+void testAssignUndefinedVariable() {
+  try {
+    run("x = 1;");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: undefined variable: x");
+  }
+}
+
 }  // namespace
 
 void runInterpreterTests() {
@@ -82,7 +101,12 @@ void runInterpreterTests() {
   testIfFalseBranch();
   testIfWithVariableCondition();
   testIfWithoutElse();
+  testBlock();
+  testIfWithBlockBranches();
+  testAssignment();
+  testWhileLoop();
   testUndefinedVariable();
   testDivisionByZero();
   testModuloByZero();
+  testAssignUndefinedVariable();
 }

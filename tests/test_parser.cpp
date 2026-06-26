@@ -63,6 +63,24 @@ void testIfStatementWithoutElse() {
   EXPECT(parseProgramToString("if (1) 10;") == "(if 1 (expr 10))");
 }
 
+void testBlockStatement() {
+  EXPECT(parseProgramToString("{ let x = 10; x + 1; }") == "(block (let x 10) (expr (+ x 1)))");
+}
+
+void testIfStatementWithBlockBranches() {
+  EXPECT(parseProgramToString("if (x > 5) { x + 1; } else { x - 1; }") ==
+         "(if (> x 5) (block (expr (+ x 1))) (block (expr (- x 1))))");
+}
+
+void testAssignmentExpression() {
+  EXPECT(parseProgramToString("x = x + 1;") == "(expr (assign x (+ x 1)))");
+}
+
+void testWhileStatement() {
+  EXPECT(parseProgramToString("while (i < 3) { i = i + 1; }") ==
+         "(while (< i 3) (block (expr (assign i (+ i 1)))))");
+}
+
 void testUnexpectedTokenDiagnostic() {
   minijs::Parser parser("1 + ;");
   minijs::ExprPtr expression = parser.parse();
@@ -89,6 +107,24 @@ void testMissingVariableNameDiagnostic() {
   EXPECT(!parser.diagnostics().empty());
   EXPECT(parser.diagnostics()[0].message == "expected variable name");
 }
+
+void testMissingRightBraceDiagnostic() {
+  minijs::Parser parser("{ let x = 10;");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(!program.empty());
+  EXPECT(!parser.diagnostics().empty());
+  EXPECT(parser.diagnostics()[0].message == "expected '}' after block");
+}
+
+void testInvalidAssignmentTargetDiagnostic() {
+  minijs::Parser parser("1 = 2;");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(!program.empty());
+  EXPECT(!parser.diagnostics().empty());
+  EXPECT(parser.diagnostics()[0].message == "invalid assignment target");
+}
 }  // namespace
 
 void runParserTests() {
@@ -105,7 +141,13 @@ void runParserTests() {
   testComparisonExpression();
   testIfStatementWithElse();
   testIfStatementWithoutElse();
+  testBlockStatement();
+  testIfStatementWithBlockBranches();
+  testAssignmentExpression();
+  testWhileStatement();
   testUnexpectedTokenDiagnostic();
   testMissingRightParenDiagnostic();
   testMissingVariableNameDiagnostic();
+  testMissingRightBraceDiagnostic();
+  testInvalidAssignmentTargetDiagnostic();
 }

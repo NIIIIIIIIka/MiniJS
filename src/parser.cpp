@@ -55,7 +55,12 @@ StmtPtr Parser::statement() {
   if (match(TokenType::Let)) {
     return letDeclaration();
   }
-
+  if (match(TokenType::LeftBrace)) {
+    return blockStatement();
+  }
+  if (match(TokenType::While)) {
+    return whileStatement();
+  }
   return expressionStatement();
 }
 
@@ -109,8 +114,44 @@ StmtPtr Parser::ifStatement() {
                                   std::move(elseBranch));
 }
 
-ExprPtr Parser::expression() { return equality(); }
+StmtPtr Parser::blockStatement() {
+  Program statements;
+  while (!check(TokenType::RightBrace) && !isAtEnd()) {
+    statements.push_back(statement());
+  }
+  if (!match(TokenType::RightBrace)) {
+    report(peek(), "expected '}' after block");
+  }
+  return std::make_unique<BlockStmt>(std::move(statements));
+}
 
+StmtPtr Parser::whileStatement() {
+  if (!match(TokenType::LeftParen)) {
+    report(peek(), "expected '(' after while");
+  }
+  ExprPtr condition = expression();
+  if (!match(TokenType::RightParen)) {
+    report(peek(), "expected ')' after while condition");
+  }
+  StmtPtr body = statement();
+
+  return std::make_unique<WhileStmt>(std::move(condition), std::move(body));
+}
+
+ExprPtr Parser::expression() { return assignment(); }
+
+ExprPtr Parser::assignment() {
+  ExprPtr expr = equality();
+  if (match(TokenType::Equal)) {
+    ExprPtr value = assignment();
+    if (const auto* variable = dynamic_cast<const VariableExpr*>(expr.get())) {
+      return std::make_unique<AssignExpr>(variable->name(), std::move(value));
+    }
+    report(previous(), "invalid assignment target");
+  }
+
+  return expr;
+}
 ExprPtr Parser::equality() {
   ExprPtr expr = comparison();
   while (match(TokenType::EqualEqual) || match(TokenType::BangEqual)) {

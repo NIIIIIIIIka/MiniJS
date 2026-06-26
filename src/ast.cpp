@@ -85,6 +85,10 @@ std::string formatExpr(const Expr& expression) {
     return variable->name();
   }
 
+  if (const auto* assign = dynamic_cast<const AssignExpr*>(&expression)) {
+    return "(assign " + assign->name() + " " + formatExpr(assign->value()) + ")";
+  }
+
   throw std::logic_error("unknown expression type");
 }
 
@@ -108,6 +112,24 @@ std::string formatStmt(const Stmt& statement) {
     result += ")";
     return result;
   }
+
+  if (const auto* blockStmt = dynamic_cast<const BlockStmt*>(&statement)) {
+    std::string result = "(block";
+    for (const StmtPtr& inner : blockStmt->statements()) {
+      if (inner) {
+        result += " ";
+        result += formatStmt(*inner);
+      }
+    }
+    result += ")";
+    return result;
+  }
+
+  if (const auto* whileStmt = dynamic_cast<const WhileStmt*>(&statement)) {
+    return "(while " + formatExpr(whileStmt->condition()) + " " + formatStmt(whileStmt->body()) +
+           ")";
+  }
+
   throw std::logic_error("unknown statement type");
 }
 
@@ -134,10 +156,27 @@ IfStmt::IfStmt(ExprPtr condition, StmtPtr thenBranch, StmtPtr elseBranch)
       thenBranch_(std::move(thenBranch)),
       elseBranch_(std::move(elseBranch)) {}
 
+WhileStmt::WhileStmt(ExprPtr condition, StmtPtr body)
+    : condition_(std::move(condition)), body_(std::move(body)) {}
+
+const Expr& WhileStmt::condition() const { return *condition_; }
+
 const Expr& IfStmt::condition() const { return *condition_; }
+
+const Stmt& WhileStmt::body() const { return *body_; }
 
 const Stmt& IfStmt::thenBranch() const { return *thenBranch_; }
 
 const Stmt* IfStmt::elseBranch() const { return elseBranch_.get(); }
+
+BlockStmt::BlockStmt(Program statements) : statements_(std::move(statements)) {}
+
+const Program& BlockStmt::statements() const { return statements_; }
+
+AssignExpr::AssignExpr(std::string name, ExprPtr value)
+    : name_(std::move(name)), value_(std::move(value)) {}
+const std::string& AssignExpr::name() const { return name_; }
+
+const Expr& AssignExpr::value() const { return *value_; }
 
 }  // namespace minijs
