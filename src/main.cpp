@@ -94,7 +94,9 @@ bool runProgram(std::string_view source) {
 
   minijs::Interpreter interpreter;
   const minijs::Value result = interpreter.interpret(program);
-  std::cout << result.toString() << '\n';
+  if (!result.isNull()) {
+    std::cout << result.toString() << '\n';
+  }
   return true;
 }
 }  // namespace
@@ -179,7 +181,7 @@ int main(int argc, char* argv[]) {
   try {
     const std::string source = readFile(argument);
 
-    // Lexer and parser execution will replace this temporary behavior.
+    // 临时行为：后续会替换为完整脚本执行入口。
     std::cout << source;
     return 0;
   } catch (const std::exception& error) {

@@ -33,6 +33,17 @@ void testPercentOperator() { EXPECT(parseToString("10 % 3 + 1;") == "(+ (% 10 3)
 
 void testVariableExpression() { EXPECT(parseToString("x + 20;") == "(+ x 20)"); }
 
+void testBooleanAndNullLiterals() {
+  EXPECT(parseToString("true;") == "true");
+  EXPECT(parseToString("false;") == "false");
+  EXPECT(parseToString("null;") == "null");
+}
+
+void testArrayLiteral() {
+  EXPECT(parseToString("[1, 2, 3];") == "(array 1 2 3)");
+  EXPECT(parseToString("[];") == "(array)");
+}
+
 void testExpressionWithoutSemicolon() { EXPECT(parseToString("1 + 2") == "(+ 1 2)"); }
 
 void testLetStatement() { EXPECT(parseProgramToString("let x = 10;") == "(let x 10)"); }
@@ -76,9 +87,36 @@ void testAssignmentExpression() {
   EXPECT(parseProgramToString("x = x + 1;") == "(expr (assign x (+ x 1)))");
 }
 
+void testIndexExpression() {
+  EXPECT(parseProgramToString("a[0];") == "(expr (index a 0))");
+  EXPECT(parseToString("[1, 2, 3][1];") == "(index (array 1 2 3) 1)");
+}
+
+void testIndexAssignmentExpression() {
+  EXPECT(parseProgramToString("a[1] = 10;") == "(expr (index-assign a 1 10))");
+}
+
 void testWhileStatement() {
   EXPECT(parseProgramToString("while (i < 3) { i = i + 1; }") ==
          "(while (< i 3) (block (expr (assign i (+ i 1)))))");
+}
+
+void testCallExpression() {
+  EXPECT(parseProgramToString("print(1 + 2);") == "(expr (call print (+ 1 2)))");
+}
+
+void testCallExpressionAsFactorOperand() {
+  EXPECT(parseToString("2 * print(1);") == "(* 2 (call print 1))");
+}
+
+void testFunctionDeclaration() {
+  EXPECT(parseProgramToString("function add(a, b) { a + b; }") ==
+         "(function add (a b) (block (expr (+ a b))))");
+}
+
+void testReturnStatement() {
+  EXPECT(parseProgramToString("function add(a, b) { return a + b; }") ==
+         "(function add (a b) (block (return (+ a b))))");
 }
 
 void testUnexpectedTokenDiagnostic() {
@@ -125,6 +163,24 @@ void testInvalidAssignmentTargetDiagnostic() {
   EXPECT(!parser.diagnostics().empty());
   EXPECT(parser.diagnostics()[0].message == "invalid assignment target");
 }
+
+void testMissingRightParenAfterArgumentsDiagnostic() {
+  minijs::Parser parser("print(1;");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(!program.empty());
+  EXPECT(!parser.diagnostics().empty());
+  EXPECT(parser.diagnostics()[0].message == "expected ')' after arguments");
+}
+
+void testMissingFunctionNameDiagnostic() {
+  minijs::Parser parser("function (a) { a; }");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(!program.empty());
+  EXPECT(!parser.diagnostics().empty());
+  EXPECT(parser.diagnostics()[0].message == "expected function name");
+}
 }  // namespace
 
 void runParserTests() {
@@ -133,6 +189,8 @@ void runParserTests() {
   testLeftAssociativity();
   testPercentOperator();
   testVariableExpression();
+  testBooleanAndNullLiterals();
+  testArrayLiteral();
   testExpressionWithoutSemicolon();
   testLetStatement();
   testLetStatementWithVariableInitializer();
@@ -144,10 +202,18 @@ void runParserTests() {
   testBlockStatement();
   testIfStatementWithBlockBranches();
   testAssignmentExpression();
+  testIndexExpression();
+  testIndexAssignmentExpression();
   testWhileStatement();
+  testCallExpression();
+  testCallExpressionAsFactorOperand();
+  testFunctionDeclaration();
+  testReturnStatement();
   testUnexpectedTokenDiagnostic();
   testMissingRightParenDiagnostic();
   testMissingVariableNameDiagnostic();
   testMissingRightBraceDiagnostic();
   testInvalidAssignmentTargetDiagnostic();
+  testMissingRightParenAfterArgumentsDiagnostic();
+  testMissingFunctionNameDiagnostic();
 }

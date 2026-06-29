@@ -1,18 +1,52 @@
 #include "minijs/interpreter.h"
 
 #include <cmath>
+#include <iostream>
+#include <utility>
 
 #include "minijs/runtime_error.h"
 
 namespace minijs {
+namespace {
+class ReturnSignal {
+ public:
+  explicit ReturnSignal(Value value) : value_(value) {}
 
+  const Value& value() const { return value_; }
+
+ private:
+  Value value_;
+};
+
+std::size_t checkedArrayIndex(const Value& index, std::size_t size) {
+  if (!index.isNumber()) {
+    throw RuntimeError("array index must be a non-negative integer");
+  }
+
+  const double number = index.asNumber();
+  if (number < 0 || std::floor(number) != number) {
+    throw RuntimeError("array index must be a non-negative integer");
+  }
+
+  const std::size_t offset = static_cast<std::size_t>(number);
+  if (offset >= size) {
+    throw RuntimeError("array index out of bounds");
+  }
+
+  return offset;
+}
+}  // namespace
 Value Interpreter::interpret(const Program& program) {
   lastValue_ = Value();
 
-  for (const StmtPtr& statement : program) {
-    if (statement) {
-      execute(*statement);
+  try {
+    for (const StmtPtr& statement : program) {
+      if (statement) {
+        execute(*statement);
+      }
     }
+  } catch (const ReturnSignal&) {
+    throw RuntimeError("return outside function");
   }
 
   return lastValue_;
@@ -21,7 +55,7 @@ Value Interpreter::interpret(const Program& program) {
 void Interpreter::execute(const Stmt& statement) {
   if (const auto* letStmt = dynamic_cast<const LetStmt*>(&statement)) {
     Value value = evaluate(letStmt->initializer());
-    environment_.define(letStmt->name(), value);
+    environment_->define(letStmt->name(), value);
     return;
   }
 
@@ -40,19 +74,27 @@ void Interpreter::execute(const Stmt& statement) {
   }
 
   if (const auto* blockStmt = dynamic_cast<const BlockStmt*>(&statement)) {
-    for (const StmtPtr& inner : blockStmt->statements()) {
-      if (inner) {
-        execute(*inner);
-      }
-    }
+    Environment blockEnvironment(environment_);
+    executeBlock(blockStmt->statements(), &blockEnvironment);
     return;
   }
+
   if (const auto* whileStmt = dynamic_cast<const WhileStmt*>(&statement)) {
     while (evaluate(whileStmt->condition()).isTruthy()) {
       execute(whileStmt->body());
     }
     return;
   }
+
+  if (const auto* functionStmt = dynamic_cast<const FunctionStmt*>(&statement)) {
+    environment_->define(functionStmt->name(), Value(functionStmt, environment_));
+    return;
+  }
+
+  if (const auto* returnStmt = dynamic_cast<const ReturnStmt*>(&statement)) {
+    throw ReturnSignal(evaluate(returnStmt->value()));
+  }
+
   throw RuntimeError("unknown statement type");
 }
 
@@ -60,17 +102,56 @@ Value Interpreter::evaluate(const Expr& expression) {
   if (const auto* number = dynamic_cast<const NumberExpr*>(&expression)) {
     return Value(std::stod(number->value()));
   }
+
+  if (const auto* boolean = dynamic_cast<const BoolExpr*>(&expression)) {
+    if (boolean->value() == "true") {
+      return Value(true);
+    } else if (boolean->value() == "false") {
+      return Value(false);
+    }
+    throw RuntimeError("unsupported boolean expression");
+  }
+
+  if (dynamic_cast<const NullExpr*>(&expression) != nullptr) {
+    return Value();
+  }
+
   if (const auto* assign = dynamic_cast<const AssignExpr*>(&expression)) {
     Value value = evaluate(assign->value());
-    environment_.assign(assign->name(), value);
+    environment_->assign(assign->name(), value);
     return value;
   }
+
   if (const auto* variable = dynamic_cast<const VariableExpr*>(&expression)) {
-    return environment_.get(variable->name());
+    return environment_->get(variable->name());
   }
 
   if (const auto* grouping = dynamic_cast<const GroupingExpr*>(&expression)) {
     return evaluate(grouping->expression());
+  }
+
+  if (const auto* array = dynamic_cast<const ArrayExpr*>(&expression)) {
+    std::vector<Value> elements;
+    for (const ExprPtr& element : array->elements()) {
+      elements.push_back(evaluate(*element));
+    }
+    return Value(std::move(elements));
+  }
+
+  if (const auto* index = dynamic_cast<const IndexExpr*>(&expression)) {
+    Value object = evaluate(index->object());
+    Value indexValue = evaluate(index->index());
+    const std::size_t offset = checkedArrayIndex(indexValue, object.asArray().size());
+    return object.asArray()[offset];
+  }
+
+  if (const auto* indexAssign = dynamic_cast<const IndexAssignExpr*>(&expression)) {
+    Value object = evaluate(indexAssign->object());
+    Value indexValue = evaluate(indexAssign->index());
+    Value value = evaluate(indexAssign->value());
+    const std::size_t offset = checkedArrayIndex(indexValue, object.asArray().size());
+    object.asArray()[offset] = value;
+    return value;
   }
 
   if (const auto* binary = dynamic_cast<const BinaryExpr*>(&expression)) {
@@ -113,8 +194,93 @@ Value Interpreter::evaluate(const Expr& expression) {
         throw RuntimeError("unsupported binary operator");
     }
   }
+  if (const auto* call = dynamic_cast<const CallExpr*>(&expression)) {
+    if (call->callee() == "print") {
+      if (call->arguments().size() != 1) {
+        throw RuntimeError("print expects 1 argument");
+      }
+      Value value = evaluate(*call->arguments()[0]);
+      std::cout << value.toString() << '\n';
+      return Value();
+    }
 
+    Value callee;
+    try {
+      callee = environment_->get(call->callee());
+    } catch (const RuntimeError&) {
+      throw RuntimeError("undefined function: " + call->callee());
+    }
+
+    if (!callee.isFunction()) {
+      throw RuntimeError(call->callee() + " is not callable");
+    }
+
+    const FunctionValue& function = callee.asFunction();
+    const FunctionStmt* declaration = function.declaration;
+
+    if (declaration == nullptr) {
+      throw RuntimeError(call->callee() + " is not callable");
+    }
+
+    if (call->arguments().size() != declaration->params().size()) {
+      throw RuntimeError("function " + call->callee() + " expects " +
+                         std::to_string(declaration->params().size()) + " arguments");
+    }
+
+    Environment callEnvironment(function.closure);
+    for (std::size_t i = 0; i < declaration->params().size(); ++i) {
+      callEnvironment.define(declaration->params()[i], evaluate(*call->arguments()[i]));
+    }
+
+    try {
+      return executeBlockWithResult(declaration->body(), &callEnvironment);
+    } catch (const ReturnSignal& signal) {
+      return signal.value();
+    }
+  }
   throw RuntimeError("unknown expression type");
+}
+
+void Interpreter::executeBlock(const Program& statements, Environment* environment) {
+  Environment* previous = environment_;
+  environment_ = environment;
+
+  try {
+    for (const StmtPtr& inner : statements) {
+      if (inner) {
+        execute(*inner);
+      }
+    }
+  } catch (...) {
+    environment_ = previous;
+    throw;
+  }
+
+  environment_ = previous;
+}
+
+Value Interpreter::executeBlockWithResult(const Program& statements, Environment* environment) {
+  Environment* previous_environment = environment_;
+  const Value previous_value = lastValue_;
+  environment_ = environment;
+  lastValue_ = Value();
+
+  try {
+    for (const StmtPtr& inner : statements) {
+      if (inner) {
+        execute(*inner);
+      }
+    }
+  } catch (...) {
+    environment_ = previous_environment;
+    lastValue_ = previous_value;
+    throw;
+  }
+
+  Value result = lastValue_;
+  environment_ = previous_environment;
+  lastValue_ = previous_value;
+  return result;
 }
 
 }  // namespace minijs

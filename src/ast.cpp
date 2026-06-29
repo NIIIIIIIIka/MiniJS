@@ -85,8 +85,46 @@ std::string formatExpr(const Expr& expression) {
     return variable->name();
   }
 
+  if (const auto* array = dynamic_cast<const ArrayExpr*>(&expression)) {
+    std::string result = "(array";
+    for (const ExprPtr& element : array->elements()) {
+      result += " ";
+      result += formatExpr(*element);
+    }
+    result += ")";
+    return result;
+  }
+
+  if (const auto* boolean = dynamic_cast<const BoolExpr*>(&expression)) {
+    return boolean->value();
+  }
+
+  if (const auto* null = dynamic_cast<const NullExpr*>(&expression)) {
+    return null->value();
+  }
+
   if (const auto* assign = dynamic_cast<const AssignExpr*>(&expression)) {
     return "(assign " + assign->name() + " " + formatExpr(assign->value()) + ")";
+  }
+
+  if (const auto* index = dynamic_cast<const IndexExpr*>(&expression)) {
+    return "(index " + formatExpr(index->object()) + " " + formatExpr(index->index()) + ")";
+  }
+
+  if (const auto* indexAssign = dynamic_cast<const IndexAssignExpr*>(&expression)) {
+    return "(index-assign " + formatExpr(indexAssign->object()) + " " +
+           formatExpr(indexAssign->index()) + " " + formatExpr(indexAssign->value()) + ")";
+  }
+
+  if (const auto* call = dynamic_cast<const CallExpr*>(&expression)) {
+    std::string result = "(call " + call->callee();
+
+    for (const ExprPtr& arg : call->arguments()) {
+      result += " " + formatExpr(*arg);
+    }
+
+    result += ")";
+    return result;
   }
 
   throw std::logic_error("unknown expression type");
@@ -130,6 +168,30 @@ std::string formatStmt(const Stmt& statement) {
            ")";
   }
 
+  if (const auto* functionStmt = dynamic_cast<const FunctionStmt*>(&statement)) {
+    std::string result = "(function " + functionStmt->name() + " (";
+
+    for (std::size_t i = 0; i < functionStmt->params().size(); ++i) {
+      if (i != 0) {
+        result += " ";
+      }
+      result += functionStmt->params()[i];
+    }
+
+    result += ") (block";
+    for (const StmtPtr& inner : functionStmt->body()) {
+      if (inner) {
+        result += " ";
+        result += formatStmt(*inner);
+      }
+    }
+    result += "))";
+    return result;
+  }
+
+  if (const auto* returnStmt = dynamic_cast<const ReturnStmt*>(&statement)) {
+    return "(return " + formatExpr(returnStmt->value()) + ")";
+  }
   throw std::logic_error("unknown statement type");
 }
 
@@ -163,6 +225,15 @@ const Expr& WhileStmt::condition() const { return *condition_; }
 
 const Expr& IfStmt::condition() const { return *condition_; }
 
+FunctionStmt::FunctionStmt(std::string name, std::vector<std::string> params, Program body)
+    : name_(std::move(name)), params_(std::move(params)), body_(std::move(body)) {}
+
+const std::string& FunctionStmt::name() const { return name_; }
+
+const std::vector<std::string>& FunctionStmt::params() const { return params_; }
+
+const Program& FunctionStmt::body() const { return body_; }
+
 const Stmt& WhileStmt::body() const { return *body_; }
 
 const Stmt& IfStmt::thenBranch() const { return *thenBranch_; }
@@ -179,4 +250,46 @@ const std::string& AssignExpr::name() const { return name_; }
 
 const Expr& AssignExpr::value() const { return *value_; }
 
+CallExpr::CallExpr(std::string callee, std::vector<ExprPtr> arguments)
+    : callee_(std::move(callee)), arguments_(std::move(arguments)) {}
+
+const std::string& CallExpr::callee() const { return callee_; }
+
+const std::vector<ExprPtr>& CallExpr::arguments() const { return arguments_; }
+
+ReturnStmt::ReturnStmt(ExprPtr value) : value_(std::move(value)) {}
+
+const Expr& ReturnStmt::value() const { return *value_; }
+
+NullExpr::NullExpr(std::string value) : value_(std::move(value)) {}
+
+const std::string& NullExpr::value() const { return value_; }
+
+BoolExpr::BoolExpr(std::string value) : value_(std::move(value)) {}
+
+const std::string& BoolExpr::value() const { return value_; }
+
+ArrayExpr::ArrayExpr(std::vector<ExprPtr> elements) : elements_(std::move(elements)) {}
+
+const std::vector<ExprPtr>& ArrayExpr::elements() const { return elements_; }
+
+IndexExpr::IndexExpr(ExprPtr object, ExprPtr index)
+    : object_(std::move(object)), index_(std::move(index)) {}
+
+const Expr& IndexExpr::object() const { return *object_; }
+
+const Expr& IndexExpr::index() const { return *index_; }
+
+ExprPtr IndexExpr::takeObject() { return std::move(object_); }
+
+ExprPtr IndexExpr::takeIndex() { return std::move(index_); }
+
+IndexAssignExpr::IndexAssignExpr(ExprPtr object, ExprPtr index, ExprPtr value)
+    : object_(std::move(object)), index_(std::move(index)), value_(std::move(value)) {}
+
+const Expr& IndexAssignExpr::object() const { return *object_; }
+
+const Expr& IndexAssignExpr::index() const { return *index_; }
+
+const Expr& IndexAssignExpr::value() const { return *value_; }
 }  // namespace minijs

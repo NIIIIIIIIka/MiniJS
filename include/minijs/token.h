@@ -5,8 +5,10 @@
 #include "minijs/source_location.h"
 
 namespace minijs {
+
+// MiniJS 源码中的 token 类型。
 enum class TokenType {
-  // Single-character punctuation.
+  // 单字符分隔符。
   LeftParen,
   RightParen,
   LeftBracket,
@@ -18,14 +20,14 @@ enum class TokenType {
   Semicolon,
   Colon,
 
-  // Arithmetic operators.
+  // 算术运算符。
   Plus,
   Minus,
   Star,
   Slash,
   Percent,
 
-  // Assignment, comparison, and logical-not operators.
+  // 赋值、比较和逻辑非运算符。
   Equal,
   EqualEqual,
   Bang,
@@ -35,7 +37,7 @@ enum class TokenType {
   Greater,
   GreaterEqual,
 
-  // Literals.
+  // 字面量和标识符。
   Identifier,
   Number,
   String,
@@ -44,7 +46,7 @@ enum class TokenType {
   Null,
   Undefined,
 
-  // Reserved words.
+  // 保留关键字。
   Let,
   If,
   Else,
@@ -52,16 +54,19 @@ enum class TokenType {
   Function,
   Return,
 
+  // 特殊 token。
   Invalid,
   Eof
 };
 
+// 词法分析器输出的单个 token。
 struct Token {
   TokenType type;
   std::string_view lexeme;
   SourceLocation location;
 };
 
+// 返回 token 类型的调试名称。
 std::string_view tokenTypeName(TokenType type);
 
 }  // namespace minijs

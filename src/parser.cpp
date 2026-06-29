@@ -61,6 +61,12 @@ StmtPtr Parser::statement() {
   if (match(TokenType::While)) {
     return whileStatement();
   }
+  if (match(TokenType::Function)) {
+    return functionDeclaration();
+  }
+  if (match(TokenType::Return)) {
+    return returnStatement();
+  }
   return expressionStatement();
 }
 
@@ -114,16 +120,7 @@ StmtPtr Parser::ifStatement() {
                                   std::move(elseBranch));
 }
 
-StmtPtr Parser::blockStatement() {
-  Program statements;
-  while (!check(TokenType::RightBrace) && !isAtEnd()) {
-    statements.push_back(statement());
-  }
-  if (!match(TokenType::RightBrace)) {
-    report(peek(), "expected '}' after block");
-  }
-  return std::make_unique<BlockStmt>(std::move(statements));
-}
+StmtPtr Parser::blockStatement() { return std::make_unique<BlockStmt>(block()); }
 
 StmtPtr Parser::whileStatement() {
   if (!match(TokenType::LeftParen)) {
@@ -138,6 +135,62 @@ StmtPtr Parser::whileStatement() {
   return std::make_unique<WhileStmt>(std::move(condition), std::move(body));
 }
 
+StmtPtr Parser::returnStatement() {
+  ExprPtr value = expression();
+
+  if (!match(TokenType::Semicolon)) {
+    report(peek(), "expected ';' after return value");
+  }
+
+  return std::make_unique<ReturnStmt>(std::move(value));
+}
+
+StmtPtr Parser::functionDeclaration() {
+  if (!check(TokenType::Identifier)) {
+    report(peek(), "expected function name");
+    return nullptr;
+  }
+  const Token name = advance();
+  if (!match(TokenType::LeftParen)) {
+    report(peek(), "expected '(' after function name");
+  }
+  std::vector<std::string> params;
+  if (!check(TokenType::RightParen)) {
+    do {
+      if (!check(TokenType::Identifier)) {
+        report(peek(), "expected parameter name");
+        break;
+      }
+
+      params.push_back(std::string(advance().lexeme));
+    } while (match(TokenType::Comma));
+  }
+
+  if (!match(TokenType::RightParen)) {
+    report(peek(), "expected ')' after parameters");
+  }
+
+  if (!match(TokenType::LeftBrace)) {
+    report(peek(), "expected '{' before function body");
+    return nullptr;
+  }
+
+  Program body = block();
+  return std::make_unique<FunctionStmt>(std::string(name.lexeme), std::move(params),
+                                        std::move(body));
+}
+
+Program Parser::block() {
+  Program statements;
+  while (!check(TokenType::RightBrace) && !isAtEnd()) {
+    statements.push_back(statement());
+  }
+  if (!match(TokenType::RightBrace)) {
+    report(peek(), "expected '}' after block");
+  }
+  return statements;
+}
+
 ExprPtr Parser::expression() { return assignment(); }
 
 ExprPtr Parser::assignment() {
@@ -147,9 +200,12 @@ ExprPtr Parser::assignment() {
     if (const auto* variable = dynamic_cast<const VariableExpr*>(expr.get())) {
       return std::make_unique<AssignExpr>(variable->name(), std::move(value));
     }
+    if (auto* index = dynamic_cast<IndexExpr*>(expr.get())) {
+      return std::make_unique<IndexAssignExpr>(index->takeObject(), index->takeIndex(),
+                                               std::move(value));
+    }
     report(previous(), "invalid assignment target");
   }
-
   return expr;
 }
 ExprPtr Parser::equality() {
@@ -185,12 +241,56 @@ ExprPtr Parser::term() {
 }
 
 ExprPtr Parser::factor() {
-  ExprPtr expr = primary();
+  ExprPtr expr = call();
 
   while (match(TokenType::Star) || match(TokenType::Slash) || match(TokenType::Percent)) {
     const TokenType op = previous().type;
-    ExprPtr right = primary();
+    ExprPtr right = call();
     expr = std::make_unique<BinaryExpr>(std::move(expr), op, std::move(right));
+  }
+
+  return expr;
+}
+
+ExprPtr Parser::call() {
+  ExprPtr expr = primary();
+
+  while (true) {
+    if (match(TokenType::LeftParen)) {
+      std::vector<ExprPtr> arguments;
+
+      if (!check(TokenType::RightParen)) {
+        do {
+          arguments.push_back(expression());
+        } while (match(TokenType::Comma));
+      }
+
+      if (!match(TokenType::RightParen)) {
+        report(peek(), "expected ')' after arguments");
+      }
+
+      const auto* variable = dynamic_cast<const VariableExpr*>(expr.get());
+      if (variable == nullptr) {
+        report(previous(), "can only call named function");
+        return expr;
+      }
+
+      expr = std::make_unique<CallExpr>(variable->name(), std::move(arguments));
+      continue;
+    }
+
+    if (match(TokenType::LeftBracket)) {
+      ExprPtr index = expression();
+
+      if (!match(TokenType::RightBracket)) {
+        report(peek(), "expected ']' after index");
+      }
+
+      expr = std::make_unique<IndexExpr>(std::move(expr), std::move(index));
+      continue;
+    }
+
+    break;
   }
 
   return expr;
@@ -202,11 +302,6 @@ ExprPtr Parser::primary() {
     return std::make_unique<NumberExpr>(std::string(token.lexeme));
   }
 
-  if (match(TokenType::Identifier)) {
-    const Token& token = previous();
-    return std::make_unique<VariableExpr>(std::string(token.lexeme));
-  }
-
   if (match(TokenType::LeftParen)) {
     ExprPtr expr = expression();
 
@@ -215,6 +310,40 @@ ExprPtr Parser::primary() {
     }
 
     return std::make_unique<GroupingExpr>(std::move(expr));
+  }
+
+  if (match(TokenType::Identifier)) {
+    const Token& token = previous();
+    return std::make_unique<VariableExpr>(std::string(token.lexeme));
+  }
+
+  if (match(TokenType::Null)) {
+    const Token& token = previous();
+    return std::make_unique<NullExpr>(std::string(token.lexeme));
+  }
+
+  if (match(TokenType::True)) {
+    const Token& token = previous();
+    return std::make_unique<BoolExpr>(std::string(token.lexeme));
+  }
+
+  if (match(TokenType::False)) {
+    const Token& token = previous();
+    return std::make_unique<BoolExpr>(std::string(token.lexeme));
+  }
+
+  if (match(TokenType::LeftBracket)) {
+    std::vector<ExprPtr> elements;
+    if (!check(TokenType::RightBracket)) {
+      do {
+        elements.push_back(expression());
+      } while (match(TokenType::Comma));
+    }
+
+    if (!match(TokenType::RightBracket)) {
+      report(peek(), "expected ']' after array literal");
+    }
+    return std::make_unique<ArrayExpr>(std::move(elements));
   }
 
   report(peek(), "expected expression");
