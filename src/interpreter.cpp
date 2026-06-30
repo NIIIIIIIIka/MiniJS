@@ -93,7 +93,11 @@ void Interpreter::execute(const Stmt& statement) {
   }
 
   if (const auto* returnStmt = dynamic_cast<const ReturnStmt*>(&statement)) {
-    throw ReturnSignal(evaluate(returnStmt->value()));
+    if (returnStmt->value() == nullptr) {
+      throw ReturnSignal(Value::undefined());
+    }
+
+    throw ReturnSignal(evaluate(*returnStmt->value()));
   }
 
   throw RuntimeError("unknown statement type");
@@ -162,7 +166,38 @@ Value Interpreter::evaluate(const Expr& expression) {
     object.asArray()[offset] = value;
     return value;
   }
+  if (const auto* unary = dynamic_cast<const UnaryExpr*>(&expression)) {
+    Value right = evaluate(unary->right());
+    switch (unary->op()) {
+      case (TokenType::Bang):
+        return Value(!right.isTruthy());
+      case (TokenType::Minus):
+        if (right.isNumber()) return Value(-right.asNumber());
+        throw RuntimeError("unsupported object to use '-'");
+      default:
+        throw RuntimeError("unsupported unary operator");
+    }
+  }
 
+  if (const auto* logical = dynamic_cast<const LogicalExpr*>(&expression)) {
+    Value left = evaluate(logical->left());
+
+    if (logical->op() == TokenType::OrOr) {
+      if (left.isTruthy()) {
+        return left;
+      }
+      return evaluate(logical->right());
+    }
+
+    if (logical->op() == TokenType::AndAnd) {
+      if (!left.isTruthy()) {
+        return left;
+      }
+      return evaluate(logical->right());
+    }
+
+    throw RuntimeError("unsupported logical operator");
+  }
   if (const auto* binary = dynamic_cast<const BinaryExpr*>(&expression)) {
     const Value left = evaluate(binary->left());
     const Value right = evaluate(binary->right());
@@ -275,7 +310,8 @@ Value Interpreter::evaluate(const Expr& expression) {
     }
 
     try {
-      return executeBlockWithResult(declaration->body(), &callEnvironment);
+      executeBlock(declaration->body(), &callEnvironment);
+      return Value::undefined();
     } catch (const ReturnSignal& signal) {
       return signal.value();
     }
@@ -366,30 +402,6 @@ void Interpreter::executeBlock(const Program& statements, Environment* environme
   }
 
   environment_ = previous;
-}
-
-Value Interpreter::executeBlockWithResult(const Program& statements, Environment* environment) {
-  Environment* previous_environment = environment_;
-  const Value previous_value = lastValue_;
-  environment_ = environment;
-  lastValue_ = Value();
-
-  try {
-    for (const StmtPtr& inner : statements) {
-      if (inner) {
-        execute(*inner);
-      }
-    }
-  } catch (...) {
-    environment_ = previous_environment;
-    lastValue_ = previous_value;
-    throw;
-  }
-
-  Value result = lastValue_;
-  environment_ = previous_environment;
-  lastValue_ = previous_value;
-  return result;
 }
 
 }  // namespace minijs

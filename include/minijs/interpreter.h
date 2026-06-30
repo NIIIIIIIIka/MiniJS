@@ -22,9 +22,6 @@ class Interpreter {
   // 在指定环境中执行语句列表，不改变调用方可见的最后结果语义。
   void executeBlock(const Program& statements, Environment* environment);
 
-  // 在指定环境中执行语句列表，并返回该语句列表的最后结果。
-  Value executeBlockWithResult(const Program& statements, Environment* environment);
-
   Environment global_environment_;
   Environment* environment_ = &global_environment_;
   Value lastValue_;

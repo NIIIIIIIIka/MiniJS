@@ -161,6 +161,15 @@ Token Lexer::nextToken() {
       return makeToken(TokenType::Greater, start, startLocation);
     case '"':
       return scanString(start, startLocation);
+    case '&':
+      if (match('&')) return makeToken(TokenType::AndAnd, start, startLocation);
+      report(startLocation, "unexpected character");
+      return makeToken(TokenType::Invalid, start, startLocation);
+
+    case '|':
+      if (match('|')) return makeToken(TokenType::OrOr, start, startLocation);
+      report(startLocation, "unexpected character");
+      return makeToken(TokenType::Invalid, start, startLocation);
     default:
       report(startLocation, "unexpected character");
       return makeToken(TokenType::Invalid, start, startLocation);

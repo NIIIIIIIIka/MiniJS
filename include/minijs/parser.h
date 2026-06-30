@@ -62,6 +62,10 @@ class Parser {
   // 解析相等比较表达式。
   ExprPtr equality();
 
+  ExprPtr logicalOr();
+
+  ExprPtr logicalAnd();
+
   // 解析大小比较表达式。
   ExprPtr comparison();
 
@@ -70,6 +74,9 @@ class Parser {
 
   // 解析乘除取模表达式。
   ExprPtr factor();
+
+  // 一元运算
+  ExprPtr unary();
 
   // 解析函数调用表达式。
   ExprPtr call();

@@ -111,10 +111,36 @@ class ObjectExpr final : public Expr {
   std::vector<ObjectProperty> properties_;
 };
 
+class UnaryExpr final : public Expr {
+ public:
+  UnaryExpr(TokenType op, ExprPtr right);
+
+  TokenType op() const;
+  const Expr& right() const;
+
+ private:
+  TokenType op_;
+  ExprPtr right_;
+};
+
 // 二元运算表达式，例如 a + b 或 x <= y。
 class BinaryExpr final : public Expr {
  public:
   BinaryExpr(ExprPtr left, TokenType op, ExprPtr right);
+  const Expr& left() const;
+  TokenType op() const;
+  const Expr& right() const;
+
+ private:
+  ExprPtr left_;
+  TokenType op_;
+  ExprPtr right_;
+};
+
+class LogicalExpr final : public Expr {
+ public:
+  LogicalExpr(ExprPtr left, TokenType op, ExprPtr right);
+
   const Expr& left() const;
   TokenType op() const;
   const Expr& right() const;
@@ -304,7 +330,7 @@ class FunctionStmt final : public Stmt {
 class ReturnStmt final : public Stmt {
  public:
   explicit ReturnStmt(ExprPtr value);
-  const Expr& value() const;
+  const Expr* value() const;
 
  private:
   ExprPtr value_;

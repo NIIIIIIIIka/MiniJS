@@ -76,6 +76,16 @@ void testProgram() {
 
 void testComparisonExpression() { EXPECT(parseToString("x > 5;") == "(> x 5)"); }
 
+void testUnaryExpression() {
+  EXPECT(parseToString("!true;") == "(! true)");
+  EXPECT(parseToString("-1;") == "(- 1)");
+}
+
+void testLogicalExpressionPrecedence() {
+  EXPECT(parseToString("a && b || c;") == "(|| (&& a b) c)");
+  EXPECT(parseToString("a || b && c;") == "(|| a (&& b c))");
+}
+
 void testIfStatementWithElse() {
   EXPECT(parseProgramToString("if (x > 5) x + 1; else x - 1;") ==
          "(if (> x 5) (expr (+ x 1)) (expr (- x 1)))");
@@ -137,6 +147,10 @@ void testFunctionDeclaration() {
 void testReturnStatement() {
   EXPECT(parseProgramToString("function add(a, b) { return a + b; }") ==
          "(function add (a b) (block (return (+ a b))))");
+}
+
+void testBareReturnStatement() {
+  EXPECT(parseProgramToString("function f() { return; }") == "(function f () (block (return)))");
 }
 
 void testUnexpectedTokenDiagnostic() {
@@ -219,6 +233,8 @@ void runParserTests() {
   testExpressionStatement();
   testProgram();
   testComparisonExpression();
+  testUnaryExpression();
+  testLogicalExpressionPrecedence();
   testIfStatementWithElse();
   testIfStatementWithoutElse();
   testBlockStatement();
@@ -234,6 +250,7 @@ void runParserTests() {
   testMethodCallExpression();
   testFunctionDeclaration();
   testReturnStatement();
+  testBareReturnStatement();
   testUnexpectedTokenDiagnostic();
   testMissingRightParenDiagnostic();
   testMissingVariableNameDiagnostic();

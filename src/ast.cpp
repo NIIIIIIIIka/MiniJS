@@ -29,8 +29,23 @@ std::string binaryOpName(TokenType type) {
       return "==";
     case TokenType::BangEqual:
       return "!=";
+    case TokenType::AndAnd:
+      return "&&";
+    case TokenType::OrOr:
+      return "||";
     default:
       throw std::logic_error("unsupported binary operator");
+  }
+}
+
+std::string unaryOpName(TokenType type) {
+  switch (type) {
+    case TokenType::Bang:
+      return "!";
+    case TokenType::Minus:
+      return "-";
+    default:
+      throw std::logic_error("unsupported unary operator");
   }
 }
 
@@ -93,6 +108,21 @@ const Expr& BinaryExpr::left() const { return *left_; }
 TokenType BinaryExpr::op() const { return op_; }
 
 const Expr& BinaryExpr::right() const { return *right_; }
+
+LogicalExpr::LogicalExpr(ExprPtr left, TokenType op, ExprPtr right)
+    : left_(std::move(left)), op_(op), right_(std::move(right)) {}
+
+const Expr& LogicalExpr::left() const { return *left_; }
+
+TokenType LogicalExpr::op() const { return op_; }
+
+const Expr& LogicalExpr::right() const { return *right_; }
+
+UnaryExpr::UnaryExpr(TokenType op, ExprPtr right) : op_(op), right_(std::move(right)) {}
+
+TokenType UnaryExpr::op() const { return op_; }
+
+const Expr& UnaryExpr::right() const { return *right_; }
 
 GroupingExpr::GroupingExpr(ExprPtr expression) : expression_(std::move(expression)) {}
 
@@ -203,7 +233,7 @@ const Program& FunctionStmt::body() const { return body_; }
 
 ReturnStmt::ReturnStmt(ExprPtr value) : value_(std::move(value)) {}
 
-const Expr& ReturnStmt::value() const { return *value_; }
+const Expr* ReturnStmt::value() const { return value_.get(); }
 
 std::string formatExpr(const Expr& expression) {
   if (const auto* string = dynamic_cast<const StringExpr*>(&expression)) {
@@ -256,6 +286,14 @@ std::string formatExpr(const Expr& expression) {
   if (const auto* binary = dynamic_cast<const BinaryExpr*>(&expression)) {
     return "(" + binaryOpName(binary->op()) + " " + formatExpr(binary->left()) + " " +
            formatExpr(binary->right()) + ")";
+  }
+  if (const auto* logical = dynamic_cast<const LogicalExpr*>(&expression)) {
+    return "(" + binaryOpName(logical->op()) + " " + formatExpr(logical->left()) + " " +
+           formatExpr(logical->right()) + ")";
+  }
+
+  if (const auto* unary = dynamic_cast<const UnaryExpr*>(&expression)) {
+    return "(" + unaryOpName(unary->op()) + " " + formatExpr(unary->right()) + ")";
   }
 
   if (const auto* grouping = dynamic_cast<const GroupingExpr*>(&expression)) {
@@ -361,7 +399,11 @@ std::string formatStmt(const Stmt& statement) {
   }
 
   if (const auto* returnStmt = dynamic_cast<const ReturnStmt*>(&statement)) {
-    return "(return " + formatExpr(returnStmt->value()) + ")";
+    if (returnStmt->value() == nullptr) {
+      return "(return)";
+    }
+
+    return "(return " + formatExpr(*returnStmt->value()) + ")";
   }
 
   throw std::logic_error("unknown statement type");

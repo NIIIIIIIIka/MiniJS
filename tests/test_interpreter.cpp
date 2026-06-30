@@ -34,6 +34,30 @@ void testComparison() {
   EXPECT(run("2 >= 2;").toString() == "true");
 }
 
+void testUnaryOperators() {
+  EXPECT(run("!true;").toString() == "false");
+  EXPECT(run("!false;").toString() == "true");
+  EXPECT(run("!0;").toString() == "true");
+  EXPECT(run("!1;").toString() == "false");
+  EXPECT(run("!null;").toString() == "true");
+  EXPECT(run("!undefined;").toString() == "true");
+  EXPECT(run("-10;").asNumber() == -10);
+}
+
+void testLogicalOperators() {
+  EXPECT(run("false && 1;").toString() == "false");
+  EXPECT(run("true && 1;").asNumber() == 1);
+  EXPECT(run("true || 1;").toString() == "true");
+  EXPECT(run("false || 1;").asNumber() == 1);
+  EXPECT(run("0 || 123;").asNumber() == 123);
+  EXPECT(run("1 && 123;").asNumber() == 123);
+}
+
+void testLogicalShortCircuit() {
+  EXPECT(run("false && unknown;").toString() == "false");
+  EXPECT(run("true || unknown;").toString() == "true");
+}
+
 void testBooleanAndNullLiterals() {
   EXPECT(run("true;").toString() == "true");
   EXPECT(run("false;").toString() == "false");
@@ -213,10 +237,12 @@ void testPrintArity() {
   }
 }
 
-void testFunctionCall() { EXPECT(run("function add(a, b) { a + b; } add(1, 2);").asNumber() == 3); }
+void testFunctionCall() {
+  EXPECT(run("function add(a, b) { return a + b; } add(1, 2);").asNumber() == 3);
+}
 
 void testFunctionCallCanUseOuterVariable() {
-  EXPECT(run("let base = 10; function add(x) { base + x; } add(5);").asNumber() == 15);
+  EXPECT(run("let base = 10; function add(x) { return base + x; } add(5);").asNumber() == 15);
 }
 
 void testFunctionArity() {
@@ -240,6 +266,15 @@ void testNonCallableValue() {
 void testReturnFromFunction() {
   EXPECT(run("function add(a, b) { return a + b; } add(1, 2);").asNumber() == 3);
 }
+
+void testBareReturnFromFunction() { EXPECT(run("function f() { return; } f();").isUndefined()); }
+
+void testFunctionWithoutReturnReturnsUndefined() {
+  EXPECT(run("function f() { let x = 1; } f();").isUndefined());
+  EXPECT(run("function f() { 1; } f();").isUndefined());
+}
+
+void testReturnValueStillWorks() { EXPECT(run("function f() { return 1; } f();").asNumber() == 1); }
 
 void testEarlyReturnFromFunction() {
   EXPECT(run("function test(x) { if (x > 0) { return 1; } return 2; } test(10);").asNumber() == 1);
@@ -364,6 +399,9 @@ void runInterpreterTests() {
   testPercent();
   testGrouping();
   testComparison();
+  testUnaryOperators();
+  testLogicalOperators();
+  testLogicalShortCircuit();
   testBooleanAndNullLiterals();
   testUndefinedIsFalsy();
   testStringLiteral();
@@ -401,6 +439,9 @@ void runInterpreterTests() {
   testFunctionArity();
   testNonCallableValue();
   testReturnFromFunction();
+  testBareReturnFromFunction();
+  testFunctionWithoutReturnReturnsUndefined();
+  testReturnValueStillWorks();
   testEarlyReturnFromFunction();
   testRecursiveFunction();
   testReturnOutsideFunction();

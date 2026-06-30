@@ -36,6 +36,8 @@ enum class TokenType {
   LessEqual,
   Greater,
   GreaterEqual,
+  AndAnd,
+  OrOr,
 
   // 字面量和标识符。
   Identifier,

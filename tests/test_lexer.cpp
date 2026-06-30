@@ -91,10 +91,11 @@ void testOperators() {
   const std::vector<TokenType> expected{
       TokenType::Bang,  TokenType::BangEqual, TokenType::Equal,   TokenType::EqualEqual,
       TokenType::Less,  TokenType::LessEqual, TokenType::Greater, TokenType::GreaterEqual,
-      TokenType::Slash, TokenType::Percent,   TokenType::Eof,
+      TokenType::Slash, TokenType::Percent,   TokenType::AndAnd,  TokenType::OrOr,
+      TokenType::Eof,
   };
 
-  EXPECT(scanTypes("! != = == < <= > >= / %") == expected);
+  EXPECT(scanTypes("! != = == < <= > >= / % && ||") == expected);
 }
 
 void testLiteralsAndComments() {

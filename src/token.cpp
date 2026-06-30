@@ -80,6 +80,10 @@ std::string_view tokenTypeName(TokenType type) {
       return "Invalid";
     case TokenType::Eof:
       return "Eof";
+    case TokenType::AndAnd:
+      return "AndAnd";
+    case TokenType::OrOr:
+      return "OrOr";
   }
 
   return "Unknown";

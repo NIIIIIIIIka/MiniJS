@@ -173,7 +173,10 @@ StmtPtr Parser::whileStatement() {
 }
 
 StmtPtr Parser::returnStatement() {
-  ExprPtr value = expression();
+  ExprPtr value;
+  if (!check(TokenType::Semicolon)) {
+    value = expression();
+  }
 
   if (!match(TokenType::Semicolon)) {
     report(peek(), "expected ';' after return value");
@@ -231,7 +234,7 @@ Program Parser::block() {
 ExprPtr Parser::expression() { return assignment(); }
 
 ExprPtr Parser::assignment() {
-  ExprPtr expr = equality();
+  ExprPtr expr = logicalOr();
   if (match(TokenType::Equal)) {
     ExprPtr value = assignment();
     if (const auto* variable = dynamic_cast<const VariableExpr*>(expr.get())) {
@@ -248,6 +251,26 @@ ExprPtr Parser::assignment() {
   }
   return expr;
 }
+ExprPtr Parser::logicalOr() {
+  ExprPtr expr = logicalAnd();
+  while (match(TokenType::OrOr)) {
+    const TokenType op = previous().type;
+    ExprPtr right = logicalAnd();
+    expr = std::make_unique<LogicalExpr>(std::move(expr), op, std::move(right));
+  }
+  return expr;
+}
+
+ExprPtr Parser::logicalAnd() {
+  ExprPtr expr = equality();
+  while (match(TokenType::AndAnd)) {
+    const TokenType op = previous().type;
+    ExprPtr right = equality();
+    expr = std::make_unique<LogicalExpr>(std::move(expr), op, std::move(right));
+  }
+  return expr;
+}
+
 ExprPtr Parser::equality() {
   ExprPtr expr = comparison();
   while (match(TokenType::EqualEqual) || match(TokenType::BangEqual)) {
@@ -281,15 +304,24 @@ ExprPtr Parser::term() {
 }
 
 ExprPtr Parser::factor() {
-  ExprPtr expr = call();
+  ExprPtr expr = unary();
 
   while (match(TokenType::Star) || match(TokenType::Slash) || match(TokenType::Percent)) {
     const TokenType op = previous().type;
-    ExprPtr right = call();
+    ExprPtr right = unary();
     expr = std::make_unique<BinaryExpr>(std::move(expr), op, std::move(right));
   }
 
   return expr;
+}
+
+ExprPtr Parser::unary() {
+  if (match(TokenType::Bang) || match(TokenType::Minus)) {
+    TokenType op = previous().type;
+    ExprPtr right = unary();
+    return std::make_unique<UnaryExpr>(op, std::move(right));
+  }
+  return call();
 }
 
 ExprPtr Parser::call() {
