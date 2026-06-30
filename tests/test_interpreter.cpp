@@ -40,6 +40,17 @@ void testBooleanAndNullLiterals() {
   EXPECT(run("null;").isNull());
 }
 
+void testStringLiteral() {
+  EXPECT(run("\"Tom\";").toString() == "Tom");
+  EXPECT(run("\"\";").toString() == "");
+}
+
+void testStringConcatenation() {
+  EXPECT(run("\"hello \" + \"world\";").toString() == "hello world");
+  EXPECT(run("\"age: \" + 18;").toString() == "age: 18");
+  EXPECT(run("18 + \" years\";").toString() == "18 years");
+}
+
 void testIfTrueBranch() { EXPECT(run("if (1) 10; else 20;").asNumber() == 10); }
 
 void testIfFalseBranch() { EXPECT(run("if (0) 10; else 20;").asNumber() == 20); }
@@ -96,6 +107,10 @@ void testArrayReferenceSemantics() {
 void testObjectLiteralAndGet() {
   EXPECT(run("let p = { age: 18, score: 100 }; p.age;").asNumber() == 18);
   EXPECT(run("let p = {}; p;").toString() == "[object Object]");
+}
+
+void testObjectStringProperty() {
+  EXPECT(run("let p = { name: \"Tom\", age: 18 }; p.name;").toString() == "Tom");
 }
 
 void testObjectPropertyAssignment() {
@@ -162,6 +177,17 @@ void testPrint() {
 
   std::cout.rdbuf(previous);
   EXPECT(output.str() == "3\n");
+  EXPECT(result.isNull());
+}
+
+void testPrintString() {
+  std::ostringstream output;
+  std::streambuf* previous = std::cout.rdbuf(output.rdbuf());
+
+  const minijs::Value result = run("print(\"Tom\");");
+
+  std::cout.rdbuf(previous);
+  EXPECT(output.str() == "Tom\n");
   EXPECT(result.isNull());
 }
 
@@ -275,6 +301,8 @@ void runInterpreterTests() {
   testGrouping();
   testComparison();
   testBooleanAndNullLiterals();
+  testStringLiteral();
+  testStringConcatenation();
   testIfTrueBranch();
   testIfFalseBranch();
   testIfWithBooleanAndNullConditions();
@@ -290,6 +318,7 @@ void runInterpreterTests() {
   testArrayElementAssignment();
   testArrayReferenceSemantics();
   testObjectLiteralAndGet();
+  testObjectStringProperty();
   testObjectPropertyAssignment();
   testObjectReferenceSemantics();
   testUndefinedProperty();
@@ -299,6 +328,7 @@ void runInterpreterTests() {
   testIndexNonArrayValue();
   testWhileLoop();
   testPrint();
+  testPrintString();
   testUnknownFunction();
   testPrintArity();
   testFunctionCall();

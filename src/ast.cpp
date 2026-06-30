@@ -33,6 +33,31 @@ std::string binaryOpName(TokenType type) {
       throw std::logic_error("unsupported binary operator");
   }
 }
+
+std::string quoteString(const std::string& value) {
+  std::string result = "\"";
+  for (char ch : value) {
+    switch (ch) {
+      case '"':
+        result += "\\\"";
+        break;
+      case '\\':
+        result += "\\\\";
+        break;
+      case '\n':
+        result += "\\n";
+        break;
+      case '\t':
+        result += "\\t";
+        break;
+      default:
+        result += ch;
+        break;
+    }
+  }
+  result += "\"";
+  return result;
+}
 }  // namespace
 
 NumberExpr::NumberExpr(std::string value) : value_(std::move(value)) {}
@@ -172,6 +197,10 @@ ReturnStmt::ReturnStmt(ExprPtr value) : value_(std::move(value)) {}
 const Expr& ReturnStmt::value() const { return *value_; }
 
 std::string formatExpr(const Expr& expression) {
+  if (const auto* string = dynamic_cast<const StringExpr*>(&expression)) {
+    return quoteString(string->value());
+  }
+
   if (const auto* number = dynamic_cast<const NumberExpr*>(&expression)) {
     return number->value();
   }
@@ -330,4 +359,7 @@ std::string formatProgram(const Program& program) {
   return result;
 }
 
+StringExpr::StringExpr(std::string value) : value_(value) {}
+
+const std::string& StringExpr::value() const { return value_; }
 }  // namespace minijs

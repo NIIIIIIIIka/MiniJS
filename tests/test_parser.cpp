@@ -39,6 +39,11 @@ void testBooleanAndNullLiterals() {
   EXPECT(parseToString("null;") == "null");
 }
 
+void testStringLiteral() {
+  EXPECT(parseToString("\"Tom\";") == "\"Tom\"");
+  EXPECT(parseToString("\"hello\\\"world\";") == "\"hello\\\"world\"");
+}
+
 void testArrayLiteral() {
   EXPECT(parseToString("[1, 2, 3];") == "(array 1 2 3)");
   EXPECT(parseToString("[];") == "(array)");
@@ -199,6 +204,7 @@ void runParserTests() {
   testPercentOperator();
   testVariableExpression();
   testBooleanAndNullLiterals();
+  testStringLiteral();
   testArrayLiteral();
   testObjectLiteral();
   testExpressionWithoutSemicolon();

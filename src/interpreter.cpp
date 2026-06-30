@@ -104,6 +104,10 @@ Value Interpreter::evaluate(const Expr& expression) {
     return Value(std::stod(number->value()));
   }
 
+  if (const auto* string = dynamic_cast<const StringExpr*>(&expression)) {
+    return Value(string->value());
+  }
+
   if (const auto* boolean = dynamic_cast<const BoolExpr*>(&expression)) {
     if (boolean->value() == "true") {
       return Value(true);
@@ -159,38 +163,71 @@ Value Interpreter::evaluate(const Expr& expression) {
     const Value left = evaluate(binary->left());
     const Value right = evaluate(binary->right());
 
-    const double lhs = left.asNumber();
-    const double rhs = right.asNumber();
-
     switch (binary->op()) {
-      case TokenType::Plus:
+      case TokenType::Plus: {
+        if (left.isString() || right.isString()) {
+          return Value(left.toString() + right.toString());
+        }
+        const double lhs = left.asNumber();
+        const double rhs = right.asNumber();
         return Value(lhs + rhs);
-      case TokenType::Minus:
+      }
+      case TokenType::Minus: {
+        const double lhs = left.asNumber();
+        const double rhs = right.asNumber();
         return Value(lhs - rhs);
-      case TokenType::Star:
+      }
+      case TokenType::Star: {
+        const double lhs = left.asNumber();
+        const double rhs = right.asNumber();
         return Value(lhs * rhs);
-      case TokenType::Slash:
+      }
+      case TokenType::Slash: {
+        const double lhs = left.asNumber();
+        const double rhs = right.asNumber();
         if (rhs == 0) {
           throw RuntimeError("division by zero");
         }
         return Value(lhs / rhs);
-      case TokenType::Percent:
+      }
+      case TokenType::Percent: {
+        const double lhs = left.asNumber();
+        const double rhs = right.asNumber();
         if (rhs == 0) {
           throw RuntimeError("modulo by zero");
         }
         return Value(std::fmod(lhs, rhs));
-      case TokenType::Greater:
+      }
+      case TokenType::Greater: {
+        const double lhs = left.asNumber();
+        const double rhs = right.asNumber();
         return Value(lhs > rhs);
-      case TokenType::GreaterEqual:
+      }
+      case TokenType::GreaterEqual: {
+        const double lhs = left.asNumber();
+        const double rhs = right.asNumber();
         return Value(lhs >= rhs);
-      case TokenType::Less:
+      }
+      case TokenType::Less: {
+        const double lhs = left.asNumber();
+        const double rhs = right.asNumber();
         return Value(lhs < rhs);
-      case TokenType::LessEqual:
+      }
+      case TokenType::LessEqual: {
+        const double lhs = left.asNumber();
+        const double rhs = right.asNumber();
         return Value(lhs <= rhs);
-      case TokenType::EqualEqual:
+      }
+      case TokenType::EqualEqual: {
+        const double lhs = left.asNumber();
+        const double rhs = right.asNumber();
         return Value(lhs == rhs);
-      case TokenType::BangEqual:
+      }
+      case TokenType::BangEqual: {
+        const double lhs = left.asNumber();
+        const double rhs = right.asNumber();
         return Value(lhs != rhs);
+      }
       default:
         throw RuntimeError("unsupported binary operator");
     }

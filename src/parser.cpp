@@ -6,6 +6,43 @@
 #include "minijs/lexer.h"
 
 namespace minijs {
+namespace {
+std::string decodeStringLiteral(std::string_view lexeme) {
+  std::string result;
+
+  if (lexeme.size() < 2) {
+    return result;
+  }
+
+  for (std::size_t i = 1; i + 1 < lexeme.size(); ++i) {
+    if (lexeme[i] == '\\' && i + 1 < lexeme.size() - 1) {
+      ++i;
+      switch (lexeme[i]) {
+        case '"':
+          result += '"';
+          break;
+        case '\\':
+          result += '\\';
+          break;
+        case 'n':
+          result += '\n';
+          break;
+        case 't':
+          result += '\t';
+          break;
+        default:
+          result += lexeme[i];
+          break;
+      }
+      continue;
+    }
+
+    result += lexeme[i];
+  }
+
+  return result;
+}
+}  // namespace
 
 Parser::Parser(std::string_view source) {
   Lexer lexer(source);
@@ -312,6 +349,11 @@ ExprPtr Parser::primary() {
   if (match(TokenType::Number)) {
     const Token& token = previous();
     return std::make_unique<NumberExpr>(std::string(token.lexeme));
+  }
+
+  if (match(TokenType::String)) {
+    const Token& token = previous();
+    return std::make_unique<StringExpr>(decodeStringLiteral(token.lexeme));
   }
 
   if (match(TokenType::LeftParen)) {

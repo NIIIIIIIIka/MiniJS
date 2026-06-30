@@ -18,6 +18,7 @@ enum class ValueType {
   Function,
   Array,
   Object,
+  String,
 };
 
 // 函数运行时载荷。
@@ -50,8 +51,14 @@ class Value {
   // 创建对象值，对象使用共享指针模拟对象引用语义。
   explicit Value(std::unordered_map<std::string, Value> properties);
 
+  // 创建字符串值。
+  explicit Value(std::string string);
+
   // 返回数字载荷；当前值不是数字时抛出运行时错误。
   double asNumber() const;
+
+  // 返回字符串载荷；当前值不是字符串时抛出运行时错误。
+  const std::string& asString() const;
 
   // 返回函数载荷；调用方应保证当前值是函数。
   const FunctionValue& asFunction() const;
@@ -80,6 +87,9 @@ class Value {
   // 返回当前值是否为数字。
   bool isNumber() const;
 
+  // 返回当前值是否为字符串。
+  bool isString() const;
+
   // 返回当前值是否为函数。
   bool isFunction() const;
 
@@ -96,6 +106,7 @@ class Value {
   FunctionValue function_ = FunctionValue({nullptr, nullptr});
   std::shared_ptr<std::vector<Value>> array_;
   std::shared_ptr<std::unordered_map<std::string, Value>> object_;
+  std::string string_;
 };
 
 }  // namespace minijs

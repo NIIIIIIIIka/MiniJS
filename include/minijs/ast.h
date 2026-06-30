@@ -47,6 +47,18 @@ class NumberExpr final : public Expr {
   std::string value_;
 };
 
+// 字符串字面量表达式，保存去掉引号后的字符串内容。
+class StringExpr final : public Expr {
+ public:
+  explicit StringExpr(std::string value);
+
+  // 返回字符串字面量内容。
+  const std::string& value() const;
+
+ private:
+  std::string value_;
+};
+
 // 布尔字面量表达式。
 class BoolExpr final : public Expr {
  public:

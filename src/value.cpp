@@ -25,6 +25,15 @@ Value::Value(std::unordered_map<std::string, Value> properties)
     : value_type_(ValueType::Object),
       object_(std::make_shared<std::unordered_map<std::string, Value>>(std::move(properties))) {}
 
+Value::Value(std::string string) : value_type_(ValueType::String), string_(std::move(string)) {}
+
+const std::string& Value::asString() const {
+  if (!isString()) {
+    throw RuntimeError("value is not a string");
+  }
+  return string_;
+}
+
 double Value::asNumber() const {
   if (!isNumber()) {
     throw RuntimeError("value is not a number");
@@ -46,6 +55,20 @@ std::vector<Value>& Value::asArray() {
     throw RuntimeError("value is not an array");
   }
   return *array_;
+}
+
+const std::unordered_map<std::string, Value>& Value::asObject() const {
+  if (!isObject()) {
+    throw RuntimeError("value is not an object");
+  }
+  return *object_;
+}
+
+std::unordered_map<std::string, Value>& Value::asObject() {
+  if (!isObject()) {
+    throw RuntimeError("value is not an object");
+  }
+  return *object_;
 }
 
 std::string Value::toString() const {
@@ -76,6 +99,8 @@ std::string Value::toString() const {
     }
     case ValueType::Object:
       return "[object Object]";
+    case ValueType::String:
+      return string_;
     case ValueType::Null:
       return "null";
   }
@@ -95,6 +120,8 @@ bool Value::isTruthy() const {
       return true;
     case ValueType::Null:
       return false;
+    case ValueType::String:
+      return !string_.empty();
   }
 
   return false;
@@ -108,19 +135,7 @@ bool Value::isFunction() const { return value_type_ == ValueType::Function; }
 
 bool Value::isArray() const { return value_type_ == ValueType::Array; }
 
-const std::unordered_map<std::string, Value>& Value::asObject() const {
-  if (!isObject()) {
-    throw RuntimeError("value is not an object");
-  }
-  return *object_;
-}
-
-std::unordered_map<std::string, Value>& Value::asObject() {
-  if (!isObject()) {
-    throw RuntimeError("value is not an object");
-  }
-  return *object_;
-}
+bool Value::isString() const { return value_type_ == ValueType::String; }
 
 bool Value::isObject() const { return value_type_ == ValueType::Object; }
 
