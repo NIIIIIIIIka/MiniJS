@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <memory>
 #include <string>
@@ -19,6 +19,7 @@ enum class ValueType {
   Array,
   Object,
   String,
+  Undefined,
 };
 
 // 函数运行时载荷。
@@ -54,6 +55,9 @@ class Value {
   // 创建字符串值。
   explicit Value(std::string string);
 
+  // 创建 undefined 值。
+  static Value undefined();
+
   // 返回数字载荷；当前值不是数字时抛出运行时错误。
   double asNumber() const;
 
@@ -84,6 +88,9 @@ class Value {
   // 返回当前值是否为 null。
   bool isNull() const;
 
+  // 返回当前值是否为 undefined。
+  bool isUndefined() const;
+
   // 返回当前值是否为数字。
   bool isNumber() const;
 
@@ -100,6 +107,8 @@ class Value {
   bool isObject() const;
 
  private:
+  explicit Value(ValueType type);
+
   ValueType value_type_ = ValueType::Null;
   double number_ = 0;
   bool boolean_ = false;

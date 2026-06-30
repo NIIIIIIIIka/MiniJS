@@ -1,4 +1,4 @@
-#include "minijs/interpreter.h"
+Ôªø#include "minijs/interpreter.h"
 
 #include <cmath>
 #include <iostream>
@@ -100,6 +100,10 @@ void Interpreter::execute(const Stmt& statement) {
 }
 
 Value Interpreter::evaluate(const Expr& expression) {
+  if (dynamic_cast<const UndefinedExpr*>(&expression) != nullptr) {
+    return Value::undefined();
+  }
+
   if (const auto* number = dynamic_cast<const NumberExpr*>(&expression)) {
     return Value(std::stod(number->value()));
   }
@@ -296,7 +300,7 @@ Value Interpreter::evaluate(const Expr& expression) {
       auto& array = object.asArray();
 
       if (array.empty()) {
-        return Value();  // œ»”√ null ±Ì æø’ ˝◊È pop
+        return Value::undefined();
       }
 
       Value value = array.back();

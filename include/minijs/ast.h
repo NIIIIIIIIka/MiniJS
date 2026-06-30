@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <memory>
 #include <string>
@@ -39,8 +39,6 @@ struct ObjectProperty {
 class NumberExpr final : public Expr {
  public:
   explicit NumberExpr(std::string value);
-
-  // 返回数字字面量文本，解释执行阶段再转换为数值。
   const std::string& value() const;
 
  private:
@@ -51,8 +49,6 @@ class NumberExpr final : public Expr {
 class StringExpr final : public Expr {
  public:
   explicit StringExpr(std::string value);
-
-  // 返回字符串字面量内容。
   const std::string& value() const;
 
  private:
@@ -63,8 +59,6 @@ class StringExpr final : public Expr {
 class BoolExpr final : public Expr {
  public:
   explicit BoolExpr(std::string value);
-
-  // 返回布尔字面量文本。
   const std::string& value() const;
 
  private:
@@ -75,20 +69,22 @@ class BoolExpr final : public Expr {
 class NullExpr final : public Expr {
  public:
   explicit NullExpr(std::string value);
-
-  // 返回 null 字面量文本。
   const std::string& value() const;
 
  private:
   std::string value_;
 };
 
+// undefined 字面量表达式。
+class UndefinedExpr final : public Expr {
+ public:
+  UndefinedExpr() = default;
+};
+
 // 变量读取表达式。
 class VariableExpr final : public Expr {
  public:
   explicit VariableExpr(std::string name);
-
-  // 返回变量名。
   const std::string& name() const;
 
  private:
@@ -99,8 +95,6 @@ class VariableExpr final : public Expr {
 class ArrayExpr final : public Expr {
  public:
   explicit ArrayExpr(std::vector<ExprPtr> elements);
-
-  // 返回数组元素表达式列表。
   const std::vector<ExprPtr>& elements() const;
 
  private:
@@ -111,8 +105,6 @@ class ArrayExpr final : public Expr {
 class ObjectExpr final : public Expr {
  public:
   explicit ObjectExpr(std::vector<ObjectProperty> properties);
-
-  // 返回按源码顺序保存的属性列表。
   const std::vector<ObjectProperty>& properties() const;
 
  private:
@@ -123,14 +115,8 @@ class ObjectExpr final : public Expr {
 class BinaryExpr final : public Expr {
  public:
   BinaryExpr(ExprPtr left, TokenType op, ExprPtr right);
-
-  // 返回左操作数。
   const Expr& left() const;
-
-  // 返回运算符 token 类型。
   TokenType op() const;
-
-  // 返回右操作数。
   const Expr& right() const;
 
  private:
@@ -143,8 +129,6 @@ class BinaryExpr final : public Expr {
 class GroupingExpr final : public Expr {
  public:
   explicit GroupingExpr(ExprPtr expression);
-
-  // 返回括号内部的表达式。
   const Expr& expression() const;
 
  private:
@@ -155,11 +139,7 @@ class GroupingExpr final : public Expr {
 class AssignExpr final : public Expr {
  public:
   AssignExpr(std::string name, ExprPtr value);
-
-  // 返回被赋值的变量名。
   const std::string& name() const;
-
-  // 返回产生新值的表达式。
   const Expr& value() const;
 
  private:
@@ -171,17 +151,9 @@ class AssignExpr final : public Expr {
 class IndexExpr final : public Expr {
  public:
   IndexExpr(ExprPtr object, ExprPtr index);
-
-  // 返回被索引的对象表达式。
   const Expr& object() const;
-
-  // 返回下标表达式。
   const Expr& index() const;
-
-  // 转移被索引对象的所有权，用于构造下标赋值表达式。
   ExprPtr takeObject();
-
-  // 转移下标表达式的所有权，用于构造下标赋值表达式。
   ExprPtr takeIndex();
 
  private:
@@ -193,14 +165,8 @@ class IndexExpr final : public Expr {
 class IndexAssignExpr final : public Expr {
  public:
   IndexAssignExpr(ExprPtr object, ExprPtr index, ExprPtr value);
-
-  // 返回被索引的对象表达式。
   const Expr& object() const;
-
-  // 返回下标表达式。
   const Expr& index() const;
-
-  // 返回赋给数组元素的新值表达式。
   const Expr& value() const;
 
  private:
@@ -213,14 +179,8 @@ class IndexAssignExpr final : public Expr {
 class GetExpr final : public Expr {
  public:
   GetExpr(ExprPtr object, std::string name);
-
-  // 返回被访问的对象表达式。
   const Expr& object() const;
-
-  // 返回属性名。
   const std::string& name() const;
-
-  // 转移对象表达式的所有权，用于构造属性赋值表达式。
   ExprPtr takeObject();
 
  private:
@@ -232,14 +192,8 @@ class GetExpr final : public Expr {
 class SetExpr final : public Expr {
  public:
   SetExpr(ExprPtr object, std::string name, ExprPtr value);
-
-  // 返回被访问的对象表达式。
   const Expr& object() const;
-
-  // 返回属性名。
   const std::string& name() const;
-
-  // 返回赋给属性的新值表达式。
   const Expr& value() const;
 
  private:
@@ -252,11 +206,7 @@ class SetExpr final : public Expr {
 class CallExpr final : public Expr {
  public:
   CallExpr(std::string callee, std::vector<ExprPtr> arguments);
-
-  // 返回被调用的函数名。
   const std::string& callee() const;
-
-  // 返回按源码顺序保存的实参表达式。
   const std::vector<ExprPtr>& arguments() const;
 
  private:
@@ -264,7 +214,7 @@ class CallExpr final : public Expr {
   std::vector<ExprPtr> arguments_;
 };
 
-// 内置函数调用表达式。
+// 内置方法调用表达式，例如 array.push(value)。
 class MethodCallExpr final : public Expr {
  public:
   MethodCallExpr(ExprPtr object, std::string name, std::vector<ExprPtr> arguments);
@@ -282,8 +232,6 @@ class MethodCallExpr final : public Expr {
 class ExprStmt final : public Stmt {
  public:
   explicit ExprStmt(ExprPtr expression);
-
-  // 返回被包装的表达式。
   const Expr& expression() const;
 
  private:
@@ -294,11 +242,7 @@ class ExprStmt final : public Stmt {
 class LetStmt final : public Stmt {
  public:
   LetStmt(std::string name, ExprPtr initializer);
-
-  // 返回声明的变量名。
   const std::string& name() const;
-
-  // 返回初始化表达式。
   const Expr& initializer() const;
 
  private:
@@ -310,14 +254,8 @@ class LetStmt final : public Stmt {
 class IfStmt final : public Stmt {
  public:
   IfStmt(ExprPtr condition, StmtPtr thenBranch, StmtPtr elseBranch);
-
-  // 返回条件表达式。
   const Expr& condition() const;
-
-  // 返回条件为真时执行的语句。
   const Stmt& thenBranch() const;
-
-  // 返回可选 else 分支；没有 else 时返回 nullptr。
   const Stmt* elseBranch() const;
 
  private:
@@ -330,8 +268,6 @@ class IfStmt final : public Stmt {
 class BlockStmt final : public Stmt {
  public:
   explicit BlockStmt(Program statements);
-
-  // 返回块内部的语句列表。
   const Program& statements() const;
 
  private:
@@ -342,11 +278,7 @@ class BlockStmt final : public Stmt {
 class WhileStmt final : public Stmt {
  public:
   WhileStmt(ExprPtr condition, StmtPtr body);
-
-  // 返回循环条件表达式。
   const Expr& condition() const;
-
-  // 返回每轮循环执行的语句。
   const Stmt& body() const;
 
  private:
@@ -358,14 +290,8 @@ class WhileStmt final : public Stmt {
 class FunctionStmt final : public Stmt {
  public:
   FunctionStmt(std::string name, std::vector<std::string> params, Program body);
-
-  // 返回函数名。
   const std::string& name() const;
-
-  // 返回形参名列表。
   const std::vector<std::string>& params() const;
-
-  // 返回函数体语句列表。
   const Program& body() const;
 
  private:
@@ -378,21 +304,14 @@ class FunctionStmt final : public Stmt {
 class ReturnStmt final : public Stmt {
  public:
   explicit ReturnStmt(ExprPtr value);
-
-  // 返回 return 后面的表达式。
   const Expr& value() const;
 
  private:
   ExprPtr value_;
 };
 
-// 将表达式格式化为紧凑的前缀形式，方便调试和测试。
 std::string formatExpr(const Expr& expression);
-
-// 将语句格式化为紧凑的前缀形式，方便调试和测试。
 std::string formatStmt(const Stmt& statement);
-
-// 将程序格式化为按行分隔的调试文本。
 std::string formatProgram(const Program& program);
 
 }  // namespace minijs

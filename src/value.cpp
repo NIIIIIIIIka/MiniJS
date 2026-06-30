@@ -10,6 +10,8 @@ namespace minijs {
 
 Value::Value() = default;
 
+Value::Value(ValueType type) : value_type_(type) {}
+
 Value::Value(double number) : value_type_(ValueType::Number), number_(number) {}
 
 Value::Value(bool boolean) : value_type_(ValueType::Boolean), boolean_(boolean) {}
@@ -33,6 +35,8 @@ const std::string& Value::asString() const {
   }
   return string_;
 }
+
+Value Value::undefined() { return Value(ValueType::Undefined); }
 
 double Value::asNumber() const {
   if (!isNumber()) {
@@ -103,6 +107,8 @@ std::string Value::toString() const {
       return string_;
     case ValueType::Null:
       return "null";
+    case ValueType::Undefined:
+      return "undefined";
   }
 
   return "null";
@@ -122,12 +128,16 @@ bool Value::isTruthy() const {
       return false;
     case ValueType::String:
       return !string_.empty();
+    case ValueType::Undefined:
+      return false;
   }
 
   return false;
 }
 
 bool Value::isNull() const { return value_type_ == ValueType::Null; }
+
+bool Value::isUndefined() const { return value_type_ == ValueType::Undefined; }
 
 bool Value::isNumber() const { return value_type_ == ValueType::Number; }
 

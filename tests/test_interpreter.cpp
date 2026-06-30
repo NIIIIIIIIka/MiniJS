@@ -38,7 +38,11 @@ void testBooleanAndNullLiterals() {
   EXPECT(run("true;").toString() == "true");
   EXPECT(run("false;").toString() == "false");
   EXPECT(run("null;").isNull());
+  EXPECT(run("undefined;").isUndefined());
+  EXPECT(run("undefined;").toString() == "undefined");
 }
+
+void testUndefinedIsFalsy() { EXPECT(run("if (undefined) 1; else 2;").asNumber() == 2); }
 
 void testStringLiteral() {
   EXPECT(run("\"Tom\";").toString() == "Tom");
@@ -312,7 +316,8 @@ void testArrayPush() {
 void testArrayPop() {
   EXPECT(run("let a = [1, 2]; a.pop();").asNumber() == 2);
   EXPECT(run("let a = [1, 2]; a.pop(); a.length;").asNumber() == 1);
-  EXPECT(run("let a = []; a.pop();").isNull());
+  EXPECT(run("let a = []; a.pop();").isUndefined());
+  EXPECT(run("let a = []; a.pop();").toString() == "undefined");
 }
 
 void testArrayPushArity() {
@@ -360,6 +365,7 @@ void runInterpreterTests() {
   testGrouping();
   testComparison();
   testBooleanAndNullLiterals();
+  testUndefinedIsFalsy();
   testStringLiteral();
   testStringConcatenation();
   testIfTrueBranch();

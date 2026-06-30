@@ -222,6 +222,10 @@ std::string formatExpr(const Expr& expression) {
     return null->value();
   }
 
+  if (dynamic_cast<const UndefinedExpr*>(&expression) != nullptr) {
+    return "undefined";
+  }
+
   if (const auto* variable = dynamic_cast<const VariableExpr*>(&expression)) {
     return variable->name();
   }

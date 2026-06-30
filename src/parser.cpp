@@ -1,4 +1,4 @@
-#include "minijs/parser.h"
+ï»¿#include "minijs/parser.h"
 
 #include <string>
 #include <utility>
@@ -296,7 +296,7 @@ ExprPtr Parser::call() {
   ExprPtr expr = primary();
 
   while (true) {
-    //º¯Êýµ÷ÓÃ
+    //å‡½æ•°è°ƒç”¨
     if (match(TokenType::LeftParen)) {
       std::vector<ExprPtr> arguments;
 
@@ -380,6 +380,10 @@ ExprPtr Parser::primary() {
     return std::make_unique<NullExpr>(std::string(token.lexeme));
   }
 
+  if (match(TokenType::Undefined)) {
+    return std::make_unique<UndefinedExpr>();
+  }
+
   if (match(TokenType::True)) {
     const Token& token = previous();
     return std::make_unique<BoolExpr>(std::string(token.lexeme));
@@ -427,7 +431,6 @@ ExprPtr Parser::primary() {
     if (!match(TokenType::RightBrace)) {
       report(peek(), "expected '}' after object literal");
     }
-
     return std::make_unique<ObjectExpr>(std::move(properties));
   }
 

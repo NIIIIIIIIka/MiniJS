@@ -37,6 +37,7 @@ void testBooleanAndNullLiterals() {
   EXPECT(parseToString("true;") == "true");
   EXPECT(parseToString("false;") == "false");
   EXPECT(parseToString("null;") == "null");
+  EXPECT(parseToString("undefined;") == "undefined");
 }
 
 void testStringLiteral() {
