@@ -290,7 +290,19 @@ void testAssignUndefinedVariable() {
     EXPECT(std::string_view(error.what()) == "RuntimeError: undefined variable: x");
   }
 }
+void testArrayLengthProperty() {
+  EXPECT(run("let a = [1, 2, 3]; a.length;").asNumber() == 3);
+  EXPECT(run("[1, 2].length;").asNumber() == 2);
+}
 
+void testStringLengthProperty() {
+  EXPECT(run("let s = \"hello\"; s.length;").asNumber() == 5);
+  EXPECT(run("\"Tom\".length;").asNumber() == 3);
+}
+
+void testObjectOwnLengthProperty() {
+  EXPECT(run("let p = { length: 10 }; p.length;").asNumber() == 10);
+}
 }  // namespace
 
 void runInterpreterTests() {
@@ -343,4 +355,7 @@ void runInterpreterTests() {
   testDivisionByZero();
   testModuloByZero();
   testAssignUndefinedVariable();
+  testArrayLengthProperty();
+  testStringLengthProperty();
+  testObjectOwnLengthProperty();
 }

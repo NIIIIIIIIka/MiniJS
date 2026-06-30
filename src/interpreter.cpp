@@ -287,6 +287,15 @@ Value Interpreter::evaluate(const Expr& expression) {
 
   if (const auto* get = dynamic_cast<const GetExpr*>(&expression)) {
     Value object = evaluate(get->object());
+
+    if (object.isArray() && get->name() == "length") {
+      return Value(static_cast<double>(object.asArray().size()));
+    }
+
+    if (object.isString() && get->name() == "length") {
+      return Value(static_cast<double>(object.asString().size()));
+    }
+
     const auto& properties = object.asObject();
     auto it = properties.find(get->name());
     if (it == properties.end()) {
