@@ -303,6 +303,53 @@ void testStringLengthProperty() {
 void testObjectOwnLengthProperty() {
   EXPECT(run("let p = { length: 10 }; p.length;").asNumber() == 10);
 }
+
+void testArrayPush() {
+  EXPECT(run("let a = [1, 2]; a.push(3); a.length;").asNumber() == 3);
+  EXPECT(run("let a = []; a.push(1); a.push(2); a[0] + a[1];").asNumber() == 3);
+}
+
+void testArrayPop() {
+  EXPECT(run("let a = [1, 2]; a.pop();").asNumber() == 2);
+  EXPECT(run("let a = [1, 2]; a.pop(); a.length;").asNumber() == 1);
+  EXPECT(run("let a = []; a.pop();").isNull());
+}
+
+void testArrayPushArity() {
+  try {
+    run("let a = []; a.push();");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: array.push expects 1 argument");
+  }
+}
+
+void testArrayPopArity() {
+  try {
+    run("let a = []; a.pop(1);");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: array.pop expects 0 arguments");
+  }
+}
+
+void testMethodCallOnNonArray() {
+  try {
+    run("1.push(1);");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: value has no method: push");
+  }
+}
+
+void testUnknownArrayMethod() {
+  try {
+    run("let a = []; a.unknown();");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: undefined method: unknown");
+  }
+}
 }  // namespace
 
 void runInterpreterTests() {
@@ -358,4 +405,10 @@ void runInterpreterTests() {
   testArrayLengthProperty();
   testStringLengthProperty();
   testObjectOwnLengthProperty();
+  testArrayPush();
+  testArrayPop();
+  testArrayPushArity();
+  testArrayPopArity();
+  testMethodCallOnNonArray();
+  testUnknownArrayMethod();
 }

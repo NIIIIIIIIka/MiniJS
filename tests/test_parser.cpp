@@ -123,6 +123,11 @@ void testCallExpressionAsFactorOperand() {
   EXPECT(parseToString("2 * print(1);") == "(* 2 (call print 1))");
 }
 
+void testMethodCallExpression() {
+  EXPECT(parseProgramToString("a.push(3);") == "(expr (method-call a push 3))");
+  EXPECT(parseProgramToString("a.pop();") == "(expr (method-call a pop))");
+}
+
 void testFunctionDeclaration() {
   EXPECT(parseProgramToString("function add(a, b) { a + b; }") ==
          "(function add (a b) (block (expr (+ a b))))");
@@ -225,6 +230,7 @@ void runParserTests() {
   testWhileStatement();
   testCallExpression();
   testCallExpressionAsFactorOperand();
+  testMethodCallExpression();
   testFunctionDeclaration();
   testReturnStatement();
   testUnexpectedTokenDiagnostic();

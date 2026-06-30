@@ -119,6 +119,15 @@ ExprPtr IndexExpr::takeIndex() { return std::move(index_); }
 IndexAssignExpr::IndexAssignExpr(ExprPtr object, ExprPtr index, ExprPtr value)
     : object_(std::move(object)), index_(std::move(index)), value_(std::move(value)) {}
 
+MethodCallExpr::MethodCallExpr(ExprPtr object, std::string name, std::vector<ExprPtr> arguments)
+    : object_(std::move(object)), name_(std::move(name)), arguments_(std::move(arguments)) {}
+
+const std::string& MethodCallExpr::name() const { return name_; }
+
+const std::vector<ExprPtr>& MethodCallExpr::arguments() const { return arguments_; }
+
+const Expr& MethodCallExpr::object() const { return *object_; }
+
 const Expr& IndexAssignExpr::object() const { return *object_; }
 
 const Expr& IndexAssignExpr::index() const { return *index_; }
@@ -280,6 +289,15 @@ std::string formatExpr(const Expr& expression) {
     return result;
   }
 
+  if (const auto* call = dynamic_cast<const MethodCallExpr*>(&expression)) {
+    std::string result = "(method-call " + formatExpr(call->object());
+    result += " " + call->name();
+    for (const ExprPtr& arg : call->arguments()) {
+      result += " " + formatExpr(*arg);
+    }
+    result += ")";
+    return result;
+  }
   throw std::logic_error("unknown expression type");
 }
 

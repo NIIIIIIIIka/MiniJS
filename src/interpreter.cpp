@@ -277,6 +277,37 @@ Value Interpreter::evaluate(const Expr& expression) {
     }
   }
 
+  if (const auto* call = dynamic_cast<const MethodCallExpr*>(&expression)) {
+    Value object = evaluate(call->object());
+    if (object.isArray() && call->name() == "push") {
+      if (call->arguments().size() != 1) {
+        throw RuntimeError("array.push expects 1 argument");
+      }
+
+      Value value = evaluate(*call->arguments()[0]);
+      object.asArray().push_back(value);
+      return Value(static_cast<double>(object.asArray().size()));
+    }
+    if (object.isArray() && call->name() == "pop") {
+      if (!call->arguments().empty()) {
+        throw RuntimeError("array.pop expects 0 arguments");
+      }
+
+      auto& array = object.asArray();
+
+      if (array.empty()) {
+        return Value();  // 先用 null 表示空数组 pop
+      }
+
+      Value value = array.back();
+      array.pop_back();
+      return value;
+    }
+    if (object.isArray()) {
+      throw RuntimeError("undefined method: " + call->name());
+    }
+    throw RuntimeError("value has no method: " + call->name());
+  }
   if (const auto* object = dynamic_cast<const ObjectExpr*>(&expression)) {
     std::unordered_map<std::string, Value> properties;
     for (const auto& property : object->properties()) {

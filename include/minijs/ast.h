@@ -264,6 +264,20 @@ class CallExpr final : public Expr {
   std::vector<ExprPtr> arguments_;
 };
 
+// 内置函数调用表达式。
+class MethodCallExpr final : public Expr {
+ public:
+  MethodCallExpr(ExprPtr object, std::string name, std::vector<ExprPtr> arguments);
+  const Expr& object() const;
+  const std::string& name() const;
+  const std::vector<ExprPtr>& arguments() const;
+
+ private:
+  ExprPtr object_;
+  std::string name_;
+  std::vector<ExprPtr> arguments_;
+};
+
 // 表达式语句，用于执行表达式副作用或保存最后结果。
 class ExprStmt final : public Stmt {
  public:

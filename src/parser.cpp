@@ -296,6 +296,7 @@ ExprPtr Parser::call() {
   ExprPtr expr = primary();
 
   while (true) {
+    //º¯Êýµ÷ÓÃ
     if (match(TokenType::LeftParen)) {
       std::vector<ExprPtr> arguments;
 
@@ -309,14 +310,16 @@ ExprPtr Parser::call() {
         report(peek(), "expected ')' after arguments");
       }
 
-      const auto* variable = dynamic_cast<const VariableExpr*>(expr.get());
-      if (variable == nullptr) {
-        report(previous(), "can only call named function");
-        return expr;
+      if (const auto* variable = dynamic_cast<const VariableExpr*>(expr.get())) {
+        expr = std::make_unique<CallExpr>(variable->name(), std::move(arguments));
+        continue;
       }
 
-      expr = std::make_unique<CallExpr>(variable->name(), std::move(arguments));
-      continue;
+      if (auto* get = dynamic_cast<GetExpr*>(expr.get())) {
+        expr =
+            std::make_unique<MethodCallExpr>(get->takeObject(), get->name(), std::move(arguments));
+        continue;
+      }
     }
 
     if (match(TokenType::LeftBracket)) {
@@ -336,6 +339,7 @@ ExprPtr Parser::call() {
         return expr;
       }
       std::string name = std::string(advance().lexeme);
+
       expr = std::make_unique<GetExpr>(std::move(expr), std::move(name));
       continue;
     }
