@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <iostream>
+#include <unordered_map>
 #include <utility>
 
 #include "minijs/runtime_error.h"
@@ -237,6 +238,33 @@ Value Interpreter::evaluate(const Expr& expression) {
     } catch (const ReturnSignal& signal) {
       return signal.value();
     }
+  }
+
+  if (const auto* object = dynamic_cast<const ObjectExpr*>(&expression)) {
+    std::unordered_map<std::string, Value> properties;
+    for (const auto& property : object->properties()) {
+      properties[property.name] = evaluate(*property.value);
+    }
+    return Value(std::move(properties));
+  }
+
+  if (const auto* get = dynamic_cast<const GetExpr*>(&expression)) {
+    Value object = evaluate(get->object());
+    const auto& properties = object.asObject();
+    auto it = properties.find(get->name());
+    if (it == properties.end()) {
+      throw RuntimeError("undefined property: " + get->name());
+    }
+
+    return it->second;
+  }
+
+  if (const auto* set = dynamic_cast<const SetExpr*>(&expression)) {
+    Value object = evaluate(set->object());
+    Value value = evaluate(set->value());
+
+    object.asObject()[set->name()] = value;
+    return value;
   }
   throw RuntimeError("unknown expression type");
 }

@@ -44,6 +44,11 @@ void testArrayLiteral() {
   EXPECT(parseToString("[];") == "(array)");
 }
 
+void testObjectLiteral() {
+  EXPECT(parseToString("{age: 18, score: 100};") == "(object (age 18) (score 100))");
+  EXPECT(parseToString("{};") == "(object)");
+}
+
 void testExpressionWithoutSemicolon() { EXPECT(parseToString("1 + 2") == "(+ 1 2)"); }
 
 void testLetStatement() { EXPECT(parseProgramToString("let x = 10;") == "(let x 10)"); }
@@ -95,6 +100,10 @@ void testIndexExpression() {
 void testIndexAssignmentExpression() {
   EXPECT(parseProgramToString("a[1] = 10;") == "(expr (index-assign a 1 10))");
 }
+
+void testGetExpression() { EXPECT(parseProgramToString("p.age;") == "(expr (get p age))"); }
+
+void testSetExpression() { EXPECT(parseProgramToString("p.age = 20;") == "(expr (set p age 20))"); }
 
 void testWhileStatement() {
   EXPECT(parseProgramToString("while (i < 3) { i = i + 1; }") ==
@@ -191,6 +200,7 @@ void runParserTests() {
   testVariableExpression();
   testBooleanAndNullLiterals();
   testArrayLiteral();
+  testObjectLiteral();
   testExpressionWithoutSemicolon();
   testLetStatement();
   testLetStatementWithVariableInitializer();
@@ -204,6 +214,8 @@ void runParserTests() {
   testAssignmentExpression();
   testIndexExpression();
   testIndexAssignmentExpression();
+  testGetExpression();
+  testSetExpression();
   testWhileStatement();
   testCallExpression();
   testCallExpressionAsFactorOperand();

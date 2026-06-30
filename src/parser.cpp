@@ -204,6 +204,9 @@ ExprPtr Parser::assignment() {
       return std::make_unique<IndexAssignExpr>(index->takeObject(), index->takeIndex(),
                                                std::move(value));
     }
+    if (auto* get = dynamic_cast<GetExpr*>(expr.get())) {
+      return std::make_unique<SetExpr>(get->takeObject(), get->name(), std::move(value));
+    }
     report(previous(), "invalid assignment target");
   }
   return expr;
@@ -290,6 +293,15 @@ ExprPtr Parser::call() {
       continue;
     }
 
+    if (match(TokenType::Dot)) {
+      if (!check(TokenType::Identifier)) {
+        report(peek(), "expected property name after '.'");
+        return expr;
+      }
+      std::string name = std::string(advance().lexeme);
+      expr = std::make_unique<GetExpr>(std::move(expr), std::move(name));
+      continue;
+    }
     break;
   }
 
@@ -344,6 +356,33 @@ ExprPtr Parser::primary() {
       report(peek(), "expected ']' after array literal");
     }
     return std::make_unique<ArrayExpr>(std::move(elements));
+  }
+
+  if (match(TokenType::LeftBrace)) {
+    std::vector<ObjectProperty> properties;
+    if (!check(TokenType::RightBrace)) {
+      do {
+        if (!check(TokenType::Identifier)) {
+          report(peek(), "expected property name");
+          break;
+        }
+
+        std::string name = std::string(advance().lexeme);
+
+        if (!match(TokenType::Colon)) {
+          report(peek(), "expected ':' after property name");
+        }
+
+        ExprPtr value = expression();
+        properties.push_back(ObjectProperty{name, std::move(value)});
+      } while (match(TokenType::Comma));
+    }
+
+    if (!match(TokenType::RightBrace)) {
+      report(peek(), "expected '}' after object literal");
+    }
+
+    return std::make_unique<ObjectExpr>(std::move(properties));
   }
 
   report(peek(), "expected expression");

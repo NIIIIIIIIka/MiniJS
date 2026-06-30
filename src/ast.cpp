@@ -1,4 +1,4 @@
-#include "minijs/ast.h"
+﻿#include "minijs/ast.h"
 
 #include <stdexcept>
 #include <utility>
@@ -39,6 +39,27 @@ NumberExpr::NumberExpr(std::string value) : value_(std::move(value)) {}
 
 const std::string& NumberExpr::value() const { return value_; }
 
+BoolExpr::BoolExpr(std::string value) : value_(std::move(value)) {}
+
+const std::string& BoolExpr::value() const { return value_; }
+
+NullExpr::NullExpr(std::string value) : value_(std::move(value)) {}
+
+const std::string& NullExpr::value() const { return value_; }
+
+VariableExpr::VariableExpr(std::string name) : name_(std::move(name)) {}
+
+const std::string& VariableExpr::name() const { return name_; }
+
+ArrayExpr::ArrayExpr(std::vector<ExprPtr> elements) : elements_(std::move(elements)) {}
+
+const std::vector<ExprPtr>& ArrayExpr::elements() const { return elements_; }
+
+ObjectExpr::ObjectExpr(std::vector<ObjectProperty> properties)
+    : properties_(std::move(properties)) {}
+
+const std::vector<ObjectProperty>& ObjectExpr::properties() const { return properties_; }
+
 BinaryExpr::BinaryExpr(ExprPtr left, TokenType op, ExprPtr right)
     : left_(std::move(left)), op_(op), right_(std::move(right)) {}
 
@@ -52,9 +73,57 @@ GroupingExpr::GroupingExpr(ExprPtr expression) : expression_(std::move(expressio
 
 const Expr& GroupingExpr::expression() const { return *expression_; }
 
-VariableExpr::VariableExpr(std::string name) : name_(std::move(name)) {}
+AssignExpr::AssignExpr(std::string name, ExprPtr value)
+    : name_(std::move(name)), value_(std::move(value)) {}
 
-const std::string& VariableExpr::name() const { return name_; }
+const std::string& AssignExpr::name() const { return name_; }
+
+const Expr& AssignExpr::value() const { return *value_; }
+
+IndexExpr::IndexExpr(ExprPtr object, ExprPtr index)
+    : object_(std::move(object)), index_(std::move(index)) {}
+
+const Expr& IndexExpr::object() const { return *object_; }
+
+const Expr& IndexExpr::index() const { return *index_; }
+
+ExprPtr IndexExpr::takeObject() { return std::move(object_); }
+
+ExprPtr IndexExpr::takeIndex() { return std::move(index_); }
+
+IndexAssignExpr::IndexAssignExpr(ExprPtr object, ExprPtr index, ExprPtr value)
+    : object_(std::move(object)), index_(std::move(index)), value_(std::move(value)) {}
+
+const Expr& IndexAssignExpr::object() const { return *object_; }
+
+const Expr& IndexAssignExpr::index() const { return *index_; }
+
+const Expr& IndexAssignExpr::value() const { return *value_; }
+
+GetExpr::GetExpr(ExprPtr object, std::string name)
+    : object_(std::move(object)), name_(std::move(name)) {}
+
+const Expr& GetExpr::object() const { return *object_; }
+
+const std::string& GetExpr::name() const { return name_; }
+
+ExprPtr GetExpr::takeObject() { return std::move(object_); }
+
+SetExpr::SetExpr(ExprPtr object, std::string name, ExprPtr value)
+    : object_(std::move(object)), name_(std::move(name)), value_(std::move(value)) {}
+
+const Expr& SetExpr::object() const { return *object_; }
+
+const std::string& SetExpr::name() const { return name_; }
+
+const Expr& SetExpr::value() const { return *value_; }
+
+CallExpr::CallExpr(std::string callee, std::vector<ExprPtr> arguments)
+    : callee_(std::move(callee)), arguments_(std::move(arguments)) {}
+
+const std::string& CallExpr::callee() const { return callee_; }
+
+const std::vector<ExprPtr>& CallExpr::arguments() const { return arguments_; }
 
 ExprStmt::ExprStmt(ExprPtr expression) : expression_(std::move(expression)) {}
 
@@ -67,18 +136,52 @@ const std::string& LetStmt::name() const { return name_; }
 
 const Expr& LetStmt::initializer() const { return *initializer_; }
 
+IfStmt::IfStmt(ExprPtr condition, StmtPtr thenBranch, StmtPtr elseBranch)
+    : condition_(std::move(condition)),
+      thenBranch_(std::move(thenBranch)),
+      elseBranch_(std::move(elseBranch)) {}
+
+const Expr& IfStmt::condition() const { return *condition_; }
+
+const Stmt& IfStmt::thenBranch() const { return *thenBranch_; }
+
+const Stmt* IfStmt::elseBranch() const { return elseBranch_.get(); }
+
+BlockStmt::BlockStmt(Program statements) : statements_(std::move(statements)) {}
+
+const Program& BlockStmt::statements() const { return statements_; }
+
+WhileStmt::WhileStmt(ExprPtr condition, StmtPtr body)
+    : condition_(std::move(condition)), body_(std::move(body)) {}
+
+const Expr& WhileStmt::condition() const { return *condition_; }
+
+const Stmt& WhileStmt::body() const { return *body_; }
+
+FunctionStmt::FunctionStmt(std::string name, std::vector<std::string> params, Program body)
+    : name_(std::move(name)), params_(std::move(params)), body_(std::move(body)) {}
+
+const std::string& FunctionStmt::name() const { return name_; }
+
+const std::vector<std::string>& FunctionStmt::params() const { return params_; }
+
+const Program& FunctionStmt::body() const { return body_; }
+
+ReturnStmt::ReturnStmt(ExprPtr value) : value_(std::move(value)) {}
+
+const Expr& ReturnStmt::value() const { return *value_; }
+
 std::string formatExpr(const Expr& expression) {
   if (const auto* number = dynamic_cast<const NumberExpr*>(&expression)) {
     return number->value();
   }
 
-  if (const auto* binary = dynamic_cast<const BinaryExpr*>(&expression)) {
-    return "(" + binaryOpName(binary->op()) + " " + formatExpr(binary->left()) + " " +
-           formatExpr(binary->right()) + ")";
+  if (const auto* boolean = dynamic_cast<const BoolExpr*>(&expression)) {
+    return boolean->value();
   }
 
-  if (const auto* grouping = dynamic_cast<const GroupingExpr*>(&expression)) {
-    return "(group " + formatExpr(grouping->expression()) + ")";
+  if (const auto* null = dynamic_cast<const NullExpr*>(&expression)) {
+    return null->value();
   }
 
   if (const auto* variable = dynamic_cast<const VariableExpr*>(&expression)) {
@@ -95,12 +198,26 @@ std::string formatExpr(const Expr& expression) {
     return result;
   }
 
-  if (const auto* boolean = dynamic_cast<const BoolExpr*>(&expression)) {
-    return boolean->value();
+  if (const auto* object = dynamic_cast<const ObjectExpr*>(&expression)) {
+    std::string result = "(object";
+    for (const ObjectProperty& property : object->properties()) {
+      result += " (";
+      result += property.name;
+      result += " ";
+      result += formatExpr(*property.value);
+      result += ")";
+    }
+    result += ")";
+    return result;
   }
 
-  if (const auto* null = dynamic_cast<const NullExpr*>(&expression)) {
-    return null->value();
+  if (const auto* binary = dynamic_cast<const BinaryExpr*>(&expression)) {
+    return "(" + binaryOpName(binary->op()) + " " + formatExpr(binary->left()) + " " +
+           formatExpr(binary->right()) + ")";
+  }
+
+  if (const auto* grouping = dynamic_cast<const GroupingExpr*>(&expression)) {
+    return "(group " + formatExpr(grouping->expression()) + ")";
   }
 
   if (const auto* assign = dynamic_cast<const AssignExpr*>(&expression)) {
@@ -116,13 +233,20 @@ std::string formatExpr(const Expr& expression) {
            formatExpr(indexAssign->index()) + " " + formatExpr(indexAssign->value()) + ")";
   }
 
+  if (const auto* get = dynamic_cast<const GetExpr*>(&expression)) {
+    return "(get " + formatExpr(get->object()) + " " + get->name() + ")";
+  }
+
+  if (const auto* set = dynamic_cast<const SetExpr*>(&expression)) {
+    return "(set " + formatExpr(set->object()) + " " + set->name() + " " +
+           formatExpr(set->value()) + ")";
+  }
+
   if (const auto* call = dynamic_cast<const CallExpr*>(&expression)) {
     std::string result = "(call " + call->callee();
-
     for (const ExprPtr& arg : call->arguments()) {
       result += " " + formatExpr(*arg);
     }
-
     result += ")";
     return result;
   }
@@ -142,11 +266,9 @@ std::string formatStmt(const Stmt& statement) {
   if (const auto* ifStmt = dynamic_cast<const IfStmt*>(&statement)) {
     std::string result =
         "(if " + formatExpr(ifStmt->condition()) + " " + formatStmt(ifStmt->thenBranch());
-
     if (ifStmt->elseBranch() != nullptr) {
       result += " " + formatStmt(*ifStmt->elseBranch());
     }
-
     result += ")";
     return result;
   }
@@ -170,14 +292,12 @@ std::string formatStmt(const Stmt& statement) {
 
   if (const auto* functionStmt = dynamic_cast<const FunctionStmt*>(&statement)) {
     std::string result = "(function " + functionStmt->name() + " (";
-
     for (std::size_t i = 0; i < functionStmt->params().size(); ++i) {
       if (i != 0) {
         result += " ";
       }
       result += functionStmt->params()[i];
     }
-
     result += ") (block";
     for (const StmtPtr& inner : functionStmt->body()) {
       if (inner) {
@@ -192,104 +312,22 @@ std::string formatStmt(const Stmt& statement) {
   if (const auto* returnStmt = dynamic_cast<const ReturnStmt*>(&statement)) {
     return "(return " + formatExpr(returnStmt->value()) + ")";
   }
+
   throw std::logic_error("unknown statement type");
 }
 
 std::string formatProgram(const Program& program) {
   std::string result;
-
   for (const StmtPtr& statement : program) {
     if (!statement) {
       continue;
     }
-
     if (!result.empty()) {
       result += '\n';
     }
-
     result += formatStmt(*statement);
   }
-
   return result;
 }
 
-IfStmt::IfStmt(ExprPtr condition, StmtPtr thenBranch, StmtPtr elseBranch)
-    : condition_(std::move(condition)),
-      thenBranch_(std::move(thenBranch)),
-      elseBranch_(std::move(elseBranch)) {}
-
-WhileStmt::WhileStmt(ExprPtr condition, StmtPtr body)
-    : condition_(std::move(condition)), body_(std::move(body)) {}
-
-const Expr& WhileStmt::condition() const { return *condition_; }
-
-const Expr& IfStmt::condition() const { return *condition_; }
-
-FunctionStmt::FunctionStmt(std::string name, std::vector<std::string> params, Program body)
-    : name_(std::move(name)), params_(std::move(params)), body_(std::move(body)) {}
-
-const std::string& FunctionStmt::name() const { return name_; }
-
-const std::vector<std::string>& FunctionStmt::params() const { return params_; }
-
-const Program& FunctionStmt::body() const { return body_; }
-
-const Stmt& WhileStmt::body() const { return *body_; }
-
-const Stmt& IfStmt::thenBranch() const { return *thenBranch_; }
-
-const Stmt* IfStmt::elseBranch() const { return elseBranch_.get(); }
-
-BlockStmt::BlockStmt(Program statements) : statements_(std::move(statements)) {}
-
-const Program& BlockStmt::statements() const { return statements_; }
-
-AssignExpr::AssignExpr(std::string name, ExprPtr value)
-    : name_(std::move(name)), value_(std::move(value)) {}
-const std::string& AssignExpr::name() const { return name_; }
-
-const Expr& AssignExpr::value() const { return *value_; }
-
-CallExpr::CallExpr(std::string callee, std::vector<ExprPtr> arguments)
-    : callee_(std::move(callee)), arguments_(std::move(arguments)) {}
-
-const std::string& CallExpr::callee() const { return callee_; }
-
-const std::vector<ExprPtr>& CallExpr::arguments() const { return arguments_; }
-
-ReturnStmt::ReturnStmt(ExprPtr value) : value_(std::move(value)) {}
-
-const Expr& ReturnStmt::value() const { return *value_; }
-
-NullExpr::NullExpr(std::string value) : value_(std::move(value)) {}
-
-const std::string& NullExpr::value() const { return value_; }
-
-BoolExpr::BoolExpr(std::string value) : value_(std::move(value)) {}
-
-const std::string& BoolExpr::value() const { return value_; }
-
-ArrayExpr::ArrayExpr(std::vector<ExprPtr> elements) : elements_(std::move(elements)) {}
-
-const std::vector<ExprPtr>& ArrayExpr::elements() const { return elements_; }
-
-IndexExpr::IndexExpr(ExprPtr object, ExprPtr index)
-    : object_(std::move(object)), index_(std::move(index)) {}
-
-const Expr& IndexExpr::object() const { return *object_; }
-
-const Expr& IndexExpr::index() const { return *index_; }
-
-ExprPtr IndexExpr::takeObject() { return std::move(object_); }
-
-ExprPtr IndexExpr::takeIndex() { return std::move(index_); }
-
-IndexAssignExpr::IndexAssignExpr(ExprPtr object, ExprPtr index, ExprPtr value)
-    : object_(std::move(object)), index_(std::move(index)), value_(std::move(value)) {}
-
-const Expr& IndexAssignExpr::object() const { return *object_; }
-
-const Expr& IndexAssignExpr::index() const { return *index_; }
-
-const Expr& IndexAssignExpr::value() const { return *value_; }
 }  // namespace minijs

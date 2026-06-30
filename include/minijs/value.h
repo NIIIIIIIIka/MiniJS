@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace minijs {
@@ -16,6 +17,7 @@ enum class ValueType {
   Null,
   Function,
   Array,
+  Object,
 };
 
 // 函数运行时载荷。
@@ -45,6 +47,9 @@ class Value {
   // 创建数组值，数组使用共享指针模拟对象引用语义。
   explicit Value(std::vector<Value> elements);
 
+  // 创建对象值，对象使用共享指针模拟对象引用语义。
+  explicit Value(std::unordered_map<std::string, Value> properties);
+
   // 返回数字载荷；当前值不是数字时抛出运行时错误。
   double asNumber() const;
 
@@ -56,6 +61,12 @@ class Value {
 
   // 返回可修改数组载荷；当前值不是数组时抛出运行时错误。
   std::vector<Value>& asArray();
+
+  // 返回对象载荷；当前值不是对象时抛出运行时错误。
+  const std::unordered_map<std::string, Value>& asObject() const;
+
+  // 返回可修改对象载荷；当前值不是对象时抛出运行时错误。
+  std::unordered_map<std::string, Value>& asObject();
 
   // 返回面向用户的字符串表示。
   std::string toString() const;
@@ -75,12 +86,16 @@ class Value {
   // 返回当前值是否为数组。
   bool isArray() const;
 
+  // 返回当前值是否为对象。
+  bool isObject() const;
+
  private:
   ValueType value_type_ = ValueType::Null;
   double number_ = 0;
   bool boolean_ = false;
   FunctionValue function_ = FunctionValue({nullptr, nullptr});
   std::shared_ptr<std::vector<Value>> array_;
+  std::shared_ptr<std::unordered_map<std::string, Value>> object_;
 };
 
 }  // namespace minijs

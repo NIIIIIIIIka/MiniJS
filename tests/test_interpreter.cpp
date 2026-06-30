@@ -93,6 +93,37 @@ void testArrayReferenceSemantics() {
   EXPECT(run("let a = [1, 2, 3]; let b = a; b[0] = 99; a[0];").asNumber() == 99);
 }
 
+void testObjectLiteralAndGet() {
+  EXPECT(run("let p = { age: 18, score: 100 }; p.age;").asNumber() == 18);
+  EXPECT(run("let p = {}; p;").toString() == "[object Object]");
+}
+
+void testObjectPropertyAssignment() {
+  EXPECT(run("let p = { age: 18 }; p.age = 20; p.age;").asNumber() == 20);
+}
+
+void testObjectReferenceSemantics() {
+  EXPECT(run("let p = { age: 18 }; let q = p; q.age = 30; p.age;").asNumber() == 30);
+}
+
+void testUndefinedProperty() {
+  try {
+    run("let p = { age: 18 }; p.name;");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: undefined property: name");
+  }
+}
+
+void testGetPropertyFromNonObject() {
+  try {
+    run("1.age;");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: value is not an object");
+  }
+}
+
 void testArrayIndexOutOfBounds() {
   try {
     run("let a = [1]; a[1];");
@@ -258,6 +289,11 @@ void runInterpreterTests() {
   testArrayLiteralAndIndex();
   testArrayElementAssignment();
   testArrayReferenceSemantics();
+  testObjectLiteralAndGet();
+  testObjectPropertyAssignment();
+  testObjectReferenceSemantics();
+  testUndefinedProperty();
+  testGetPropertyFromNonObject();
   testArrayIndexOutOfBounds();
   testArrayIndexMustBeInteger();
   testIndexNonArrayValue();

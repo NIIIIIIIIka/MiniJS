@@ -29,6 +29,12 @@ using StmtPtr = std::unique_ptr<Stmt>;
 // 一段程序，或块/函数体中的语句列表。
 using Program = std::vector<StmtPtr>;
 
+// 对象字面量中的单个属性，保存属性名和还没有执行的值表达式。
+struct ObjectProperty {
+  std::string name;
+  ExprPtr value;
+};
+
 // 数字字面量表达式，保留源码中的原始文本。
 class NumberExpr final : public Expr {
  public:
@@ -87,6 +93,18 @@ class ArrayExpr final : public Expr {
 
  private:
   std::vector<ExprPtr> elements_;
+};
+
+// 对象字面量表达式，例如 { age: 18 }。
+class ObjectExpr final : public Expr {
+ public:
+  explicit ObjectExpr(std::vector<ObjectProperty> properties);
+
+  // 返回按源码顺序保存的属性列表。
+  const std::vector<ObjectProperty>& properties() const;
+
+ private:
+  std::vector<ObjectProperty> properties_;
 };
 
 // 二元运算表达式，例如 a + b 或 x <= y。
@@ -176,6 +194,45 @@ class IndexAssignExpr final : public Expr {
  private:
   ExprPtr object_;
   ExprPtr index_;
+  ExprPtr value_;
+};
+
+// 对象属性读取表达式，例如 object.name。
+class GetExpr final : public Expr {
+ public:
+  GetExpr(ExprPtr object, std::string name);
+
+  // 返回被访问的对象表达式。
+  const Expr& object() const;
+
+  // 返回属性名。
+  const std::string& name() const;
+
+  // 转移对象表达式的所有权，用于构造属性赋值表达式。
+  ExprPtr takeObject();
+
+ private:
+  ExprPtr object_;
+  std::string name_;
+};
+
+// 对象属性赋值表达式，例如 object.name = value。
+class SetExpr final : public Expr {
+ public:
+  SetExpr(ExprPtr object, std::string name, ExprPtr value);
+
+  // 返回被访问的对象表达式。
+  const Expr& object() const;
+
+  // 返回属性名。
+  const std::string& name() const;
+
+  // 返回赋给属性的新值表达式。
+  const Expr& value() const;
+
+ private:
+  ExprPtr object_;
+  std::string name_;
   ExprPtr value_;
 };
 

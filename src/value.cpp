@@ -21,6 +21,10 @@ Value::Value(std::vector<Value> elements)
     : value_type_(ValueType::Array),
       array_(std::make_shared<std::vector<Value>>(std::move(elements))) {}
 
+Value::Value(std::unordered_map<std::string, Value> properties)
+    : value_type_(ValueType::Object),
+      object_(std::make_shared<std::unordered_map<std::string, Value>>(std::move(properties))) {}
+
 double Value::asNumber() const {
   if (!isNumber()) {
     throw RuntimeError("value is not a number");
@@ -70,6 +74,8 @@ std::string Value::toString() const {
       result += "]";
       return result;
     }
+    case ValueType::Object:
+      return "[object Object]";
     case ValueType::Null:
       return "null";
   }
@@ -85,6 +91,7 @@ bool Value::isTruthy() const {
       return boolean_;
     case ValueType::Function:
     case ValueType::Array:
+    case ValueType::Object:
       return true;
     case ValueType::Null:
       return false;
@@ -100,5 +107,21 @@ bool Value::isNumber() const { return value_type_ == ValueType::Number; }
 bool Value::isFunction() const { return value_type_ == ValueType::Function; }
 
 bool Value::isArray() const { return value_type_ == ValueType::Array; }
+
+const std::unordered_map<std::string, Value>& Value::asObject() const {
+  if (!isObject()) {
+    throw RuntimeError("value is not an object");
+  }
+  return *object_;
+}
+
+std::unordered_map<std::string, Value>& Value::asObject() {
+  if (!isObject()) {
+    throw RuntimeError("value is not an object");
+  }
+  return *object_;
+}
+
+bool Value::isObject() const { return value_type_ == ValueType::Object; }
 
 }  // namespace minijs
