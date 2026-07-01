@@ -342,16 +342,14 @@ ExprPtr Parser::call() {
         report(peek(), "expected ')' after arguments");
       }
 
-      if (const auto* variable = dynamic_cast<const VariableExpr*>(expr.get())) {
-        expr = std::make_unique<CallExpr>(variable->name(), std::move(arguments));
-        continue;
-      }
-
       if (auto* get = dynamic_cast<GetExpr*>(expr.get())) {
         expr =
             std::make_unique<MethodCallExpr>(get->takeObject(), get->name(), std::move(arguments));
         continue;
       }
+      //不管 expr 是变量、函数调用结果、数组取值、对象属性访问，只要后面跟着 (...)，都把它变成调用表达式。
+      expr = std::make_unique<CallExpr>(std::move(expr), std::move(arguments));
+      continue;
     }
 
     if (match(TokenType::LeftBracket)) {

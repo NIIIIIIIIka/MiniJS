@@ -54,7 +54,17 @@ Value Interpreter::interpret(const Program& program) {
 }
 
 Interpreter::Interpreter()
-    : global_environment_(std::make_shared<Environment>()), environment_(global_environment_) {}
+    : global_environment_(std::make_shared<Environment>()), environment_(global_environment_) {
+  global_environment_->define(
+      "print", Value(BuiltinFunction([](const std::vector<Value>& arguments) -> Value {
+        if (arguments.size() != 1) {
+          throw RuntimeError("print expects 1 argument");
+        }
+
+        std::cout << arguments[0].toString() << '\n';
+        return Value();
+      })));
+}
 
 void Interpreter::execute(const Stmt& statement) {
   if (const auto* letStmt = dynamic_cast<const LetStmt*>(&statement)) {
@@ -275,48 +285,59 @@ Value Interpreter::evaluate(const Expr& expression) {
     }
   }
   if (const auto* call = dynamic_cast<const CallExpr*>(&expression)) {
-    if (call->callee() == "print") {
-      if (call->arguments().size() != 1) {
-        throw RuntimeError("print expects 1 argument");
-      }
-      Value value = evaluate(*call->arguments()[0]);
-      std::cout << value.toString() << '\n';
-      return Value();
-    }
+    const auto* callee_variable = dynamic_cast<const VariableExpr*>(&call->callee());
 
     Value callee;
     try {
-      callee = environment_->get(call->callee());
+      callee = evaluate(call->callee());
     } catch (const RuntimeError&) {
-      throw RuntimeError("undefined function: " + call->callee());
+      if (callee_variable != nullptr) {
+        throw RuntimeError("undefined function: " + callee_variable->name());
+      }
+      throw;
+    }
+    std::vector<Value> arguments;
+    for (const ExprPtr& argument : call->arguments()) {
+      arguments.push_back(evaluate(*argument));
     }
 
+    if (callee.isBuiltinFunction()) {
+      const BuiltinFunction& builtinFunction = callee.asBuiltinFunction();
+      return builtinFunction(arguments);
+    }
+    if (callee.isFunction()) {
+      const FunctionValue& function = callee.asFunction();
+      const FunctionStmt* declaration = function.declaration;
+
+      if (declaration == nullptr) {
+        if (callee_variable != nullptr) {
+          throw RuntimeError(callee_variable->name() + " is not callable");
+        }
+        throw RuntimeError("value is not callable");
+      }
+
+      if (call->arguments().size() != declaration->params().size()) {
+        throw RuntimeError("function " + declaration->name() + " expects " +
+                           std::to_string(declaration->params().size()) + " arguments");
+      }
+
+      auto call_environment = std::make_shared<Environment>(function.closure);
+      for (std::size_t i = 0; i < declaration->params().size(); ++i) {
+        call_environment->define(declaration->params()[i], arguments[i]);
+      }
+
+      try {
+        executeBlock(declaration->body(), call_environment);
+        return Value::undefined();
+      } catch (const ReturnSignal& signal) {
+        return signal.value();
+      }
+    }
     if (!callee.isFunction()) {
-      throw RuntimeError(call->callee() + " is not callable");
-    }
-
-    const FunctionValue& function = callee.asFunction();
-    const FunctionStmt* declaration = function.declaration;
-
-    if (declaration == nullptr) {
-      throw RuntimeError(call->callee() + " is not callable");
-    }
-
-    if (call->arguments().size() != declaration->params().size()) {
-      throw RuntimeError("function " + call->callee() + " expects " +
-                         std::to_string(declaration->params().size()) + " arguments");
-    }
-
-    auto call_environment = std::make_shared<Environment>(function.closure);
-    for (std::size_t i = 0; i < declaration->params().size(); ++i) {
-      (*call_environment.get()).define(declaration->params()[i], evaluate(*call->arguments()[i]));
-    }
-
-    try {
-      executeBlock(declaration->body(), call_environment);
-      return Value::undefined();
-    } catch (const ReturnSignal& signal) {
-      return signal.value();
+      if (callee_variable != nullptr) {
+        throw RuntimeError(callee_variable->name() + " is not callable");
+      }
+      throw RuntimeError("value is not callable");
     }
   }
 

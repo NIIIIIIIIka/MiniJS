@@ -182,10 +182,10 @@ const std::string& SetExpr::name() const { return name_; }
 
 const Expr& SetExpr::value() const { return *value_; }
 
-CallExpr::CallExpr(std::string callee, std::vector<ExprPtr> arguments)
+CallExpr::CallExpr(ExprPtr callee, std::vector<ExprPtr> arguments)
     : callee_(std::move(callee)), arguments_(std::move(arguments)) {}
 
-const std::string& CallExpr::callee() const { return callee_; }
+const Expr& CallExpr::callee() const { return *callee_; }
 
 const std::vector<ExprPtr>& CallExpr::arguments() const { return arguments_; }
 
@@ -323,7 +323,7 @@ std::string formatExpr(const Expr& expression) {
   }
 
   if (const auto* call = dynamic_cast<const CallExpr*>(&expression)) {
-    std::string result = "(call " + call->callee();
+    std::string result = "(call " + formatExpr(call->callee());
     for (const ExprPtr& arg : call->arguments()) {
       result += " " + formatExpr(*arg);
     }

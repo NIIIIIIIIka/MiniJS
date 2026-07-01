@@ -19,6 +19,9 @@ Value::Value(bool boolean) : value_type_(ValueType::Boolean), boolean_(boolean) 
 Value::Value(const FunctionStmt* declaration, std::shared_ptr<Environment> closure)
     : value_type_(ValueType::Function), function_({declaration, closure}) {}
 
+Value::Value(BuiltinFunction builtin)
+    : value_type_(ValueType::BuiltinFunction), builtin_(std::move(builtin)) {}
+
 Value::Value(std::vector<Value> elements)
     : value_type_(ValueType::Array),
       array_(std::make_shared<std::vector<Value>>(std::move(elements))) {}
@@ -75,6 +78,13 @@ std::unordered_map<std::string, Value>& Value::asObject() {
   return *object_;
 }
 
+const BuiltinFunction& Value::asBuiltinFunction() const {
+  if (!isBuiltinFunction()) {
+    throw RuntimeError("value is not a builtin function");
+  }
+  return builtin_;
+}
+
 std::string Value::toString() const {
   switch (value_type_) {
     case ValueType::Number: {
@@ -90,6 +100,8 @@ std::string Value::toString() const {
       return boolean_ ? "true" : "false";
     case ValueType::Function:
       return "<function>";
+    case ValueType::BuiltinFunction:
+      return "<builtin function>";
     case ValueType::Array: {
       std::string result = "[";
       for (std::size_t i = 0; i < array_->size(); ++i) {
@@ -121,6 +133,7 @@ bool Value::isTruthy() const {
     case ValueType::Boolean:
       return boolean_;
     case ValueType::Function:
+    case ValueType::BuiltinFunction:
     case ValueType::Array:
     case ValueType::Object:
       return true;
@@ -148,5 +161,7 @@ bool Value::isArray() const { return value_type_ == ValueType::Array; }
 bool Value::isString() const { return value_type_ == ValueType::String; }
 
 bool Value::isObject() const { return value_type_ == ValueType::Object; }
+
+bool Value::isBuiltinFunction() const { return value_type_ == ValueType::BuiltinFunction; }
 
 }  // namespace minijs

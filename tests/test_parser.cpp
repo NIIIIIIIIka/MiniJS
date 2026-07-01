@@ -134,6 +134,10 @@ void testCallExpressionAsFactorOperand() {
   EXPECT(parseToString("2 * print(1);") == "(* 2 (call print 1))");
 }
 
+void testCallReturnedFunctionExpression() {
+  EXPECT(parseProgramToString("makeOne()();") == "(expr (call (call makeOne)))");
+}
+
 void testMethodCallExpression() {
   EXPECT(parseProgramToString("a.push(3);") == "(expr (method-call a push 3))");
   EXPECT(parseProgramToString("a.pop();") == "(expr (method-call a pop))");
@@ -247,6 +251,7 @@ void runParserTests() {
   testWhileStatement();
   testCallExpression();
   testCallExpressionAsFactorOperand();
+  testCallReturnedFunctionExpression();
   testMethodCallExpression();
   testFunctionDeclaration();
   testReturnStatement();

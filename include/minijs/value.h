@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -9,7 +10,9 @@ namespace minijs {
 
 class Environment;
 class FunctionStmt;
+class Value;
 
+using BuiltinFunction = std::function<Value(const std::vector<Value>& arguments)>;
 // 解释器当前支持的运行时值类型。
 enum class ValueType {
   Number,
@@ -20,6 +23,7 @@ enum class ValueType {
   Object,
   String,
   Undefined,
+  BuiltinFunction,
 };
 
 // 函数运行时载荷。
@@ -45,6 +49,9 @@ class Value {
 
   // 创建函数值。
   Value(const FunctionStmt* declaration, std::shared_ptr<Environment> closure);
+
+  // 创建 C++ 实现的内置函数值。
+  explicit Value(BuiltinFunction builtin);
 
   // 创建数组值，数组使用共享指针模拟对象引用语义。
   explicit Value(std::vector<Value> elements);
@@ -79,6 +86,9 @@ class Value {
   // 返回可修改对象载荷；当前值不是对象时抛出运行时错误。
   std::unordered_map<std::string, Value>& asObject();
 
+  // 返回内置函数载荷；当前值不是内置函数时抛出运行时错误。
+  const BuiltinFunction& asBuiltinFunction() const;
+
   // 返回面向用户的字符串表示。
   std::string toString() const;
 
@@ -106,6 +116,9 @@ class Value {
   // 返回当前值是否为对象。
   bool isObject() const;
 
+  // 返回当前值是否为内置函数。
+  bool isBuiltinFunction() const;
+
  private:
   explicit Value(ValueType type);
 
@@ -113,6 +126,7 @@ class Value {
   double number_ = 0;
   bool boolean_ = false;
   FunctionValue function_ = FunctionValue({nullptr, nullptr});
+  BuiltinFunction builtin_;
   std::shared_ptr<std::vector<Value>> array_;
   std::shared_ptr<std::unordered_map<std::string, Value>> object_;
   std::string string_;

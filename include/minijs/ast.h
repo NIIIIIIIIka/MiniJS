@@ -231,12 +231,13 @@ class SetExpr final : public Expr {
 // 具名函数调用表达式。
 class CallExpr final : public Expr {
  public:
-  CallExpr(std::string callee, std::vector<ExprPtr> arguments);
-  const std::string& callee() const;
+  CallExpr(ExprPtr callee, std::vector<ExprPtr> arguments);
+
+  const Expr& callee() const;
   const std::vector<ExprPtr>& arguments() const;
 
  private:
-  std::string callee_;
+  ExprPtr callee_;
   std::vector<ExprPtr> arguments_;
 };
 

@@ -219,6 +219,17 @@ void testPrintString() {
   EXPECT(result.isNull());
 }
 
+void testBuiltinFunctionCanBeAssigned() {
+  std::ostringstream output;
+  std::streambuf* previous = std::cout.rdbuf(output.rdbuf());
+
+  const minijs::Value result = run("let p = print; p(\"hello\");");
+
+  std::cout.rdbuf(previous);
+  EXPECT(output.str() == "hello\n");
+  EXPECT(result.isNull());
+}
+
 void testUnknownFunction() {
   try {
     run("unknown(1);");
@@ -285,6 +296,15 @@ void testRecursiveFunction() {
              .asNumber() == 120);
 }
 
+void testCallReturnedFunctionDirectly() {
+  EXPECT(run("function makeOne() {"
+             "  function one() { return 1; }"
+             "  return one;"
+             "}"
+             "makeOne()();")
+             .asNumber() == 1);
+}
+
 void testClosureKeepsOuterVariable() {
   EXPECT(run("function makeCounter() {"
              "  let count = 0;"
@@ -295,8 +315,9 @@ void testClosureKeepsOuterVariable() {
              "  return next;"
              "}"
              "let c = makeCounter();"
+             "c();"
              "c();")
-             .asNumber() == 1);
+             .asNumber() == 2);
 }
 
 void testReturnOutsideFunction() {
@@ -446,6 +467,7 @@ void runInterpreterTests() {
   testWhileLoop();
   testPrint();
   testPrintString();
+  testBuiltinFunctionCanBeAssigned();
   testUnknownFunction();
   testPrintArity();
   testFunctionCall();
@@ -458,6 +480,7 @@ void runInterpreterTests() {
   testReturnValueStillWorks();
   testEarlyReturnFromFunction();
   testRecursiveFunction();
+  testCallReturnedFunctionDirectly();
   testClosureKeepsOuterVariable();
   testReturnOutsideFunction();
   testUndefinedVariable();
