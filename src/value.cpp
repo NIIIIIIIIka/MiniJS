@@ -16,7 +16,7 @@ Value::Value(double number) : value_type_(ValueType::Number), number_(number) {}
 
 Value::Value(bool boolean) : value_type_(ValueType::Boolean), boolean_(boolean) {}
 
-Value::Value(const FunctionStmt* declaration, Environment* closure)
+Value::Value(const FunctionStmt* declaration, std::shared_ptr<Environment> closure)
     : value_type_(ValueType::Function), function_({declaration, closure}) {}
 
 Value::Value(std::vector<Value> elements)

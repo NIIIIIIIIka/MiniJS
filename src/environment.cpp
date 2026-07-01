@@ -6,7 +6,7 @@
 
 namespace minijs {
 Environment::Environment() {}
-Environment::Environment(Environment* parent) : parent_(std::move(parent)) {}
+Environment::Environment(std::shared_ptr<Environment> parent) : parent_(std::move(parent)) {}
 void Environment::define(std::string name, Value value) { values_[std::move(name)] = value; }
 
 Value Environment::get(const std::string& name) const {

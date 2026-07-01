@@ -53,6 +53,9 @@ Value Interpreter::interpret(const Program& program) {
   return lastValue_;
 }
 
+Interpreter::Interpreter()
+    : global_environment_(std::make_shared<Environment>()), environment_(global_environment_) {}
+
 void Interpreter::execute(const Stmt& statement) {
   if (const auto* letStmt = dynamic_cast<const LetStmt*>(&statement)) {
     Value value = evaluate(letStmt->initializer());
@@ -75,8 +78,8 @@ void Interpreter::execute(const Stmt& statement) {
   }
 
   if (const auto* blockStmt = dynamic_cast<const BlockStmt*>(&statement)) {
-    Environment blockEnvironment(environment_);
-    executeBlock(blockStmt->statements(), &blockEnvironment);
+    auto block_environment = std::make_shared<Environment>(environment_);
+    executeBlock(blockStmt->statements(), block_environment);
     return;
   }
 
@@ -304,13 +307,13 @@ Value Interpreter::evaluate(const Expr& expression) {
                          std::to_string(declaration->params().size()) + " arguments");
     }
 
-    Environment callEnvironment(function.closure);
+    auto call_environment = std::make_shared<Environment>(function.closure);
     for (std::size_t i = 0; i < declaration->params().size(); ++i) {
-      callEnvironment.define(declaration->params()[i], evaluate(*call->arguments()[i]));
+      (*call_environment.get()).define(declaration->params()[i], evaluate(*call->arguments()[i]));
     }
 
     try {
-      executeBlock(declaration->body(), &callEnvironment);
+      executeBlock(declaration->body(), call_environment);
       return Value::undefined();
     } catch (const ReturnSignal& signal) {
       return signal.value();
@@ -386,8 +389,9 @@ Value Interpreter::evaluate(const Expr& expression) {
   throw RuntimeError("unknown expression type");
 }
 
-void Interpreter::executeBlock(const Program& statements, Environment* environment) {
-  Environment* previous = environment_;
+void Interpreter::executeBlock(const Program& statements,
+                               std::shared_ptr<Environment> environment) {
+  auto previous = environment_;
   environment_ = environment;
 
   try {

@@ -285,6 +285,20 @@ void testRecursiveFunction() {
              .asNumber() == 120);
 }
 
+void testClosureKeepsOuterVariable() {
+  EXPECT(run("function makeCounter() {"
+             "  let count = 0;"
+             "  function next() {"
+             "    count = count + 1;"
+             "    return count;"
+             "  }"
+             "  return next;"
+             "}"
+             "let c = makeCounter();"
+             "c();")
+             .asNumber() == 1);
+}
+
 void testReturnOutsideFunction() {
   try {
     run("return 1;");
@@ -444,6 +458,7 @@ void runInterpreterTests() {
   testReturnValueStillWorks();
   testEarlyReturnFromFunction();
   testRecursiveFunction();
+  testClosureKeepsOuterVariable();
   testReturnOutsideFunction();
   testUndefinedVariable();
   testDivisionByZero();

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <string>
 #include <unordered_map>
 
@@ -16,7 +17,7 @@ class Environment {
   Environment();
 
   // 创建子环境；当前环境找不到变量时会继续查询 parent。
-  explicit Environment(Environment* parent);
+  explicit Environment(std::shared_ptr<Environment> parent);
 
   // 在当前环境中定义或覆盖一个绑定。
   void define(std::string name, Value value);
@@ -28,7 +29,7 @@ class Environment {
   void assign(const std::string& name, Value value);
 
  private:
-  Environment* parent_ = nullptr;
+  std::shared_ptr<Environment> parent_;
   std::unordered_map<std::string, Value> values_;
 };
 

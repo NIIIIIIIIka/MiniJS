@@ -28,7 +28,7 @@ enum class ValueType {
 // 这里保存非拥有指针，避免在 Value 中复制 AST 或 Environment。
 struct FunctionValue {
   const FunctionStmt* declaration = nullptr;
-  Environment* closure = nullptr;
+  std::shared_ptr<Environment> closure;
 };
 
 // MiniJS 的动态运行时值。
@@ -44,7 +44,7 @@ class Value {
   explicit Value(bool boolean);
 
   // 创建函数值。
-  Value(const FunctionStmt* declaration, Environment* closure);
+  Value(const FunctionStmt* declaration, std::shared_ptr<Environment> closure);
 
   // 创建数组值，数组使用共享指针模拟对象引用语义。
   explicit Value(std::vector<Value> elements);
