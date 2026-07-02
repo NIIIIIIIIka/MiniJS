@@ -55,10 +55,12 @@ enum class TokenType {
   While,
   Function,
   Return,
+  Break,
+  Continue,
 
   // 特殊 token。
   Invalid,
-  Eof
+  Eof,
 };
 
 // 词法分析器输出的单个 token。

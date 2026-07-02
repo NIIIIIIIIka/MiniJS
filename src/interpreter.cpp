@@ -47,6 +47,9 @@ class ReturnSignal {
   Value value_;
 };
 
+class ContinueSignal {};
+class BreakSignal {};
+
 std::size_t checkedArrayIndex(const Value& index, std::size_t size) {
   if (!index.isNumber()) {
     throw RuntimeError("array index must be a non-negative integer");
@@ -84,6 +87,10 @@ Value Interpreter::interpret(const Program& program) {
     }
   } catch (const ReturnSignal&) {
     throw RuntimeError("return outside function");
+  } catch (const BreakSignal&) {
+    throw RuntimeError("break outside loop");
+  } catch (const ContinueSignal&) {
+    throw RuntimeError("continue outside loop");
   }
 
   return lastValue_;
@@ -208,7 +215,13 @@ void Interpreter::execute(const Stmt& statement) {
 
   if (const auto* whileStmt = dynamic_cast<const WhileStmt*>(&statement)) {
     while (evaluate(whileStmt->condition()).isTruthy()) {
-      execute(whileStmt->body());
+      try {
+        execute(whileStmt->body());
+      } catch (const ContinueSignal&) {
+        continue;
+      } catch (const BreakSignal&) {
+        break;
+      }
     }
     return;
   }
@@ -226,6 +239,13 @@ void Interpreter::execute(const Stmt& statement) {
     throw ReturnSignal(evaluate(*returnStmt->value()));
   }
 
+  if (dynamic_cast<const BreakStmt*>(&statement) != nullptr) {
+    throw BreakSignal();
+  }
+
+  if (dynamic_cast<const ContinueStmt*>(&statement) != nullptr) {
+    throw ContinueSignal();
+  }
   throw RuntimeError("unknown statement type");
 }
 

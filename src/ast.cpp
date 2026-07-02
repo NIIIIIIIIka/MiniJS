@@ -406,6 +406,14 @@ std::string formatStmt(const Stmt& statement) {
     return "(return " + formatExpr(*returnStmt->value()) + ")";
   }
 
+  if (dynamic_cast<const BreakStmt*>(&statement) != nullptr) {
+    return "(break)";
+  }
+
+  if (dynamic_cast<const ContinueStmt*>(&statement) != nullptr) {
+    return "(continue)";
+  }
+
   throw std::logic_error("unknown statement type");
 }
 

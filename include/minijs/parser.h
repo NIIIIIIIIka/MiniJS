@@ -50,6 +50,10 @@ class Parser {
   // 解析函数声明。
   StmtPtr functionDeclaration();
 
+  StmtPtr breakStatement();
+
+  StmtPtr continueStatement();
+
   // 解析块内部的语句列表，调用方负责先消费左花括号。
   Program block();
 

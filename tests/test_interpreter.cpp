@@ -218,6 +218,34 @@ void testIndexNonArrayValue() {
 
 void testWhileLoop() { EXPECT(run("let i = 0; while (i < 3) { i = i + 1; } i;").asNumber() == 3); }
 
+void testBreakStatement() {
+  EXPECT(run("let i = 0; while (true) { i = i + 1; if (i == 3) break; } i;").asNumber() == 3);
+}
+
+void testContinueStatement() {
+  EXPECT(run("let i = 0; let sum = 0; while (i < 5) { i = i + 1; if (i == 3) "
+             "continue; sum = sum + i; } sum;")
+             .asNumber() == 12);
+}
+
+void testBreakOutsideLoop() {
+  try {
+    run("break;");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: break outside loop");
+  }
+}
+
+void testContinueOutsideLoop() {
+  try {
+    run("continue;");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: continue outside loop");
+  }
+}
+
 void testPrint() {
   std::ostringstream output;
   std::streambuf* previous = std::cout.rdbuf(output.rdbuf());
@@ -580,6 +608,10 @@ void runInterpreterTests() {
   testArrayIndexMustBeInteger();
   testIndexNonArrayValue();
   testWhileLoop();
+  testBreakStatement();
+  testContinueStatement();
+  testBreakOutsideLoop();
+  testContinueOutsideLoop();
   testPrint();
   testPrintString();
   testBuiltinFunctionCanBeAssigned();

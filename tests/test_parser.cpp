@@ -126,6 +126,13 @@ void testWhileStatement() {
          "(while (< i 3) (block (expr (assign i (+ i 1)))))");
 }
 
+void testBreakAndContinueStatements() {
+  EXPECT(parseProgramToString("break;") == "(break)");
+  EXPECT(parseProgramToString("continue;") == "(continue)");
+  EXPECT(parseProgramToString("while (true) { break; continue; }") ==
+         "(while true (block (break) (continue)))");
+}
+
 void testCallExpression() {
   EXPECT(parseProgramToString("print(1 + 2);") == "(expr (call print (+ 1 2)))");
 }
@@ -249,6 +256,7 @@ void runParserTests() {
   testGetExpression();
   testSetExpression();
   testWhileStatement();
+  testBreakAndContinueStatements();
   testCallExpression();
   testCallExpressionAsFactorOperand();
   testCallReturnedFunctionExpression();

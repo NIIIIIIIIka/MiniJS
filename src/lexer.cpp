@@ -16,6 +16,8 @@ const std::unordered_map<std::string_view, TokenType> keywordMap = {
     {"false", TokenType::False},
     {"null", TokenType::Null},
     {"undefined", TokenType::Undefined},
+    {"break", TokenType::Break},
+    {"continue", TokenType::Continue},
 };
 }
 

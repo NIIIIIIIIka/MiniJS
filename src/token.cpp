@@ -76,6 +76,10 @@ std::string_view tokenTypeName(TokenType type) {
       return "Function";
     case TokenType::Return:
       return "Return";
+    case TokenType::Break:
+      return "Break";
+    case TokenType::Continue:
+      return "Continue";
     case TokenType::Invalid:
       return "Invalid";
     case TokenType::Eof:

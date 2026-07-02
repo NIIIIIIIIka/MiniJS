@@ -313,6 +313,15 @@ class WhileStmt final : public Stmt {
   StmtPtr body_;
 };
 
+class BreakStmt final : public Stmt {
+ public:
+  BreakStmt() = default;
+};
+class ContinueStmt final : public Stmt {
+ public:
+  ContinueStmt() = default;
+};
+
 // 具名函数声明语句。
 class FunctionStmt final : public Stmt {
  public:

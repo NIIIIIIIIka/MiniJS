@@ -104,6 +104,13 @@ StmtPtr Parser::statement() {
   if (match(TokenType::Return)) {
     return returnStatement();
   }
+  if (match(TokenType::Break)) {
+    return breakStatement();
+  }
+
+  if (match(TokenType::Continue)) {
+    return continueStatement();
+  }
   return expressionStatement();
 }
 
@@ -218,6 +225,20 @@ StmtPtr Parser::functionDeclaration() {
   Program body = block();
   return std::make_unique<FunctionStmt>(std::string(name.lexeme), std::move(params),
                                         std::move(body));
+}
+
+StmtPtr Parser::breakStatement() {
+  if (!match(TokenType::Semicolon)) {
+    report(peek(), "expected ';' after break");
+  }
+  return std::make_unique<BreakStmt>();
+}
+
+StmtPtr Parser::continueStatement() {
+  if (!match(TokenType::Semicolon)) {
+    report(peek(), "expected ';' after continue");
+  }
+  return std::make_unique<ContinueStmt>();
 }
 
 Program Parser::block() {
