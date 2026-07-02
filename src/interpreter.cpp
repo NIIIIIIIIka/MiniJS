@@ -9,6 +9,34 @@
 
 namespace minijs {
 namespace {
+Value callArrayMethod(Value object, const std::string& name, const std::vector<Value>& arguments) {
+  if (name == "push") {
+    if (arguments.size() != 1) {
+      throw RuntimeError("array.push expects 1 argument");
+    }
+
+    object.asArray().push_back(arguments[0]);
+    return Value(static_cast<double>(object.asArray().size()));
+  }
+
+  if (name == "pop") {
+    if (!arguments.empty()) {
+      throw RuntimeError("array.pop expects 0 arguments");
+    }
+
+    auto& array = object.asArray();
+    if (array.empty()) {
+      return Value::undefined();
+    }
+    Value value = array.back();
+    array.pop_back();
+
+    return value;
+  }
+
+  throw RuntimeError("undefined method: " + name);
+}
+
 class ReturnSignal {
  public:
   explicit ReturnSignal(Value value) : value_(value) {}
@@ -36,6 +64,14 @@ std::size_t checkedArrayIndex(const Value& index, std::size_t size) {
 
   return offset;
 }
+
+void expectArity(const std::vector<Value>& arguments, std::size_t expected,
+                 const std::string& name) {
+  if (arguments.size() != expected) {
+    throw RuntimeError(name + " expects " + std::to_string(expected) + " argument" +
+                       (expected == 1 ? "" : "s"));
+  }
+}
 }  // namespace
 Value Interpreter::interpret(const Program& program) {
   lastValue_ = Value();
@@ -55,15 +91,92 @@ Value Interpreter::interpret(const Program& program) {
 
 Interpreter::Interpreter()
     : global_environment_(std::make_shared<Environment>()), environment_(global_environment_) {
-  global_environment_->define(
-      "print", Value(BuiltinFunction([](const std::vector<Value>& arguments) -> Value {
-        if (arguments.size() != 1) {
-          throw RuntimeError("print expects 1 argument");
-        }
+  defineBuiltins();
+}
 
-        std::cout << arguments[0].toString() << '\n';
-        return Value();
-      })));
+void Interpreter::defineBuiltin(std::string name, BuiltinFunction function) {
+  global_environment_->define(std::move(name), Value(std::move(function)));
+}
+
+void Interpreter::defineBuiltins() {
+  defineBuiltin("print", [](const std::vector<Value>& arguments) -> Value {
+    expectArity(arguments, 1, "print");
+
+    std::cout << arguments[0].toString() << '\n';
+    return Value();
+  });
+
+  defineBuiltin("has", [](const std::vector<Value>& arguments) -> Value {
+    expectArity(arguments, 2, "has");
+
+    const Value& object = arguments[0];
+    const Value& key = arguments[1];
+
+    if (!key.isString()) {
+      throw RuntimeError("has key must be a string");
+    }
+
+    const std::string& name = key.asString();
+
+    if (object.isObject()) {
+      return Value(object.asObject().find(name) != object.asObject().end());
+    }
+
+    if (object.isArray()) {
+      return Value(name == "length" || name == "push" || name == "pop");
+    }
+
+    if (object.isString()) {
+      return Value(name == "length");
+    }
+    return Value(false);
+  });
+
+  defineBuiltin("keys", [](const std::vector<Value>& arguments) -> Value {
+    expectArity(arguments, 1, "keys");
+
+    const Value& object = arguments[0];
+    std::vector<Value> keys;
+
+    if (object.isObject()) {
+      for (const auto& key : object.asObject()) {
+        keys.push_back(Value(key.first));
+      }
+      return Value(std::move(keys));
+    }
+    if (object.isArray()) {
+      keys.push_back(Value(std::string("length")));
+      keys.push_back(Value(std::string("push")));
+      keys.push_back(Value(std::string("pop")));
+      return Value(std::move(keys));
+    }
+
+    if (object.isString()) {
+      keys.push_back(Value(std::string("length")));
+      return Value(std::move(keys));
+    }
+
+    return Value(std::move(keys));
+  });
+
+  defineBuiltin("del", [](const std::vector<Value>& arguments) -> Value {
+    expectArity(arguments, 2, "del");
+
+    Value object = arguments[0];
+    const Value& key = arguments[1];
+
+    if (!key.isString()) {
+      throw RuntimeError("del key must be a string");
+    }
+
+    if (!object.isObject()) {
+      return Value(false);
+    }
+
+    const std::string& name = key.asString();
+    auto& properties = object.asObject();
+    return Value(properties.erase(name) > 0);
+  });
 }
 
 void Interpreter::execute(const Stmt& statement) {
@@ -271,14 +384,10 @@ Value Interpreter::evaluate(const Expr& expression) {
         return Value(lhs <= rhs);
       }
       case TokenType::EqualEqual: {
-        const double lhs = left.asNumber();
-        const double rhs = right.asNumber();
-        return Value(lhs == rhs);
+        return Value(left.equals(right));
       }
       case TokenType::BangEqual: {
-        const double lhs = left.asNumber();
-        const double rhs = right.asNumber();
-        return Value(lhs != rhs);
+        return Value(!left.equals(right));
       }
       default:
         throw RuntimeError("unsupported binary operator");
@@ -343,33 +452,14 @@ Value Interpreter::evaluate(const Expr& expression) {
 
   if (const auto* call = dynamic_cast<const MethodCallExpr*>(&expression)) {
     Value object = evaluate(call->object());
-    if (object.isArray() && call->name() == "push") {
-      if (call->arguments().size() != 1) {
-        throw RuntimeError("array.push expects 1 argument");
-      }
-
-      Value value = evaluate(*call->arguments()[0]);
-      object.asArray().push_back(value);
-      return Value(static_cast<double>(object.asArray().size()));
-    }
-    if (object.isArray() && call->name() == "pop") {
-      if (!call->arguments().empty()) {
-        throw RuntimeError("array.pop expects 0 arguments");
-      }
-
-      auto& array = object.asArray();
-
-      if (array.empty()) {
-        return Value::undefined();
-      }
-
-      Value value = array.back();
-      array.pop_back();
-      return value;
+    std::vector<Value> arguments;
+    for (auto& argument : call->arguments()) {
+      arguments.push_back(evaluate(*argument));
     }
     if (object.isArray()) {
-      throw RuntimeError("undefined method: " + call->name());
+      return callArrayMethod(object, call->name(), arguments);
     }
+
     throw RuntimeError("value has no method: " + call->name());
   }
   if (const auto* object = dynamic_cast<const ObjectExpr*>(&expression)) {

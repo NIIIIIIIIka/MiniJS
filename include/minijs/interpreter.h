@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <string>
 
 #include "minijs/ast.h"
 #include "minijs/environment.h"
@@ -25,6 +26,9 @@ class Interpreter {
 
   // 在指定环境中执行语句列表，不改变调用方可见的最后结果语义。
   void executeBlock(const Program& statements, std::shared_ptr<Environment> environment);
+
+  void defineBuiltin(std::string name, BuiltinFunction function);
+  void defineBuiltins();
 
   std::shared_ptr<Environment> global_environment_;
   std::shared_ptr<Environment> environment_;

@@ -34,6 +34,27 @@ void testComparison() {
   EXPECT(run("2 >= 2;").toString() == "true");
 }
 
+void testEquality() {
+  EXPECT(run("1 == 1;").toString() == "true");
+  EXPECT(run("1 == 2;").toString() == "false");
+  EXPECT(run("1 != 2;").toString() == "true");
+  EXPECT(run("true == true;").toString() == "true");
+  EXPECT(run("true != false;").toString() == "true");
+  EXPECT(run("\"a\" == \"a\";").toString() == "true");
+  EXPECT(run("\"a\" != \"b\";").toString() == "true");
+  EXPECT(run("null == null;").toString() == "true");
+  EXPECT(run("undefined == undefined;").toString() == "true");
+  EXPECT(run("null == undefined;").toString() == "false");
+}
+
+void testReferenceEquality() {
+  EXPECT(run("let a = []; let b = a; a == b;").toString() == "true");
+  EXPECT(run("[] == [];").toString() == "false");
+  EXPECT(run("let a = {}; let b = a; a == b;").toString() == "true");
+  EXPECT(run("({}) == ({});").toString() == "false");
+  EXPECT(run("function f() { return 1; } let g = f; f == g;").toString() == "true");
+}
+
 void testUnaryOperators() {
   EXPECT(run("!true;").toString() == "false");
   EXPECT(run("!false;").toString() == "true");
@@ -248,6 +269,96 @@ void testPrintArity() {
   }
 }
 
+void testHasBuiltinObjectProperty() {
+  EXPECT(run("let p = { name: \"Tom\", age: 18 }; has(p, \"name\");").toString() == "true");
+  EXPECT(run("let p = { name: \"Tom\" }; has(p, \"score\");").toString() == "false");
+}
+
+void testHasBuiltinArrayAndStringProperty() {
+  EXPECT(run("let a = [1, 2, 3]; has(a, \"length\");").toString() == "true");
+  EXPECT(run("let a = [1, 2, 3]; has(a, \"push\");").toString() == "true");
+  EXPECT(run("let a = [1, 2, 3]; has(a, \"pop\");").toString() == "true");
+  EXPECT(run("let a = [1, 2, 3]; has(a, \"0\");").toString() == "false");
+  EXPECT(run("has(\"Tom\", \"length\");").toString() == "true");
+  EXPECT(run("has(1, \"length\");").toString() == "false");
+}
+
+void testHasBuiltinArity() {
+  try {
+    run("has({});");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: has expects 2 arguments");
+  }
+}
+
+void testHasBuiltinKeyMustBeString() {
+  try {
+    run("has({}, 1);");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: has key must be a string");
+  }
+}
+
+void testKeysBuiltinObject() {
+  EXPECT(run("let p = { name: \"Tom\", age: 18 }; keys(p).length;").asNumber() == 2);
+  EXPECT(run("let ks = keys({ name: \"Tom\", age: 18 }); ks.length == 2 && ks[0] != ks[1];")
+             .toString() == "true");
+}
+
+void testKeysBuiltinArrayAndString() {
+  EXPECT(run("keys([1, 2]).length;").asNumber() == 3);
+  EXPECT(run("let ks = keys([1, 2]); has([1, 2], ks[0]) && has([1, 2], ks[1]) && "
+             "has([1, 2], ks[2]);")
+             .toString() == "true");
+  EXPECT(run("keys(\"Tom\").length;").asNumber() == 1);
+  EXPECT(run("keys(1).length;").asNumber() == 0);
+}
+
+void testKeysBuiltinArity() {
+  try {
+    run("keys();");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: keys expects 1 argument");
+  }
+}
+
+void testDelBuiltinObjectProperty() {
+  EXPECT(
+      run("let p = { name: \"Tom\", age: 18 }; del(p, \"name\"); has(p, \"name\");").toString() ==
+      "false");
+  EXPECT(run("let p = { name: \"Tom\" }; del(p, \"score\");").toString() == "false");
+  EXPECT(run("let p = { name: \"Tom\" }; del(p, \"name\");").toString() == "true");
+  EXPECT(run("let p = { name: \"Tom\", age: 18 }; del(p, \"name\"); keys(p).length;").asNumber() ==
+         1);
+}
+
+void testDelBuiltinNonObject() {
+  EXPECT(run("del([1, 2], \"length\");").toString() == "false");
+  EXPECT(run("del(\"Tom\", \"length\");").toString() == "false");
+  EXPECT(run("del(1, \"x\");").toString() == "false");
+}
+
+void testDelBuiltinArity() {
+  try {
+    run("del({});");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: del expects 2 arguments");
+  }
+}
+
+void testDelBuiltinKeyMustBeString() {
+  try {
+    run("del({}, 1);");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: del key must be a string");
+  }
+}
+
 void testFunctionCall() {
   EXPECT(run("function add(a, b) { return a + b; } add(1, 2);").asNumber() == 3);
 }
@@ -381,6 +492,8 @@ void testObjectOwnLengthProperty() {
 void testArrayPush() {
   EXPECT(run("let a = [1, 2]; a.push(3); a.length;").asNumber() == 3);
   EXPECT(run("let a = []; a.push(1); a.push(2); a[0] + a[1];").asNumber() == 3);
+  EXPECT(run("let a = []; a.push(10);").asNumber() == 1);
+  EXPECT(run("let a = []; a.push(1 + 2); a[0];").asNumber() == 3);
 }
 
 void testArrayPop() {
@@ -434,6 +547,8 @@ void runInterpreterTests() {
   testPercent();
   testGrouping();
   testComparison();
+  testEquality();
+  testReferenceEquality();
   testUnaryOperators();
   testLogicalOperators();
   testLogicalShortCircuit();
@@ -470,6 +585,17 @@ void runInterpreterTests() {
   testBuiltinFunctionCanBeAssigned();
   testUnknownFunction();
   testPrintArity();
+  testHasBuiltinObjectProperty();
+  testHasBuiltinArrayAndStringProperty();
+  testHasBuiltinArity();
+  testHasBuiltinKeyMustBeString();
+  testKeysBuiltinObject();
+  testKeysBuiltinArrayAndString();
+  testKeysBuiltinArity();
+  testDelBuiltinObjectProperty();
+  testDelBuiltinNonObject();
+  testDelBuiltinArity();
+  testDelBuiltinKeyMustBeString();
   testFunctionCall();
   testFunctionCallCanUseOuterVariable();
   testFunctionArity();

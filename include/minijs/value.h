@@ -119,6 +119,9 @@ class Value {
   // 返回当前值是否为内置函数。
   bool isBuiltinFunction() const;
 
+  // 比较两个运行时值是否相等；对象、数组和函数按引用身份比较。
+  bool equals(const Value& other) const;
+
  private:
   explicit Value(ValueType type);
 

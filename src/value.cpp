@@ -164,4 +164,33 @@ bool Value::isObject() const { return value_type_ == ValueType::Object; }
 
 bool Value::isBuiltinFunction() const { return value_type_ == ValueType::BuiltinFunction; }
 
+bool Value::equals(const Value& other) const {
+  if (value_type_ != other.value_type_) {
+    return false;
+  }
+
+  switch (value_type_) {
+    case ValueType::Number:
+      return number_ == other.number_;
+    case ValueType::Boolean:
+      return boolean_ == other.boolean_;
+    case ValueType::String:
+      return string_ == other.string_;
+    case ValueType::Null:
+    case ValueType::Undefined:
+      return true;
+    case ValueType::Array:
+      return array_ == other.array_;
+    case ValueType::Object:
+      return object_ == other.object_;
+    case ValueType::Function:
+      return function_.declaration == other.function_.declaration &&
+             function_.closure == other.function_.closure;
+    case ValueType::BuiltinFunction:
+      return false;
+  }
+
+  return false;
+}
+
 }  // namespace minijs
