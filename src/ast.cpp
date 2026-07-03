@@ -200,6 +200,20 @@ const std::string& LetStmt::name() const { return name_; }
 
 const Expr& LetStmt::initializer() const { return *initializer_; }
 
+ForStmt::ForStmt(StmtPtr initializer, ExprPtr condition, ExprPtr increment, StmtPtr body)
+    : initializer_(std::move(initializer)),
+      condition_(std::move(condition)),
+      increment_(std::move(increment)),
+      body_(std::move(body)) {}
+
+const Stmt* ForStmt::initializer() const { return initializer_.get(); }
+
+const Expr* ForStmt::condition() const { return condition_.get(); }
+
+const Expr* ForStmt::increment() const { return increment_.get(); }
+
+const Stmt& ForStmt::body() const { return *body_; }
+
 IfStmt::IfStmt(ExprPtr condition, StmtPtr thenBranch, StmtPtr elseBranch)
     : condition_(std::move(condition)),
       thenBranch_(std::move(thenBranch)),
@@ -377,6 +391,19 @@ std::string formatStmt(const Stmt& statement) {
   if (const auto* whileStmt = dynamic_cast<const WhileStmt*>(&statement)) {
     return "(while " + formatExpr(whileStmt->condition()) + " " + formatStmt(whileStmt->body()) +
            ")";
+  }
+
+  if (const auto* forStmt = dynamic_cast<const ForStmt*>(&statement)) {
+    std::string result = "(for ";
+    result += forStmt->initializer() == nullptr ? "nil" : formatStmt(*forStmt->initializer());
+    result += " ";
+    result += forStmt->condition() == nullptr ? "nil" : formatExpr(*forStmt->condition());
+    result += " ";
+    result += forStmt->increment() == nullptr ? "nil" : formatExpr(*forStmt->increment());
+    result += " ";
+    result += formatStmt(forStmt->body());
+    result += ")";
+    return result;
   }
 
   if (const auto* functionStmt = dynamic_cast<const FunctionStmt*>(&statement)) {

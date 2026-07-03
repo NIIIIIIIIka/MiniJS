@@ -133,6 +133,12 @@ void testBreakAndContinueStatements() {
          "(while true (block (break) (continue)))");
 }
 
+void testForStatement() {
+  EXPECT(parseProgramToString("for (let i = 0; i < 3; i = i + 1) { i; }") ==
+         "(for (let i 0) (< i 3) (assign i (+ i 1)) (block (expr i)))");
+  EXPECT(parseProgramToString("for (;;) { break; }") == "(for nil nil nil (block (break)))");
+}
+
 void testCallExpression() {
   EXPECT(parseProgramToString("print(1 + 2);") == "(expr (call print (+ 1 2)))");
 }
@@ -257,6 +263,7 @@ void runParserTests() {
   testSetExpression();
   testWhileStatement();
   testBreakAndContinueStatements();
+  testForStatement();
   testCallExpression();
   testCallExpressionAsFactorOperand();
   testCallReturnedFunctionExpression();

@@ -98,6 +98,9 @@ StmtPtr Parser::statement() {
   if (match(TokenType::While)) {
     return whileStatement();
   }
+  if (match(TokenType::For)) {
+    return forStatement();
+  }
   if (match(TokenType::Function)) {
     return functionDeclaration();
   }
@@ -177,6 +180,38 @@ StmtPtr Parser::whileStatement() {
   StmtPtr body = statement();
 
   return std::make_unique<WhileStmt>(std::move(condition), std::move(body));
+}
+
+StmtPtr Parser::forStatement() {
+  if (!match(TokenType::LeftParen)) {
+    report(peek(), "expected '(' after for");
+  }
+  StmtPtr initializer;
+  if (match(TokenType::Semicolon)) {
+    initializer = nullptr;
+  } else if (match(TokenType::Let)) {
+    initializer = letDeclaration();
+  } else {
+    initializer = expressionStatement();
+  }
+  ExprPtr condition;
+  if (!check(TokenType::Semicolon)) {
+    condition = expression();
+  }
+  if (!match(TokenType::Semicolon)) {
+    report(peek(), "expected ';' after for condition");
+  }
+  ExprPtr increment;
+  if (!check(TokenType::RightParen)) {
+    increment = expression();
+  }
+  if (!match(TokenType::RightParen)) {
+    report(peek(), "expected ')' after for clauses");
+  }
+  StmtPtr body = statement();
+
+  return std::make_unique<ForStmt>(std::move(initializer), std::move(condition),
+                                   std::move(increment), std::move(body));
 }
 
 StmtPtr Parser::returnStatement() {

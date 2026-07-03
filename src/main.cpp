@@ -1,4 +1,4 @@
-#include <fstream>
+﻿#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
@@ -179,11 +179,7 @@ int main(int argc, char* argv[]) {
   }
 
   try {
-    const std::string source = readFile(argument);
-
-    // 临时行为：后续会替换为完整脚本执行入口。
-    std::cout << source;
-    return 0;
+    return runProgram(readFile(argument)) ? 0 : ExitInputError;
   } catch (const std::exception& error) {
     std::cerr << "error: " << error.what() << '\n';
     return ExitInputError;

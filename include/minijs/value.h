@@ -104,6 +104,9 @@ class Value {
   // 返回当前值是否为数字。
   bool isNumber() const;
 
+  // 返回当前值是否为布尔值。
+  bool isBoolean() const;
+
   // 返回当前值是否为字符串。
   bool isString() const;
 

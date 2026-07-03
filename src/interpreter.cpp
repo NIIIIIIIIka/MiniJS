@@ -184,6 +184,58 @@ void Interpreter::defineBuiltins() {
     auto& properties = object.asObject();
     return Value(properties.erase(name) > 0);
   });
+
+  defineBuiltin("typeOf", [](const std::vector<Value>& arguments) -> Value {
+    expectArity(arguments, 1, "typeOf");
+
+    const Value& value = arguments[0];
+    if (value.isNumber()) {
+      return Value(std::string("number"));
+    }
+    if (value.isBoolean()) {
+      return Value(std::string("boolean"));
+    }
+    if (value.isString()) {
+      return Value(std::string("string"));
+    }
+    if (value.isArray()) {
+      return Value(std::string("array"));
+    }
+    if (value.isObject()) {
+      return Value(std::string("object"));
+    }
+    if (value.isFunction()) {
+      return Value(std::string("function"));
+    }
+    if (value.isBuiltinFunction()) {
+      return Value(std::string("builtin"));
+    }
+    if (value.isNull()) {
+      return Value(std::string("null"));
+    }
+    if (value.isUndefined()) {
+      return Value(std::string("undefined"));
+    }
+
+    return Value(std::string("unknown"));
+  });
+
+  defineBuiltin("len", [](const std::vector<Value>& arguments) -> Value {
+    expectArity(arguments, 1, "len");
+
+    const Value& value = arguments[0];
+    if (value.isString()) {
+      return Value(static_cast<double>(value.asString().size()));
+    }
+    if (value.isArray()) {
+      return Value(static_cast<double>(value.asArray().size()));
+    }
+    if (value.isObject()) {
+      return Value(static_cast<double>(value.asObject().size()));
+    }
+
+    throw RuntimeError("value has no length");
+  });
 }
 
 void Interpreter::execute(const Stmt& statement) {
@@ -223,6 +275,43 @@ void Interpreter::execute(const Stmt& statement) {
         break;
       }
     }
+    return;
+  }
+
+  if (const auto* forStmt = dynamic_cast<const ForStmt*>(&statement)) {
+    auto loop_environment = std::make_shared<Environment>(environment_);
+    auto previous = environment_;
+    environment_ = loop_environment;
+
+    try {
+      if (forStmt->initializer() != nullptr) {
+        execute(*forStmt->initializer());
+      }
+
+      while (forStmt->condition() == nullptr || evaluate(*forStmt->condition()).isTruthy()) {
+        bool should_break = false;
+        try {
+          execute(forStmt->body());
+        } catch (const ContinueSignal&) {
+          // 继续执行 increment
+        } catch (const BreakSignal&) {
+          should_break = true;
+        }
+
+        if (should_break) {
+          break;
+        }
+
+        if (forStmt->increment() != nullptr) {
+          evaluate(*forStmt->increment());
+        }
+      }
+    } catch (...) {
+      environment_ = previous;
+      throw;
+    }
+
+    environment_ = previous;
     return;
   }
 

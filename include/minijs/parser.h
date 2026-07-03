@@ -44,6 +44,8 @@ class Parser {
   // 解析 while 循环语句。
   StmtPtr whileStatement();
 
+  StmtPtr forStatement();
+
   // 解析 return 返回语句。
   StmtPtr returnStatement();
 

@@ -154,6 +154,8 @@ bool Value::isUndefined() const { return value_type_ == ValueType::Undefined; }
 
 bool Value::isNumber() const { return value_type_ == ValueType::Number; }
 
+bool Value::isBoolean() const { return value_type_ == ValueType::Boolean; }
+
 bool Value::isFunction() const { return value_type_ == ValueType::Function; }
 
 bool Value::isArray() const { return value_type_ == ValueType::Array; }

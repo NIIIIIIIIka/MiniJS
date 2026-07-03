@@ -82,10 +82,10 @@ void testBracketsAndControlKeywords() {
       TokenType::LeftBrace,  TokenType::While,       TokenType::LeftParen,    TokenType::False,
       TokenType::RightParen, TokenType::LeftBracket, TokenType::RightBracket, TokenType::RightBrace,
       TokenType::Else,       TokenType::Function,    TokenType::Return,       TokenType::Break,
-      TokenType::Continue,   TokenType::Eof,
+      TokenType::Continue,   TokenType::For,         TokenType::Eof,
   };
 
-  EXPECT(scanTypes("if (true) { while(false) [] } else function return break continue") ==
+  EXPECT(scanTypes("if (true) { while(false) [] } else function return break continue for") ==
          expected);
 }
 

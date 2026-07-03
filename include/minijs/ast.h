@@ -336,6 +336,22 @@ class FunctionStmt final : public Stmt {
   Program body_;
 };
 
+class ForStmt final : public Stmt {
+ public:
+  ForStmt(StmtPtr initializer, ExprPtr condition, ExprPtr increment, StmtPtr body);
+
+  const Stmt* initializer() const;
+  const Expr* condition() const;
+  const Expr* increment() const;
+  const Stmt& body() const;
+
+ private:
+  StmtPtr initializer_;
+  ExprPtr condition_;
+  ExprPtr increment_;
+  StmtPtr body_;
+};
+
 // return 返回语句。
 class ReturnStmt final : public Stmt {
  public:

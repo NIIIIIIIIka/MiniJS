@@ -246,6 +246,35 @@ void testContinueOutsideLoop() {
   }
 }
 
+void testForLoop() {
+  EXPECT(
+      run("let sum = 0; for (let i = 1; i <= 5; i = i + 1) { sum = sum + i; } sum;").asNumber() ==
+      15);
+}
+
+void testForLoopInitializerScope() {
+  try {
+    run("for (let i = 0; i < 1; i = i + 1) {} i;");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: undefined variable: i");
+  }
+}
+
+void testForLoopBreak() {
+  EXPECT(run("let i = 0; for (; true; i = i + 1) { if (i == 3) break; } i;").asNumber() == 3);
+}
+
+void testForLoopContinueRunsIncrement() {
+  EXPECT(run("let sum = 0; for (let i = 0; i < 5; i = i + 1) { if (i == 3) "
+             "continue; sum = sum + i; } sum;")
+             .asNumber() == 7);
+}
+
+void testForLoopEmptyClauses() {
+  EXPECT(run("let i = 0; for (;;) { i = i + 1; if (i == 2) break; } i;").asNumber() == 2);
+}
+
 void testPrint() {
   std::ostringstream output;
   std::streambuf* previous = std::cout.rdbuf(output.rdbuf());
@@ -384,6 +413,50 @@ void testDelBuiltinKeyMustBeString() {
     EXPECT(false);
   } catch (const minijs::RuntimeError& error) {
     EXPECT(std::string_view(error.what()) == "RuntimeError: del key must be a string");
+  }
+}
+
+void testTypeOfBuiltin() {
+  EXPECT(run("typeOf(1);").toString() == "number");
+  EXPECT(run("typeOf(true);").toString() == "boolean");
+  EXPECT(run("typeOf(null);").toString() == "null");
+  EXPECT(run("typeOf(undefined);").toString() == "undefined");
+  EXPECT(run("typeOf(\"Tom\");").toString() == "string");
+  EXPECT(run("typeOf([1, 2]);").toString() == "array");
+  EXPECT(run("typeOf({});").toString() == "object");
+  EXPECT(run("typeOf(print);").toString() == "builtin");
+  EXPECT(run("function f() { return 1; } typeOf(f);").toString() == "function");
+}
+
+void testTypeOfBuiltinArity() {
+  try {
+    run("typeOf();");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: typeOf expects 1 argument");
+  }
+}
+
+void testLenBuiltin() {
+  EXPECT(run("len(\"Tom\");").asNumber() == 3);
+  EXPECT(run("len([1, 2, 3]);").asNumber() == 3);
+  EXPECT(run("len({ name: \"Tom\", age: 18 });").asNumber() == 2);
+  EXPECT(run("len(keys({ a: 1, b: 2 }));").asNumber() == 2);
+}
+
+void testLenBuiltinErrors() {
+  try {
+    run("len(1);");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: value has no length");
+  }
+
+  try {
+    run("len();");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: len expects 1 argument");
   }
 }
 
@@ -612,6 +685,11 @@ void runInterpreterTests() {
   testContinueStatement();
   testBreakOutsideLoop();
   testContinueOutsideLoop();
+  testForLoop();
+  testForLoopInitializerScope();
+  testForLoopBreak();
+  testForLoopContinueRunsIncrement();
+  testForLoopEmptyClauses();
   testPrint();
   testPrintString();
   testBuiltinFunctionCanBeAssigned();
@@ -628,6 +706,10 @@ void runInterpreterTests() {
   testDelBuiltinNonObject();
   testDelBuiltinArity();
   testDelBuiltinKeyMustBeString();
+  testTypeOfBuiltin();
+  testTypeOfBuiltinArity();
+  testLenBuiltin();
+  testLenBuiltinErrors();
   testFunctionCall();
   testFunctionCallCanUseOuterVariable();
   testFunctionArity();
