@@ -8,6 +8,7 @@
 void runLexerTests();
 void runParserTests();
 void runInterpreterTests();
+void runBytecodeTests();
 
 int main() {
   const minijs::SourceLocation defaultLocation;
@@ -23,6 +24,7 @@ int main() {
   runLexerTests();
   runParserTests();
   runInterpreterTests();
+  runBytecodeTests();
 
   if (minijs::test::failures != 0) {
     std::cerr << minijs::test::failures << " test(s) failed\n";
