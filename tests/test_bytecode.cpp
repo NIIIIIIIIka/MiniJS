@@ -33,6 +33,21 @@ void testCompileUnaryMinus() { EXPECT(runBytecode("-10;").asNumber() == -10); }
 
 void testCompileModuloExpression() { EXPECT(runBytecode("10 % 3;").asNumber() == 1); }
 
+void testCompileBooleanNullUndefinedLiterals() {
+  EXPECT(runBytecode("true;").toString() == "true");
+  EXPECT(runBytecode("false;").toString() == "false");
+  EXPECT(runBytecode("null;").isNull());
+  EXPECT(runBytecode("undefined;").isUndefined());
+}
+
+void testCompileStringLiteral() { EXPECT(runBytecode("\"Tom\";").toString() == "Tom"); }
+
+void testCompileStringConcatenation() {
+  EXPECT(runBytecode("\"hello \" + \"world\";").toString() == "hello world");
+  EXPECT(runBytecode("\"age: \" + 18;").toString() == "age: 18");
+  EXPECT(runBytecode("18 + \" years\";").toString() == "18 years");
+}
+
 minijs::Chunk compileExpression(std::string_view source) {
   minijs::Parser parser(source);
   minijs::ExprPtr expression = parser.parse();
@@ -68,6 +83,28 @@ void testDisassembleUnaryMinus() {
   EXPECT(minijs::disassembleChunk(chunk) == expected);
 }
 
+void testDisassembleStringLiteral() {
+  const minijs::Chunk chunk = compileExpression("\"Tom\";");
+
+  const std::string expected =
+      "0000 OP_CONSTANT 0 Tom\n"
+      "0002 OP_RETURN\n";
+
+  EXPECT(minijs::disassembleChunk(chunk) == expected);
+}
+
+void testDisassembleBooleanNullUndefinedLiterals() {
+  EXPECT(minijs::disassembleChunk(compileExpression("true;")) ==
+         "0000 OP_CONSTANT 0 true\n"
+         "0002 OP_RETURN\n");
+  EXPECT(minijs::disassembleChunk(compileExpression("null;")) ==
+         "0000 OP_CONSTANT 0 null\n"
+         "0002 OP_RETURN\n");
+  EXPECT(minijs::disassembleChunk(compileExpression("undefined;")) ==
+         "0000 OP_CONSTANT 0 undefined\n"
+         "0002 OP_RETURN\n");
+}
+
 void testBytecodeDivisionByZero() {
   try {
     runBytecode("10 / 0;");
@@ -79,7 +116,7 @@ void testBytecodeDivisionByZero() {
 
 void testUnsupportedBytecodeExpression() {
   try {
-    runBytecode("true;");
+    runBytecode("x;");
     EXPECT(false);
   } catch (const minijs::RuntimeError& error) {
     EXPECT(std::string_view(error.what()) == "RuntimeError: unsupported bytecode expression");
@@ -93,8 +130,13 @@ void runBytecodeTests() {
   testCompileArithmeticExpression();
   testCompileUnaryMinus();
   testCompileModuloExpression();
+  testCompileBooleanNullUndefinedLiterals();
+  testCompileStringLiteral();
+  testCompileStringConcatenation();
   testDisassembleArithmeticExpression();
   testDisassembleUnaryMinus();
+  testDisassembleStringLiteral();
+  testDisassembleBooleanNullUndefinedLiterals();
   testBytecodeDivisionByZero();
   testUnsupportedBytecodeExpression();
 }
