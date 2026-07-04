@@ -27,6 +27,7 @@ enum class Opcode : std::uint8_t {
   Not,
   JumpIfFalse,
   Jump,
+  Loop,
 };
 
 class Chunk {

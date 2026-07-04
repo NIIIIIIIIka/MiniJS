@@ -207,6 +207,18 @@ void Compiler::emitStatement(const Stmt& statement, bool keepValue) {
     }
     return;
   }
+
+  if (const auto* whileStmt = dynamic_cast<const WhileStmt*>(&statement)) {
+    const std::size_t loopStart = chunk_.count();
+    emitExpression(whileStmt->condition());
+    const std::size_t exitJump = emitJump(Opcode::JumpIfFalse);
+    emitOpcode(Opcode::Pop);
+    emitStatement(whileStmt->body(), false);
+    emitLoop(loopStart);
+    patchJump(exitJump);
+    emitOpcode(Opcode::Pop);
+    return;
+  }
   throw RuntimeError("unsupported bytecode statement");
 }
 
@@ -226,6 +238,18 @@ std::size_t Compiler::emitJump(Opcode opcode) {
   emitByte(0xff);
   emitByte(0xff);
   return chunk_.count() - 2;
+}
+
+void Compiler::emitLoop(std::size_t loopStart) {
+  emitOpcode(Opcode::Loop);
+
+  const std::size_t offset = chunk_.count() - loopStart + 2;
+  if (offset > std::numeric_limits<std::uint16_t>::max()) {
+    throw RuntimeError("loop body too large");
+  }
+
+  emitByte(static_cast<std::uint8_t>((offset >> 8) & 0xff));
+  emitByte(static_cast<std::uint8_t>(offset & 0xff));
 }
 
 void Compiler::patchJump(std::size_t offset) {

@@ -196,6 +196,42 @@ void testCompileIfWithoutElseStatement() {
              .asNumber() == 0);
 }
 
+void testCompileWhileStatement() {
+  EXPECT(runBytecodeProgram(
+             "let x = 3;"
+             "while (x > 0) {"
+             "  x = x - 1;"
+             "}"
+             "x;")
+             .asNumber() == 0);
+}
+
+void testCompileWhileSkippedStatement() {
+  EXPECT(runBytecodeProgram(
+             "let x = 0;"
+             "while (x > 0) {"
+             "  x = x - 1;"
+             "}"
+             "x;")
+             .asNumber() == 0);
+}
+
+void testCompileWhileWithNestedIfStatement() {
+  EXPECT(runBytecodeProgram(
+             "let x = 4;"
+             "let y = 0;"
+             "while (x > 0) {"
+             "  if (x > 2) {"
+             "    y = y + 10;"
+             "  } else {"
+             "    y = y + 1;"
+             "  }"
+             "  x = x - 1;"
+             "}"
+             "y;")
+             .asNumber() == 22);
+}
+
 void testBytecodeUndefinedGlobal() {
   try {
     runBytecodeProgram("x;");
@@ -279,6 +315,9 @@ void runBytecodeTests() {
   testCompileGlobalAssignment();
   testCompileIfElseStatement();
   testCompileIfWithoutElseStatement();
+  testCompileWhileStatement();
+  testCompileWhileSkippedStatement();
+  testCompileWhileWithNestedIfStatement();
   testBytecodeUndefinedGlobal();
   testBytecodeProgramWithoutFinalExpressionReturnsNull();
   testDisassembleGlobalLetExpression();

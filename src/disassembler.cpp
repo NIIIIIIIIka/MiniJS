@@ -40,6 +40,14 @@ std::size_t jumpInstruction(const Chunk& chunk, std::string_view name, std::size
   return offset + 3;
 }
 
+std::size_t loopInstruction(const Chunk& chunk, std::string_view name, std::size_t offset,
+                            std::ostream& output) {
+  const std::uint16_t jump =
+      static_cast<std::uint16_t>((chunk.readByte(offset + 1) << 8) | chunk.readByte(offset + 2));
+  output << name << " " << offset << " -> " << offset + 3 - jump << '\n';
+  return offset + 3;
+}
+
 }  // namespace
 
 std::string disassembleChunk(const Chunk& chunk) {
@@ -94,6 +102,8 @@ std::size_t disassembleInstruction(const Chunk& chunk, std::size_t offset, std::
       return jumpInstruction(chunk, "OP_JUMP_IF_FALSE", offset, output);
     case Opcode::Jump:
       return jumpInstruction(chunk, "OP_JUMP", offset, output);
+    case Opcode::Loop:
+      return loopInstruction(chunk, "OP_LOOP", offset, output);
   }
 
   output << "OP_UNKNOWN " << static_cast<int>(chunk.readByte(offset)) << '\n';

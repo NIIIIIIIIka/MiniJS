@@ -20,6 +20,7 @@ class Compiler {
   void emitByte(std::uint8_t byte);
   std::size_t emitJump(Opcode opcode);
   void patchJump(std::size_t offset);
+  void emitLoop(std::size_t loopStart);
   Chunk chunk_;
 };
 

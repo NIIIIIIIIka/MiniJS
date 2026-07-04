@@ -142,6 +142,11 @@ Value VM::run(const Chunk& chunk) {
         ip += offset;
         break;
       }
+      case Opcode::Loop: {
+        const std::uint16_t offset = readShort(chunk, ip);
+        ip -= offset;
+        break;
+      }
     }
   }
 }
