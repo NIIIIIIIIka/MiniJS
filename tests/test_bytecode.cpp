@@ -22,6 +22,19 @@ minijs::Value runBytecode(std::string_view source) {
   return vm.run(chunk);
 }
 
+minijs::Value runBytecodeProgram(std::string_view source) {
+  minijs::Parser parser(source);
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compileProgram(program);
+
+  minijs::VM vm;
+  return vm.run(chunk);
+}
+
 void testCompileNumberExpression() { EXPECT(runBytecode("42;").asNumber() == 42); }
 
 void testCompileArithmeticExpression() {
@@ -48,6 +61,24 @@ void testCompileStringConcatenation() {
   EXPECT(runBytecode("18 + \" years\";").toString() == "18 years");
 }
 
+void testCompileComparisonExpressions() {
+  EXPECT(runBytecode("1 < 2;").toString() == "true");
+  EXPECT(runBytecode("1 <= 2;").toString() == "true");
+  EXPECT(runBytecode("2 > 1;").toString() == "true");
+  EXPECT(runBytecode("2 >= 1;").toString() == "true");
+  EXPECT(runBytecode("1 == 1;").toString() == "true");
+  EXPECT(runBytecode("1 != 2;").toString() == "true");
+  EXPECT(runBytecode("1 > 2;").toString() == "false");
+  EXPECT(runBytecode("2 <= 1;").toString() == "false");
+}
+
+void testCompileLogicalNot() {
+  EXPECT(runBytecode("!false;").toString() == "true");
+  EXPECT(runBytecode("!true;").toString() == "false");
+  EXPECT(runBytecode("!0;").toString() == "true");
+  EXPECT(runBytecode("!1;").toString() == "false");
+}
+
 minijs::Chunk compileExpression(std::string_view source) {
   minijs::Parser parser(source);
   minijs::ExprPtr expression = parser.parse();
@@ -56,6 +87,16 @@ minijs::Chunk compileExpression(std::string_view source) {
 
   minijs::Compiler compiler;
   return compiler.compile(*expression);
+}
+
+minijs::Chunk compileProgram(std::string_view source) {
+  minijs::Parser parser(source);
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  return compiler.compileProgram(program);
 }
 
 void testDisassembleArithmeticExpression() {
@@ -105,6 +146,100 @@ void testDisassembleBooleanNullUndefinedLiterals() {
          "0002 OP_RETURN\n");
 }
 
+void testCompileGlobalLet() { EXPECT(runBytecodeProgram("let x = 10; x;").asNumber() == 10); }
+
+void testCompileGlobalExpressionUsesVariable() {
+  EXPECT(runBytecodeProgram("let x = 10; x + 20;").asNumber() == 30);
+}
+
+void testCompileGlobalAssignment() {
+  EXPECT(runBytecodeProgram("let x = 1; x = x + 2; x;").asNumber() == 3);
+}
+
+void testCompileIfElseStatement() {
+  EXPECT(runBytecodeProgram(
+             "let x = 0;"
+             "if (true) {"
+             "  x = 1;"
+             "} else {"
+             "  x = 2;"
+             "}"
+             "x;")
+             .asNumber() == 1);
+
+  EXPECT(runBytecodeProgram(
+             "let x = 0;"
+             "if (false) {"
+             "  x = 1;"
+             "} else {"
+             "  x = 2;"
+             "}"
+             "x;")
+             .asNumber() == 2);
+}
+
+void testCompileIfWithoutElseStatement() {
+  EXPECT(runBytecodeProgram(
+             "let x = 0;"
+             "if (true) {"
+             "  x = 1;"
+             "}"
+             "x;")
+             .asNumber() == 1);
+
+  EXPECT(runBytecodeProgram(
+             "let x = 0;"
+             "if (false) {"
+             "  x = 1;"
+             "}"
+             "x;")
+             .asNumber() == 0);
+}
+
+void testBytecodeUndefinedGlobal() {
+  try {
+    runBytecodeProgram("x;");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: undefined variable: x");
+  }
+}
+
+void testBytecodeProgramWithoutFinalExpressionReturnsNull() {
+  EXPECT(runBytecodeProgram("let x = 10;").isNull());
+}
+
+void testDisassembleGlobalLetExpression() {
+  const minijs::Chunk chunk = compileProgram("let x = 10; x + 20;");
+
+  const std::string expected =
+      "0000 OP_CONSTANT 0 10\n"
+      "0002 OP_DEFINE_GLOBAL 1 x\n"
+      "0004 OP_GET_GLOBAL 2 x\n"
+      "0006 OP_CONSTANT 3 20\n"
+      "0008 OP_ADD\n"
+      "0009 OP_RETURN\n";
+
+  EXPECT(minijs::disassembleChunk(chunk) == expected);
+}
+
+void testDisassembleGlobalAssignment() {
+  const minijs::Chunk chunk = compileProgram("let x = 1; x = x + 2; x;");
+
+  const std::string expected =
+      "0000 OP_CONSTANT 0 1\n"
+      "0002 OP_DEFINE_GLOBAL 1 x\n"
+      "0004 OP_GET_GLOBAL 2 x\n"
+      "0006 OP_CONSTANT 3 2\n"
+      "0008 OP_ADD\n"
+      "0009 OP_SET_GLOBAL 4 x\n"
+      "0011 OP_POP\n"
+      "0012 OP_GET_GLOBAL 5 x\n"
+      "0014 OP_RETURN\n";
+
+  EXPECT(minijs::disassembleChunk(chunk) == expected);
+}
+
 void testBytecodeDivisionByZero() {
   try {
     runBytecode("10 / 0;");
@@ -116,7 +251,7 @@ void testBytecodeDivisionByZero() {
 
 void testUnsupportedBytecodeExpression() {
   try {
-    runBytecode("x;");
+    runBytecode("[1];");
     EXPECT(false);
   } catch (const minijs::RuntimeError& error) {
     EXPECT(std::string_view(error.what()) == "RuntimeError: unsupported bytecode expression");
@@ -133,10 +268,21 @@ void runBytecodeTests() {
   testCompileBooleanNullUndefinedLiterals();
   testCompileStringLiteral();
   testCompileStringConcatenation();
+  testCompileComparisonExpressions();
+  testCompileLogicalNot();
   testDisassembleArithmeticExpression();
   testDisassembleUnaryMinus();
   testDisassembleStringLiteral();
   testDisassembleBooleanNullUndefinedLiterals();
+  testCompileGlobalLet();
+  testCompileGlobalExpressionUsesVariable();
+  testCompileGlobalAssignment();
+  testCompileIfElseStatement();
+  testCompileIfWithoutElseStatement();
+  testBytecodeUndefinedGlobal();
+  testBytecodeProgramWithoutFinalExpressionReturnsNull();
+  testDisassembleGlobalLetExpression();
+  testDisassembleGlobalAssignment();
   testBytecodeDivisionByZero();
   testUnsupportedBytecodeExpression();
 }

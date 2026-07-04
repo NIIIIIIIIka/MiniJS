@@ -27,6 +27,19 @@ std::size_t constantInstruction(const Chunk& chunk, std::string_view name, std::
   return offset + 2;
 }
 
+std::size_t nameInstruction(const Chunk& chunk, std::string_view name, std::size_t offset,
+                            std::ostream& output) {
+  return constantInstruction(chunk, name, offset, output);
+}
+
+std::size_t jumpInstruction(const Chunk& chunk, std::string_view name, std::size_t offset,
+                            std::ostream& output) {
+  const std::uint16_t jump =
+      static_cast<std::uint16_t>((chunk.readByte(offset + 1) << 8) | chunk.readByte(offset + 2));
+  output << name << " " << offset << " -> " << offset + 3 + jump << '\n';
+  return offset + 3;
+}
+
 }  // namespace
 
 std::string disassembleChunk(const Chunk& chunk) {
@@ -61,6 +74,26 @@ std::size_t disassembleInstruction(const Chunk& chunk, std::size_t offset, std::
       return simpleInstruction("OP_NEGATE", offset, output);
     case Opcode::Return:
       return simpleInstruction("OP_RETURN", offset, output);
+    case Opcode::DefineGlobal:
+      return nameInstruction(chunk, "OP_DEFINE_GLOBAL", offset, output);
+    case Opcode::GetGlobal:
+      return nameInstruction(chunk, "OP_GET_GLOBAL", offset, output);
+    case Opcode::SetGlobal:
+      return nameInstruction(chunk, "OP_SET_GLOBAL", offset, output);
+    case Opcode::Pop:
+      return simpleInstruction("OP_POP", offset, output);
+    case Opcode::Not:
+      return simpleInstruction("OP_NOT", offset, output);
+    case Opcode::Equal:
+      return simpleInstruction("OP_EQUAL", offset, output);
+    case Opcode::Greater:
+      return simpleInstruction("OP_GREATER", offset, output);
+    case Opcode::Less:
+      return simpleInstruction("OP_LESS", offset, output);
+    case Opcode::JumpIfFalse:
+      return jumpInstruction(chunk, "OP_JUMP_IF_FALSE", offset, output);
+    case Opcode::Jump:
+      return jumpInstruction(chunk, "OP_JUMP", offset, output);
   }
 
   output << "OP_UNKNOWN " << static_cast<int>(chunk.readByte(offset)) << '\n';

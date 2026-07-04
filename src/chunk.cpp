@@ -33,4 +33,12 @@ const std::vector<std::uint8_t>& Chunk::code() const { return code_; }
 
 const std::vector<Value>& Chunk::constants() const { return constants_; }
 
+std::size_t Chunk::count() const { return code_.size(); }
+
+void Chunk::patchByte(std::size_t offset, std::uint8_t byte) {
+  if (offset >= code_.size()) {
+    throw RuntimeError("bytecode patch out of bounds");
+  }
+  code_[offset] = byte;
+}
 }  // namespace minijs

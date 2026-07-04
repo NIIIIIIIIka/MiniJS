@@ -17,6 +17,16 @@ enum class Opcode : std::uint8_t {
   Mod,
   Negate,
   Return,
+  DefineGlobal,
+  GetGlobal,
+  SetGlobal,
+  Pop,
+  Equal,
+  Greater,
+  Less,
+  Not,
+  JumpIfFalse,
+  Jump,
 };
 
 class Chunk {
@@ -31,6 +41,9 @@ class Chunk {
 
   const std::vector<std::uint8_t>& code() const;
   const std::vector<Value>& constants() const;
+
+  std::size_t count() const;
+  void patchByte(std::size_t offset, std::uint8_t byte);
 
  private:
   std::vector<std::uint8_t> code_;
