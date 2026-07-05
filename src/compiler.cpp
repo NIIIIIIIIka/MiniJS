@@ -219,6 +219,39 @@ void Compiler::emitStatement(const Stmt& statement, bool keepValue) {
     emitOpcode(Opcode::Pop);
     return;
   }
+  if (const auto* forStmt = dynamic_cast<const ForStmt*>(&statement)) {
+    if (forStmt->initializer()) {
+      emitStatement(*forStmt->initializer(), false);
+    }
+
+    const std::size_t loopStart = chunk_.count();
+
+    std::size_t exitJump = 0;
+    bool hasExitJump = false;
+
+    if (forStmt->condition()) {
+      emitExpression(*forStmt->condition());
+      exitJump = emitJump(Opcode::JumpIfFalse);
+      hasExitJump = true;
+      emitOpcode(Opcode::Pop);
+    }
+
+    emitStatement(forStmt->body(), false);
+
+    if (forStmt->increment() != nullptr) {
+      emitExpression(*forStmt->increment());
+      emitOpcode(Opcode::Pop);
+    }
+
+    emitLoop(loopStart);
+
+    if (hasExitJump) {
+      patchJump(exitJump);
+      emitOpcode(Opcode::Pop);
+    }
+
+    return;
+  }
   throw RuntimeError("unsupported bytecode statement");
 }
 

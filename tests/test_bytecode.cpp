@@ -232,6 +232,35 @@ void testCompileWhileWithNestedIfStatement() {
              .asNumber() == 22);
 }
 
+void testCompileForStatement() {
+  EXPECT(runBytecodeProgram(
+             "let sum = 0;"
+             "for (let i = 1; i <= 3; i = i + 1) {"
+             "  sum = sum + i;"
+             "}"
+             "sum;")
+             .asNumber() == 6);
+}
+
+void testCompileForSkippedStatement() {
+  EXPECT(runBytecodeProgram(
+             "let sum = 0;"
+             "for (let i = 5; i <= 3; i = i + 1) {"
+             "  sum = sum + i;"
+             "}"
+             "sum;")
+             .asNumber() == 0);
+}
+
+void testCompileForWithoutInitializerStatement() {
+  EXPECT(runBytecodeProgram(
+             "let i = 0;"
+             "for (; i < 3; i = i + 1) {"
+             "}"
+             "i;")
+             .asNumber() == 3);
+}
+
 void testBytecodeUndefinedGlobal() {
   try {
     runBytecodeProgram("x;");
@@ -318,6 +347,9 @@ void runBytecodeTests() {
   testCompileWhileStatement();
   testCompileWhileSkippedStatement();
   testCompileWhileWithNestedIfStatement();
+  testCompileForStatement();
+  testCompileForSkippedStatement();
+  testCompileForWithoutInitializerStatement();
   testBytecodeUndefinedGlobal();
   testBytecodeProgramWithoutFinalExpressionReturnsNull();
   testDisassembleGlobalLetExpression();
