@@ -35,6 +35,10 @@ enum class Opcode : std::uint8_t {
   Array,
   GetIndex,
   SetIndex,
+  Object,
+  GetProperty,
+  SetProperty,
+  MethodCall,
 };
 
 // 一段可执行字节码，包含指令流和常量池。

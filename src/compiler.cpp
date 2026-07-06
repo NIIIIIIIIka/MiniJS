@@ -58,6 +58,60 @@ void Compiler::emitExpression(const Expr& expression) {
     emitConstant(Value(std::stod(number->value())));
     return;
   }
+  if (const auto* object = dynamic_cast<const ObjectExpr*>(&expression)) {
+    if (object->properties().size() > std::numeric_limits<std::uint8_t>::max()) {
+      throw RuntimeError("too many properties in bytecode object literal");
+    }
+
+    std::vector<Value> names;
+    names.reserve(object->properties().size());
+
+    for (const auto& property : object->properties()) {
+      emitExpression(*property.value);
+      names.push_back(Value(property.name));
+    }
+
+    const std::uint8_t namesIndex = addConstant(Value(std::move(names)));
+
+    emitOpcode(Opcode::Object);
+    emitByte(namesIndex);
+    return;
+  }
+
+  if (const auto* get = dynamic_cast<const GetExpr*>(&expression)) {
+    emitExpression(get->object());
+
+    const std::uint8_t nameIndex = addConstant(Value(get->name()));
+    emitOpcode(Opcode::GetProperty);
+    emitByte(nameIndex);
+    return;
+  }
+
+  if (const auto* set = dynamic_cast<const SetExpr*>(&expression)) {
+    emitExpression(set->object());
+    emitExpression(set->value());
+
+    const std::uint8_t nameIndex = addConstant(Value(set->name()));
+    emitOpcode(Opcode::SetProperty);
+    emitByte(nameIndex);
+    return;
+  }
+
+  if (const auto* methodCall = dynamic_cast<const MethodCallExpr*>(&expression)) {
+    emitExpression(methodCall->object());
+    if (methodCall->arguments().size() > std::numeric_limits<std::uint8_t>::max()) {
+      throw RuntimeError("too many call arguments");
+    }
+    for (const ExprPtr& argument : methodCall->arguments()) {
+      emitExpression(*argument);
+    }
+
+    const std::uint8_t nameIndex = addConstant(Value(methodCall->name()));
+    emitOpcode(Opcode::MethodCall);
+    emitByte(nameIndex);
+    emitByte(static_cast<std::uint8_t>(methodCall->arguments().size()));
+    return;
+  }
 
   if (const auto* array = dynamic_cast<const ArrayExpr*>(&expression)) {
     if (array->elements().size() > std::numeric_limits<std::uint8_t>::max()) {
@@ -210,13 +264,8 @@ void Compiler::emitExpression(const Expr& expression) {
 }
 
 void Compiler::emitConstant(Value value) {
-  const std::size_t index = chunk_.addConstant(std::move(value));
-  if (index > std::numeric_limits<std::uint8_t>::max()) {
-    throw RuntimeError("too many constants in bytecode chunk");
-  }
-
   emitOpcode(Opcode::Constant);
-  chunk_.writeByte(static_cast<std::uint8_t>(index));
+  emitByte(addConstant(std::move(value)));
 }
 
 void Compiler::emitOpcode(Opcode opcode) { chunk_.writeOpcode(opcode); }
@@ -441,6 +490,14 @@ int Compiler::resolveLocal(const std::string& name) const {
     }
   }
   return -1;
+}
+
+std::uint8_t Compiler::addConstant(Value value) {
+  const std::size_t index = chunk_.addConstant(std::move(value));
+  if (index > std::numeric_limits<std::uint8_t>::max()) {
+    throw RuntimeError("too many constants in bytecode chunk");
+  }
+  return static_cast<std::uint8_t>(index);
 }
 
 void Compiler::emitLocal(std::uint8_t slot, Opcode opcode) {

@@ -22,8 +22,8 @@ Value::Value(const FunctionStmt* declaration, std::shared_ptr<Environment> closu
 
 Value::Value(BuiltinFunction builtin)
     : value_type_(ValueType::NativeFunction),
-      native_function_(std::make_shared<NativeFunction>(
-          NativeFunction{"<builtin>", 0, std::move(builtin)})) {}
+      native_function_(
+          std::make_shared<NativeFunction>(NativeFunction{"<builtin>", 0, std::move(builtin)})) {}
 
 Value::Value(std::shared_ptr<NativeFunction> function)
     : value_type_(ValueType::NativeFunction), native_function_(std::move(function)) {}
@@ -87,9 +87,7 @@ std::unordered_map<std::string, Value>& Value::asObject() {
   return *object_;
 }
 
-const BuiltinFunction& Value::asBuiltinFunction() const {
-  return asNativeFunction()->function;
-}
+const BuiltinFunction& Value::asBuiltinFunction() const { return asNativeFunction()->function; }
 
 const std::shared_ptr<NativeFunction>& Value::asNativeFunction() const {
   if (!isNativeFunction()) {

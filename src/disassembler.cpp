@@ -55,6 +55,15 @@ std::size_t loopInstruction(const Chunk& chunk, std::string_view name, std::size
   return offset + 3;
 }
 
+std::size_t methodCallInstruction(const Chunk& chunk, std::string_view name, std::size_t offset,
+                                  std::ostream& output) {
+  const std::uint8_t nameIndex = chunk.readByte(offset + 1);
+  const std::uint8_t argCount = chunk.readByte(offset + 2);
+  output << name << " " << static_cast<int>(nameIndex) << " "
+         << chunk.constant(nameIndex).toString() << " " << static_cast<int>(argCount) << '\n';
+  return offset + 3;
+}
+
 }  // namespace
 
 std::string disassembleChunk(const Chunk& chunk) {
@@ -123,6 +132,14 @@ std::size_t disassembleInstruction(const Chunk& chunk, std::size_t offset, std::
       return simpleInstruction("OP_GET_INDEX", offset, output);
     case Opcode::SetIndex:
       return simpleInstruction("OP_SET_INDEX", offset, output);
+    case Opcode::Object:
+      return constantInstruction(chunk, "OP_OBJECT", offset, output);
+    case Opcode::GetProperty:
+      return constantInstruction(chunk, "OP_GET_PROPERTY", offset, output);
+    case Opcode::SetProperty:
+      return constantInstruction(chunk, "OP_SET_PROPERTY", offset, output);
+    case Opcode::MethodCall:
+      return methodCallInstruction(chunk, "OP_METHOD_CALL", offset, output);
   }
 
   output << "OP_UNKNOWN " << static_cast<int>(chunk.readByte(offset)) << '\n';

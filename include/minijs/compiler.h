@@ -33,6 +33,7 @@ class Compiler {
   void emitOpcode(Opcode opcode);
   void emitStatement(const Stmt& statement, bool keepValue);
   void emitGlobalName(const std::string& name, Opcode opcode);
+
   std::shared_ptr<BytecodeFunction> compileFunction(const FunctionStmt& function);
   void emitByte(std::uint8_t byte);
   // 写入向前跳转指令和两个占位字节，返回待回填位置。
@@ -48,6 +49,7 @@ class Compiler {
   int resolveLocal(const std::string& name) const;
   void emitLocal(std::uint8_t slot, Opcode opcode);
 
+  std::uint8_t addConstant(Value value);
   Chunk chunk_;
   // locals_ 的下标就是局部变量在当前 VM 栈帧中的槽位。
   std::vector<Local> locals_;

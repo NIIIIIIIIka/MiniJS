@@ -55,8 +55,101 @@ VM::VM() {
     return Value();
   });
 
-  defineBuiltin("clock", 0, [](const std::vector<Value>&) -> Value {
-    return Value(0.0);
+  defineBuiltin("clock", 0, [](const std::vector<Value>&) -> Value { return Value(0.0); });
+
+  defineBuiltin("len", 1, [](const std::vector<Value>& arguments) -> Value {
+    const Value& value = arguments[0];
+
+    if (value.isString()) {
+      return Value(static_cast<double>(value.asString().size()));
+    }
+
+    if (value.isArray()) {
+      return Value(static_cast<double>(value.asArray().size()));
+    }
+
+    throw RuntimeError("len expects string or array");
+  });
+
+  defineBuiltin("typeOf", 1, [](const std::vector<Value>& arguments) -> Value {
+    const Value& value = arguments[0];
+
+    if (value.isNumber()) {
+      return Value(std::string("number"));
+    }
+    if (value.isBoolean()) {
+      return Value(std::string("boolean"));
+    }
+    if (value.isString()) {
+      return Value(std::string("string"));
+    }
+    if (value.isArray()) {
+      return Value(std::string("array"));
+    }
+    if (value.isObject()) {
+      return Value(std::string("object"));
+    }
+    if (value.isBytecodeFunction() || value.isFunction()) {
+      return Value(std::string("function"));
+    }
+    if (value.isNativeFunction()) {
+      return Value(std::string("builtin"));
+    }
+    if (value.isNull()) {
+      return Value(std::string("null"));
+    }
+    if (value.isUndefined()) {
+      return Value(std::string("undefined"));
+    }
+
+    return Value(std::string("unknown"));
+  });
+
+  defineBuiltin("has", 2, [](const std::vector<Value>& arguments) -> Value {
+    const Value& object = arguments[0];
+    const Value& key = arguments[1];
+
+    if (!key.isString()) {
+      throw RuntimeError("has key must be a string");
+    }
+
+    const std::string& name = key.asString();
+
+    if (object.isObject()) {
+      return Value(object.asObject().find(name) != object.asObject().end());
+    }
+    if (object.isArray()) {
+      return Value(name == "length" || name == "push" || name == "pop");
+    }
+    if (object.isString()) {
+      return Value(name == "length");
+    }
+
+    return Value(false);
+  });
+
+  defineBuiltin("keys", 1, [](const std::vector<Value>& arguments) -> Value {
+    const Value& object = arguments[0];
+    std::vector<Value> keys;
+
+    if (object.isObject()) {
+      for (const auto& key : object.asObject()) {
+        keys.push_back(Value(key.first));
+      }
+      return Value(std::move(keys));
+    }
+    if (object.isArray()) {
+      keys.push_back(Value(std::string("length")));
+      keys.push_back(Value(std::string("push")));
+      keys.push_back(Value(std::string("pop")));
+      return Value(std::move(keys));
+    }
+    if (object.isString()) {
+      keys.push_back(Value(std::string("length")));
+      return Value(std::move(keys));
+    }
+
+    return Value(std::move(keys));
   });
 }
 
@@ -274,6 +367,53 @@ Value VM::run(const Chunk& chunk) {
 
         throw RuntimeError("value is not callable");
       }
+      case Opcode::MethodCall: {
+        const std::uint8_t nameIndex = chunk.readByte(frame.ip++);
+        const std::string& name = chunk.constant(nameIndex).asString();
+        const std::uint8_t argCount = chunk.readByte(frame.ip++);
+        if (stack_.size() < static_cast<std::size_t>(argCount) + 1) {
+          throw RuntimeError("method call stack underflow");
+        }
+
+        const std::size_t receiverIndex = stack_.size() - argCount - 1;
+        Value receiver = stack_[receiverIndex];
+        if (!receiver.isArray()) {
+          throw RuntimeError("method call receiver is not an array");
+        }
+
+        std::vector<Value>& array = receiver.asArray();
+
+        if (name == "push") {
+          if (argCount != 1) {
+            throw RuntimeError("push expects 1 argument");
+          }
+
+          array.push_back(stack_[receiverIndex + 1]);
+          stack_.resize(receiverIndex);
+          push(Value(static_cast<double>(array.size())));
+          break;
+        }
+
+        if (name == "pop") {
+          if (argCount != 0) {
+            throw RuntimeError("pop expects 0 arguments");
+          }
+
+          if (array.empty()) {
+            stack_.resize(receiverIndex);
+            push(Value::undefined());
+            break;
+          }
+
+          Value value = array.back();
+          array.pop_back();
+          stack_.resize(receiverIndex);
+          push(value);
+          break;
+        }
+
+        throw RuntimeError("unknown array method: " + name);
+      }
       case Opcode::Array: {
         const std::uint8_t count = chunk.readByte(frame.ip++);
         std::vector<Value> elements(count);
@@ -297,6 +437,66 @@ Value VM::run(const Chunk& chunk) {
         std::vector<Value>& elements = array.asArray();
         elements[arrayIndexFromValue(index, elements.size())] = value;
         push(value);
+        break;
+      }
+      case Opcode::Object: {
+        const std::uint8_t namesIndex = chunk.readByte(frame.ip++);
+        const std::vector<Value>& names = chunk.constant(namesIndex).asArray();
+
+        std::unordered_map<std::string, Value> properties;
+        for (std::size_t i = names.size(); i > 0; --i) {
+          Value value = pop();
+          const std::string& name = names[i - 1].asString();
+          properties[name] = value;
+        }
+        push(Value(std::move(properties)));
+        break;
+      }
+      case Opcode::GetProperty: {
+        const std::uint8_t nameIndex = chunk.readByte(frame.ip++);
+        const std::string& name = chunk.constant(nameIndex).asString();
+
+        Value object = pop();
+
+        if (object.isArray()) {
+          if (name == "length") {
+            push(Value(static_cast<double>(object.asArray().size())));
+            break;
+          }
+
+          push(Value::undefined());
+          break;
+        }
+
+        if (object.isString()) {
+          if (name == "length") {
+            push(Value(static_cast<double>(object.asString().size())));
+            break;
+          }
+
+          push(Value::undefined());
+          break;
+        }
+
+        const auto& properties = object.asObject();
+
+        auto it = properties.find(name);
+        if (it == properties.end()) {
+          push(Value::undefined());
+        } else {
+          push(it->second);
+        }
+        break;
+      }
+      case Opcode::SetProperty: {
+        const std::uint8_t nameIndex = chunk.readByte(frame.ip++);
+        const std::string& name = chunk.constant(nameIndex).asString();
+
+        Value value = pop();
+        Value object = pop();
+        object.asObject()[name] = value;
+        push(value);
+
         break;
       }
     }
