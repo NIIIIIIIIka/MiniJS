@@ -8,11 +8,21 @@
 
 namespace minijs {
 
+struct BytecodeFunction;
 class Environment;
 class FunctionStmt;
 class Value;
 
 using BuiltinFunction = std::function<Value(const std::vector<Value>& arguments)>;
+using NativeFn = std::function<Value(const std::vector<Value>& arguments)>;
+
+// C++ 实现的原生函数载荷。builtin 是注册到全局环境的名字，native 是值的实现形态。
+struct NativeFunction {
+  std::string name;
+  std::size_t arity = 0;
+  NativeFn function;
+};
+
 // 解释器当前支持的运行时值类型。
 enum class ValueType {
   Number,
@@ -23,13 +33,11 @@ enum class ValueType {
   Object,
   String,
   Undefined,
-  BuiltinFunction,
+  NativeFunction,
+  BytecodeFunction,
 };
 
-// 函数运行时载荷。
-//
-// 函数声明节点由 AST 持有；闭包环境由解释器的环境链持有。
-// 这里保存非拥有指针，避免在 Value 中复制 AST 或 Environment。
+// AST 解释器使用的函数运行时载荷。
 struct FunctionValue {
   const FunctionStmt* declaration = nullptr;
   std::shared_ptr<Environment> closure;
@@ -47,11 +55,14 @@ class Value {
   // 创建布尔值。
   explicit Value(bool boolean);
 
-  // 创建函数值。
+  // 创建 AST 解释器函数值。
   Value(const FunctionStmt* declaration, std::shared_ptr<Environment> closure);
 
   // 创建 C++ 实现的内置函数值。
   explicit Value(BuiltinFunction builtin);
+
+  // 创建 C++ 实现的原生函数值。
+  explicit Value(std::shared_ptr<NativeFunction> function);
 
   // 创建数组值，数组使用共享指针模拟对象引用语义。
   explicit Value(std::vector<Value> elements);
@@ -61,6 +72,9 @@ class Value {
 
   // 创建字符串值。
   explicit Value(std::string string);
+
+  // 创建字节码函数值。
+  explicit Value(std::shared_ptr<BytecodeFunction> function);
 
   // 创建 undefined 值。
   static Value undefined();
@@ -88,6 +102,12 @@ class Value {
 
   // 返回内置函数载荷；当前值不是内置函数时抛出运行时错误。
   const BuiltinFunction& asBuiltinFunction() const;
+
+  // 返回原生函数载荷；当前值不是原生函数时抛出运行时错误。
+  const std::shared_ptr<NativeFunction>& asNativeFunction() const;
+
+  // 返回字节码函数载荷；当前值不是字节码函数时抛出运行时错误。
+  const std::shared_ptr<BytecodeFunction>& asBytecodeFunction() const;
 
   // 返回面向用户的字符串表示。
   std::string toString() const;
@@ -122,6 +142,12 @@ class Value {
   // 返回当前值是否为内置函数。
   bool isBuiltinFunction() const;
 
+  // 返回当前值是否为原生函数。
+  bool isNativeFunction() const;
+
+  // 返回当前值是否为字节码函数。
+  bool isBytecodeFunction() const;
+
   // 比较两个运行时值是否相等；对象、数组和函数按引用身份比较。
   bool equals(const Value& other) const;
 
@@ -132,7 +158,8 @@ class Value {
   double number_ = 0;
   bool boolean_ = false;
   FunctionValue function_ = FunctionValue({nullptr, nullptr});
-  BuiltinFunction builtin_;
+  std::shared_ptr<BytecodeFunction> bytecode_function_;
+  std::shared_ptr<NativeFunction> native_function_;
   std::shared_ptr<std::vector<Value>> array_;
   std::shared_ptr<std::unordered_map<std::string, Value>> object_;
   std::string string_;

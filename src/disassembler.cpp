@@ -32,6 +32,13 @@ std::size_t nameInstruction(const Chunk& chunk, std::string_view name, std::size
   return constantInstruction(chunk, name, offset, output);
 }
 
+std::size_t byteInstruction(const Chunk& chunk, std::string_view name, std::size_t offset,
+                            std::ostream& output) {
+  const std::uint8_t slot = chunk.readByte(offset + 1);
+  output << name << " " << static_cast<int>(slot) << '\n';
+  return offset + 2;
+}
+
 std::size_t jumpInstruction(const Chunk& chunk, std::string_view name, std::size_t offset,
                             std::ostream& output) {
   const std::uint16_t jump =
@@ -88,6 +95,10 @@ std::size_t disassembleInstruction(const Chunk& chunk, std::size_t offset, std::
       return nameInstruction(chunk, "OP_GET_GLOBAL", offset, output);
     case Opcode::SetGlobal:
       return nameInstruction(chunk, "OP_SET_GLOBAL", offset, output);
+    case Opcode::GetLocal:
+      return byteInstruction(chunk, "OP_GET_LOCAL", offset, output);
+    case Opcode::SetLocal:
+      return byteInstruction(chunk, "OP_SET_LOCAL", offset, output);
     case Opcode::Pop:
       return simpleInstruction("OP_POP", offset, output);
     case Opcode::Not:
@@ -104,6 +115,14 @@ std::size_t disassembleInstruction(const Chunk& chunk, std::size_t offset, std::
       return jumpInstruction(chunk, "OP_JUMP", offset, output);
     case Opcode::Loop:
       return loopInstruction(chunk, "OP_LOOP", offset, output);
+    case Opcode::Call:
+      return byteInstruction(chunk, "OP_CALL", offset, output);
+    case Opcode::Array:
+      return byteInstruction(chunk, "OP_ARRAY", offset, output);
+    case Opcode::GetIndex:
+      return simpleInstruction("OP_GET_INDEX", offset, output);
+    case Opcode::SetIndex:
+      return simpleInstruction("OP_SET_INDEX", offset, output);
   }
 
   output << "OP_UNKNOWN " << static_cast<int>(chunk.readByte(offset)) << '\n';

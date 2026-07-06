@@ -1,3 +1,5 @@
+#include <iostream>
+#include <sstream>
 #include <string_view>
 
 #include "minijs/compiler.h"
@@ -261,6 +263,195 @@ void testCompileForWithoutInitializerStatement() {
              .asNumber() == 3);
 }
 
+void testCompileBlockLocalVariable() {
+  EXPECT(runBytecodeProgram(
+             "let result = 0;"
+             "{"
+             "  let x = 1;"
+             "  result = x;"
+             "}"
+             "result;")
+             .asNumber() == 1);
+}
+
+void testCompileNestedBlockLocalVariables() {
+  EXPECT(runBytecodeProgram(
+             "let result = 0;"
+             "{"
+             "  let x = 1;"
+             "  {"
+             "    let y = 2;"
+             "    result = x + y;"
+             "  }"
+             "}"
+             "result;")
+             .asNumber() == 3);
+}
+
+void testCompileLocalAssignment() {
+  EXPECT(runBytecodeProgram(
+             "let result = 0;"
+             "{"
+             "  let x = 1;"
+             "  x = x + 2;"
+             "  result = x;"
+             "}"
+             "result;")
+             .asNumber() == 3);
+}
+
+void testCompileLocalShadowsGlobal() {
+  EXPECT(runBytecodeProgram(
+             "let x = 10;"
+             "let result = 0;"
+             "{"
+             "  let x = 1;"
+             "  result = x;"
+             "}"
+             "x + result;")
+             .asNumber() == 11);
+}
+
+void testCompileDuplicateLocalDeclaration() {
+  try {
+    runBytecodeProgram("{ let x = 1; let x = 2; }");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) ==
+           "RuntimeError: variable already declared in this scope: x");
+  }
+}
+
+void testCompileBytecodeFunctionCall() {
+  EXPECT(runBytecodeProgram(
+             "function add(a, b) {"
+             "  return a + b;"
+             "}"
+             "add(1, 2);")
+             .asNumber() == 3);
+}
+
+void testCompileBytecodeFunctionReturnsArgument() {
+  EXPECT(runBytecodeProgram(
+             "function id(x) {"
+             "  return x;"
+             "}"
+             "id(42);")
+             .asNumber() == 42);
+}
+
+void testCompileBytecodeFunctionWithoutReturn() {
+  EXPECT(runBytecodeProgram(
+             "function noReturn() {"
+             "  let x = 1;"
+             "}"
+             "noReturn();")
+             .isUndefined());
+}
+
+void testBytecodeFunctionArityMismatch() {
+  try {
+    runBytecodeProgram(
+        "function add(a, b) {"
+        "  return a + b;"
+        "}"
+        "add(1);");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) ==
+           "RuntimeError: function add expects 2 arguments");
+  }
+}
+
+void testCompileBytecodeFunctionLocalVariable() {
+  EXPECT(runBytecodeProgram(
+             "function addOne(x) {"
+             "  let y = x + 1;"
+             "  return y;"
+             "}"
+             "addOne(41);")
+             .asNumber() == 42);
+}
+
+void testCompileBytecodeRecursiveFunction() {
+  EXPECT(runBytecodeProgram(
+             "function fact(n) {"
+             "  if (n <= 1) {"
+             "    return 1;"
+             "  }"
+             "  return n * fact(n - 1);"
+             "}"
+             "fact(5);")
+             .asNumber() == 120);
+}
+
+void testCompileBytecodeRecursiveFibonacci() {
+  EXPECT(runBytecodeProgram(
+             "function fib(n) {"
+             "  if (n <= 1) {"
+             "    return n;"
+             "  }"
+             "  return fib(n - 1) + fib(n - 2);"
+             "}"
+             "fib(6);")
+             .asNumber() == 8);
+}
+
+void testBytecodeCallNonFunction() {
+  try {
+    runBytecodeProgram(
+        "let x = 1;"
+        "x();");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: value is not callable");
+  }
+}
+
+void testBytecodePrintBuiltin() {
+  std::ostringstream output;
+  std::streambuf* previous = std::cout.rdbuf(output.rdbuf());
+
+  const minijs::Value result = runBytecodeProgram("print(1 + 2);");
+
+  std::cout.rdbuf(previous);
+  EXPECT(output.str() == "3\n");
+  EXPECT(result.isNull());
+}
+
+void testBytecodeBuiltinFunctionCanBeAssigned() {
+  std::ostringstream output;
+  std::streambuf* previous = std::cout.rdbuf(output.rdbuf());
+
+  const minijs::Value result = runBytecodeProgram(
+      "let p = print;"
+      "p(\"hello\");");
+
+  std::cout.rdbuf(previous);
+  EXPECT(output.str() == "hello\n");
+  EXPECT(result.isNull());
+}
+
+void testBytecodePrintArity() {
+  try {
+    runBytecodeProgram("print();");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: print expects 1 argument");
+  }
+}
+
+void testBytecodeClockBuiltin() { EXPECT(runBytecodeProgram("clock();").asNumber() == 0); }
+
+void testBytecodeClockArity() {
+  try {
+    runBytecodeProgram("clock(1);");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: clock expects 0 arguments");
+  }
+}
+
 void testBytecodeUndefinedGlobal() {
   try {
     runBytecodeProgram("x;");
@@ -314,12 +505,57 @@ void testBytecodeDivisionByZero() {
   }
 }
 
-void testUnsupportedBytecodeExpression() {
+void testCompileArrayLiteralIndex() {
+  EXPECT(runBytecode("[1, 2, 3][1];").asNumber() == 2);
+}
+
+void testCompileArrayVariableIndex() {
+  EXPECT(runBytecodeProgram(
+             "let a = [10, 20, 30];"
+             "a[2];")
+             .asNumber() == 30);
+}
+
+void testCompileArrayExpressionElements() {
+  EXPECT(runBytecodeProgram(
+             "let x = 10;"
+             "[x, x + 1][1];")
+             .asNumber() == 11);
+}
+
+void testCompileArrayIndexAssignment() {
+  EXPECT(runBytecodeProgram(
+             "let a = [10, 20];"
+             "a[1] = 99;"
+             "a[1];")
+             .asNumber() == 99);
+}
+
+void testCompileArrayReferenceSemantics() {
+  EXPECT(runBytecodeProgram(
+             "let a = [1, 2];"
+             "let b = a;"
+             "b[0] = 99;"
+             "a[0];")
+             .asNumber() == 99);
+}
+
+void testBytecodeArrayIndexOutOfBounds() {
   try {
-    runBytecode("[1];");
+    runBytecode("[1][1];");
     EXPECT(false);
   } catch (const minijs::RuntimeError& error) {
-    EXPECT(std::string_view(error.what()) == "RuntimeError: unsupported bytecode expression");
+    EXPECT(std::string_view(error.what()) == "RuntimeError: array index out of bounds");
+  }
+}
+
+void testBytecodeArrayIndexMustBeInteger() {
+  try {
+    runBytecode("[1][0.5];");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) ==
+           "RuntimeError: array index must be a non-negative integer");
   }
 }
 
@@ -350,10 +586,34 @@ void runBytecodeTests() {
   testCompileForStatement();
   testCompileForSkippedStatement();
   testCompileForWithoutInitializerStatement();
+  testCompileBlockLocalVariable();
+  testCompileNestedBlockLocalVariables();
+  testCompileLocalAssignment();
+  testCompileLocalShadowsGlobal();
+  testCompileDuplicateLocalDeclaration();
+  testCompileBytecodeFunctionCall();
+  testCompileBytecodeFunctionReturnsArgument();
+  testCompileBytecodeFunctionWithoutReturn();
+  testBytecodeFunctionArityMismatch();
+  testCompileBytecodeFunctionLocalVariable();
+  testCompileBytecodeRecursiveFunction();
+  testCompileBytecodeRecursiveFibonacci();
+  testBytecodeCallNonFunction();
+  testBytecodePrintBuiltin();
+  testBytecodeBuiltinFunctionCanBeAssigned();
+  testBytecodePrintArity();
+  testBytecodeClockBuiltin();
+  testBytecodeClockArity();
   testBytecodeUndefinedGlobal();
   testBytecodeProgramWithoutFinalExpressionReturnsNull();
   testDisassembleGlobalLetExpression();
   testDisassembleGlobalAssignment();
   testBytecodeDivisionByZero();
-  testUnsupportedBytecodeExpression();
+  testCompileArrayLiteralIndex();
+  testCompileArrayVariableIndex();
+  testCompileArrayExpressionElements();
+  testCompileArrayIndexAssignment();
+  testCompileArrayReferenceSemantics();
+  testBytecodeArrayIndexOutOfBounds();
+  testBytecodeArrayIndexMustBeInteger();
 }

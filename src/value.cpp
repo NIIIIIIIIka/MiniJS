@@ -1,9 +1,10 @@
-#include "minijs/value.h"
+﻿#include "minijs/value.h"
 
 #include <cmath>
 #include <sstream>
 #include <utility>
 
+#include "minijs/bytecode_function.h"
 #include "minijs/runtime_error.h"
 
 namespace minijs {
@@ -20,7 +21,12 @@ Value::Value(const FunctionStmt* declaration, std::shared_ptr<Environment> closu
     : value_type_(ValueType::Function), function_({declaration, closure}) {}
 
 Value::Value(BuiltinFunction builtin)
-    : value_type_(ValueType::BuiltinFunction), builtin_(std::move(builtin)) {}
+    : value_type_(ValueType::NativeFunction),
+      native_function_(std::make_shared<NativeFunction>(
+          NativeFunction{"<builtin>", 0, std::move(builtin)})) {}
+
+Value::Value(std::shared_ptr<NativeFunction> function)
+    : value_type_(ValueType::NativeFunction), native_function_(std::move(function)) {}
 
 Value::Value(std::vector<Value> elements)
     : value_type_(ValueType::Array),
@@ -32,12 +38,8 @@ Value::Value(std::unordered_map<std::string, Value> properties)
 
 Value::Value(std::string string) : value_type_(ValueType::String), string_(std::move(string)) {}
 
-const std::string& Value::asString() const {
-  if (!isString()) {
-    throw RuntimeError("value is not a string");
-  }
-  return string_;
-}
+Value::Value(std::shared_ptr<BytecodeFunction> function)
+    : value_type_(ValueType::BytecodeFunction), bytecode_function_(std::move(function)) {}
 
 Value Value::undefined() { return Value(ValueType::Undefined); }
 
@@ -46,6 +48,13 @@ double Value::asNumber() const {
     throw RuntimeError("value is not a number");
   }
   return number_;
+}
+
+const std::string& Value::asString() const {
+  if (!isString()) {
+    throw RuntimeError("value is not a string");
+  }
+  return string_;
 }
 
 const FunctionValue& Value::asFunction() const { return function_; }
@@ -79,10 +88,21 @@ std::unordered_map<std::string, Value>& Value::asObject() {
 }
 
 const BuiltinFunction& Value::asBuiltinFunction() const {
-  if (!isBuiltinFunction()) {
-    throw RuntimeError("value is not a builtin function");
+  return asNativeFunction()->function;
+}
+
+const std::shared_ptr<NativeFunction>& Value::asNativeFunction() const {
+  if (!isNativeFunction()) {
+    throw RuntimeError("value is not a native function");
   }
-  return builtin_;
+  return native_function_;
+}
+
+const std::shared_ptr<BytecodeFunction>& Value::asBytecodeFunction() const {
+  if (!isBytecodeFunction()) {
+    throw RuntimeError("value is not a bytecode function");
+  }
+  return bytecode_function_;
 }
 
 std::string Value::toString() const {
@@ -100,8 +120,10 @@ std::string Value::toString() const {
       return boolean_ ? "true" : "false";
     case ValueType::Function:
       return "<function>";
-    case ValueType::BuiltinFunction:
-      return "<builtin function>";
+    case ValueType::NativeFunction:
+      return "<native function " + native_function_->name + ">";
+    case ValueType::BytecodeFunction:
+      return "<function " + bytecode_function_->name + ">";
     case ValueType::Array: {
       std::string result = "[";
       for (std::size_t i = 0; i < array_->size(); ++i) {
@@ -133,9 +155,10 @@ bool Value::isTruthy() const {
     case ValueType::Boolean:
       return boolean_;
     case ValueType::Function:
-    case ValueType::BuiltinFunction:
+    case ValueType::NativeFunction:
     case ValueType::Array:
     case ValueType::Object:
+    case ValueType::BytecodeFunction:
       return true;
     case ValueType::Null:
       return false;
@@ -164,7 +187,11 @@ bool Value::isString() const { return value_type_ == ValueType::String; }
 
 bool Value::isObject() const { return value_type_ == ValueType::Object; }
 
-bool Value::isBuiltinFunction() const { return value_type_ == ValueType::BuiltinFunction; }
+bool Value::isBuiltinFunction() const { return isNativeFunction(); }
+
+bool Value::isNativeFunction() const { return value_type_ == ValueType::NativeFunction; }
+
+bool Value::isBytecodeFunction() const { return value_type_ == ValueType::BytecodeFunction; }
 
 bool Value::equals(const Value& other) const {
   if (value_type_ != other.value_type_) {
@@ -188,8 +215,10 @@ bool Value::equals(const Value& other) const {
     case ValueType::Function:
       return function_.declaration == other.function_.declaration &&
              function_.closure == other.function_.closure;
-    case ValueType::BuiltinFunction:
-      return false;
+    case ValueType::BytecodeFunction:
+      return bytecode_function_ == other.bytecode_function_;
+    case ValueType::NativeFunction:
+      return native_function_ == other.native_function_;
   }
 
   return false;
