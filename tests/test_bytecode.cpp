@@ -81,6 +81,31 @@ void testCompileLogicalNot() {
   EXPECT(runBytecode("!1;").toString() == "false");
 }
 
+void testCompileLogicalAndShortCircuit() {
+  EXPECT(runBytecodeProgram("false && unknown;").toString() == "false");
+  EXPECT(runBytecodeProgram("true && 42;").asNumber() == 42);
+}
+
+void testCompileLogicalOrShortCircuit() {
+  EXPECT(runBytecodeProgram("true || unknown;").toString() == "true");
+  EXPECT(runBytecodeProgram("false || 42;").asNumber() == 42);
+}
+
+void testCompileLogicalReturnsOperandValue() {
+  EXPECT(runBytecodeProgram("0 || 2;").asNumber() == 2);
+  EXPECT(runBytecodeProgram("1 || 2;").asNumber() == 1);
+  EXPECT(runBytecodeProgram("0 && 2;").asNumber() == 0);
+  EXPECT(runBytecodeProgram("1 && 2;").asNumber() == 2);
+}
+
+void testCompileLogicalWithBuiltins() {
+  EXPECT(runBytecodeProgram(
+             "let p = { name: \"Tom\", age: 18 };"
+             "let ks = keys(p);"
+             "len(ks) == 2 && has(p, ks[0]) && has(p, ks[1]);")
+             .toString() == "true");
+}
+
 minijs::Chunk compileExpression(std::string_view source) {
   minijs::Parser parser(source);
   minijs::ExprPtr expression = parser.parse();
@@ -146,6 +171,33 @@ void testDisassembleBooleanNullUndefinedLiterals() {
   EXPECT(minijs::disassembleChunk(compileExpression("undefined;")) ==
          "0000 OP_CONSTANT 0 undefined\n"
          "0002 OP_RETURN\n");
+}
+
+void testDisassembleLogicalAndJump() {
+  const minijs::Chunk chunk = compileExpression("true && 42;");
+
+  const std::string expected =
+      "0000 OP_CONSTANT 0 true\n"
+      "0002 OP_JUMP_IF_FALSE 2 -> 8\n"
+      "0005 OP_POP\n"
+      "0006 OP_CONSTANT 1 42\n"
+      "0008 OP_RETURN\n";
+
+  EXPECT(minijs::disassembleChunk(chunk) == expected);
+}
+
+void testDisassembleLogicalOrJump() {
+  const minijs::Chunk chunk = compileExpression("true || 42;");
+
+  const std::string expected =
+      "0000 OP_CONSTANT 0 true\n"
+      "0002 OP_JUMP_IF_FALSE 2 -> 8\n"
+      "0005 OP_JUMP 5 -> 11\n"
+      "0008 OP_POP\n"
+      "0009 OP_CONSTANT 1 42\n"
+      "0011 OP_RETURN\n";
+
+  EXPECT(minijs::disassembleChunk(chunk) == expected);
 }
 
 void testCompileGlobalLet() { EXPECT(runBytecodeProgram("let x = 10; x;").asNumber() == 10); }
@@ -840,10 +892,16 @@ void runBytecodeTests() {
   testCompileStringConcatenation();
   testCompileComparisonExpressions();
   testCompileLogicalNot();
+  testCompileLogicalAndShortCircuit();
+  testCompileLogicalOrShortCircuit();
+  testCompileLogicalReturnsOperandValue();
+  testCompileLogicalWithBuiltins();
   testDisassembleArithmeticExpression();
   testDisassembleUnaryMinus();
   testDisassembleStringLiteral();
   testDisassembleBooleanNullUndefinedLiterals();
+  testDisassembleLogicalAndJump();
+  testDisassembleLogicalOrJump();
   testCompileGlobalLet();
   testCompileGlobalExpressionUsesVariable();
   testCompileGlobalAssignment();

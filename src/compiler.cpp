@@ -259,6 +259,29 @@ void Compiler::emitExpression(const Expr& expression) {
     emitGlobalName(assign->name(), Opcode::SetGlobal);
     return;
   }
+  if (const auto* logical = dynamic_cast<const LogicalExpr*>(&expression)) {
+    emitExpression(logical->left());
+
+    if (logical->op() == TokenType::AndAnd) {
+      const std::size_t endJump = emitJump(Opcode::JumpIfFalse);
+      emitOpcode(Opcode::Pop);
+      emitExpression(logical->right());
+      patchJump(endJump);
+      return;
+    }
+
+    if (logical->op() == TokenType::OrOr) {
+      const std::size_t elseJump = emitJump(Opcode::JumpIfFalse);
+      const std::size_t endJump = emitJump(Opcode::Jump);
+
+      patchJump(elseJump);
+      emitOpcode(Opcode::Pop);
+      emitExpression(logical->right());
+
+      patchJump(endJump);
+      return;
+    }
+  }
 
   throw RuntimeError("unsupported bytecode expression");
 }
