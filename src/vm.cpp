@@ -357,6 +357,8 @@ Value VM::run(const Chunk& chunk) {
                                std::to_string(function->params.size()) + " arguments");
           }
 
+          // callee 位于参数前一个槽位；新函数帧从第一个参数开始。
+          // 因此 OP_GET_LOCAL 0 读取的就是第一个实参，无需复制参数数组。
           frames_.push_back(CallFrame{
               function,
               0,

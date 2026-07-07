@@ -11,6 +11,7 @@
 #include "minijs/token.h"
 
 namespace minijs {
+
 namespace {
 
 bool producesValue(const Stmt& statement) {
@@ -245,6 +246,7 @@ void Compiler::emitExpression(const Expr& expression) {
       emitLocal(static_cast<std::uint8_t>(slot), Opcode::GetLocal);
       return;
     }
+    // 当前编译器只解析本函数/块内 locals_；找不到的名字按全局变量处理。
     emitGlobalName(variable->name(), Opcode::GetGlobal);
     return;
   }
@@ -256,6 +258,7 @@ void Compiler::emitExpression(const Expr& expression) {
       emitLocal(static_cast<std::uint8_t>(slot), Opcode::SetLocal);
       return;
     }
+    // 赋值同样遵循 local -> global；外层函数局部变量需要闭包/upvalue 才能支持。
     emitGlobalName(assign->name(), Opcode::SetGlobal);
     return;
   }
@@ -364,6 +367,7 @@ void Compiler::emitStatement(const Stmt& statement, bool keepValue) {
 
   if (const auto* whileStmt = dynamic_cast<const WhileStmt*>(&statement)) {
     const std::size_t loopStart = chunk_.count();
+    loops_.push_back(LoopContext{loopStart, {}, {}, false, scopeDepth_});
     emitExpression(whileStmt->condition());
     const std::size_t exitJump = emitJump(Opcode::JumpIfFalse);
     emitOpcode(Opcode::Pop);
@@ -371,6 +375,12 @@ void Compiler::emitStatement(const Stmt& statement, bool keepValue) {
     emitLoop(loopStart);
     patchJump(exitJump);
     emitOpcode(Opcode::Pop);
+
+    // break 的目标是循环后的当前位置，等循环体全部生成后统一回填。
+    for (std::size_t jump : loops_.back().breakJumps) {
+      patchJump(jump);
+    }
+    loops_.pop_back();
     return;
   }
 
@@ -380,6 +390,7 @@ void Compiler::emitStatement(const Stmt& statement, bool keepValue) {
     }
 
     const std::size_t loopStart = chunk_.count();
+    loops_.push_back(LoopContext{loopStart, {}, {}, forStmt->increment() != nullptr, scopeDepth_});
 
     std::size_t exitJump = 0;
     bool hasExitJump = false;
@@ -394,6 +405,10 @@ void Compiler::emitStatement(const Stmt& statement, bool keepValue) {
     emitStatement(forStmt->body(), false);
 
     if (forStmt->increment() != nullptr) {
+      // for 的 continue 要先跳到 increment；现在 increment 起点已确定，可以回填。
+      for (std::size_t jump : loops_.back().continueJumps) {
+        patchJump(jump);
+      }
       emitExpression(*forStmt->increment());
       emitOpcode(Opcode::Pop);
     }
@@ -405,9 +420,43 @@ void Compiler::emitStatement(const Stmt& statement, bool keepValue) {
       emitOpcode(Opcode::Pop);
     }
 
+    // break 跳过 increment 和循环回跳，直接落到循环结束后的当前位置。
+    for (std::size_t jump : loops_.back().breakJumps) {
+      patchJump(jump);
+    }
+    loops_.pop_back();
     return;
   }
 
+  if (dynamic_cast<const ContinueStmt*>(&statement) != nullptr) {
+    if (loops_.empty()) {
+      throw RuntimeError("continue outside loop");
+    }
+
+    // continue 会绕过当前块的 endScope()，所以先弹掉块内局部变量的栈槽。
+    emitLocalPopsToDepth(loops_.back().scopeDepth);
+    if (loops_.back().continueNeedsPatch) {
+      // 带 increment 的 for 还不知道 increment 起点，先记录向前跳转稍后回填。
+      const std::size_t jump = emitJump(Opcode::Jump);
+      loops_.back().continueJumps.push_back(jump);
+      return;
+    }
+
+    // while 或无 increment 的 for 可以直接回到循环条件起点。
+    emitLoop(loops_.back().continueTarget);
+    return;
+  }
+  if (dynamic_cast<const BreakStmt*>(&statement) != nullptr) {
+    if (loops_.empty()) {
+      throw RuntimeError("break outside loop");
+    }
+
+    // break 同样会绕过块作用域收尾；跳走前保持运行时栈和局部变量布局一致。
+    emitLocalPopsToDepth(loops_.back().scopeDepth);
+    const std::size_t jump = emitJump(Opcode::Jump);
+    loops_.back().breakJumps.push_back(jump);
+    return;
+  }
   throw RuntimeError("unsupported bytecode statement");
 }
 
@@ -427,6 +476,9 @@ std::shared_ptr<BytecodeFunction> Compiler::compileFunction(const FunctionStmt& 
 
   Compiler compiler;
   compiler.scopeDepth_ = 1;
+  // 参数直接占用函数帧开头的局部槽。
+  // 调用时 CallFrame::slotStart 指向第一个实参，因此参数 local 0/1/... 直接读栈上实参。
+  // 每个函数目前使用独立 Compiler，不捕获外层函数 locals_。
   for (const std::string& param : function.params()) {
     compiler.addLocal(param);
   }
@@ -463,6 +515,15 @@ void Compiler::emitLoop(std::size_t loopStart) {
 
   emitByte(static_cast<std::uint8_t>((offset >> 8) & 0xff));
   emitByte(static_cast<std::uint8_t>(offset & 0xff));
+}
+
+void Compiler::emitLocalPopsToDepth(int depth) {
+  for (auto it = locals_.rbegin(); it != locals_.rend(); ++it) {
+    if (it->depth <= depth) {
+      break;
+    }
+    emitOpcode(Opcode::Pop);
+  }
 }
 
 void Compiler::patchJump(std::size_t offset) {

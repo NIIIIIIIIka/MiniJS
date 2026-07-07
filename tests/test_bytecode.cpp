@@ -200,6 +200,70 @@ void testDisassembleLogicalOrJump() {
   EXPECT(minijs::disassembleChunk(chunk) == expected);
 }
 
+void testDisassembleWhileBreakJump() {
+  const minijs::Chunk chunk = compileProgram("let i = 0; while (true) { break; } i;");
+
+  const std::string expected =
+      "0000 OP_CONSTANT 0 0\n"
+      "0002 OP_DEFINE_GLOBAL 1 i\n"
+      "0004 OP_CONSTANT 2 true\n"
+      "0006 OP_JUMP_IF_FALSE 6 -> 16\n"
+      "0009 OP_POP\n"
+      "0010 OP_JUMP 10 -> 17\n"
+      "0013 OP_LOOP 13 -> 4\n"
+      "0016 OP_POP\n"
+      "0017 OP_GET_GLOBAL 3 i\n"
+      "0019 OP_RETURN\n";
+
+  EXPECT(minijs::disassembleChunk(chunk) == expected);
+}
+
+void testDisassembleWhileContinueLoop() {
+  const minijs::Chunk chunk = compileProgram("let i = 0; while (true) { continue; } i;");
+
+  const std::string expected =
+      "0000 OP_CONSTANT 0 0\n"
+      "0002 OP_DEFINE_GLOBAL 1 i\n"
+      "0004 OP_CONSTANT 2 true\n"
+      "0006 OP_JUMP_IF_FALSE 6 -> 16\n"
+      "0009 OP_POP\n"
+      "0010 OP_LOOP 10 -> 4\n"
+      "0013 OP_LOOP 13 -> 4\n"
+      "0016 OP_POP\n"
+      "0017 OP_GET_GLOBAL 3 i\n"
+      "0019 OP_RETURN\n";
+
+  EXPECT(minijs::disassembleChunk(chunk) == expected);
+}
+
+void testDisassembleForContinueJumpsToIncrement() {
+  const minijs::Chunk chunk =
+      compileProgram("let sum = 0; for (let i = 0; i < 2; i = i + 1) { continue; } sum;");
+
+  const std::string expected =
+      "0000 OP_CONSTANT 0 0\n"
+      "0002 OP_DEFINE_GLOBAL 1 sum\n"
+      "0004 OP_CONSTANT 2 0\n"
+      "0006 OP_DEFINE_GLOBAL 3 i\n"
+      "0008 OP_GET_GLOBAL 4 i\n"
+      "0010 OP_CONSTANT 5 2\n"
+      "0012 OP_LESS\n"
+      "0013 OP_JUMP_IF_FALSE 13 -> 31\n"
+      "0016 OP_POP\n"
+      "0017 OP_JUMP 17 -> 20\n"
+      "0020 OP_GET_GLOBAL 6 i\n"
+      "0022 OP_CONSTANT 7 1\n"
+      "0024 OP_ADD\n"
+      "0025 OP_SET_GLOBAL 8 i\n"
+      "0027 OP_POP\n"
+      "0028 OP_LOOP 28 -> 8\n"
+      "0031 OP_POP\n"
+      "0032 OP_GET_GLOBAL 9 sum\n"
+      "0034 OP_RETURN\n";
+
+  EXPECT(minijs::disassembleChunk(chunk) == expected);
+}
+
 void testCompileGlobalLet() { EXPECT(runBytecodeProgram("let x = 10; x;").asNumber() == 10); }
 
 void testCompileGlobalExpressionUsesVariable() {
@@ -305,6 +369,89 @@ void testCompileForWithoutInitializerStatement() {
              .asNumber() == 3);
 }
 
+void testCompileWhileBreakStatement() {
+  EXPECT(runBytecodeProgram("let i = 0;"
+                            "while (true) {"
+                            "  i = i + 1;"
+                            "  if (i == 3) break;"
+                            "}"
+                            "i;")
+             .asNumber() == 3);
+}
+
+void testCompileWhileContinueStatement() {
+  EXPECT(runBytecodeProgram("let i = 0;"
+                            "let sum = 0;"
+                            "while (i < 5) {"
+                            "  i = i + 1;"
+                            "  if (i == 3) continue;"
+                            "  sum = sum + i;"
+                            "}"
+                            "sum;")
+             .asNumber() == 12);
+}
+
+void testCompileForBreakStatement() {
+  EXPECT(runBytecodeProgram("let i = 0;"
+                            "for (; true; i = i + 1) {"
+                            "  if (i == 3) break;"
+                            "}"
+                            "i;")
+             .asNumber() == 3);
+}
+
+void testCompileForContinueStatement() {
+  EXPECT(runBytecodeProgram("let sum = 0;"
+                            "for (let i = 0; i < 5; i = i + 1) {"
+                            "  if (i == 3) continue;"
+                            "  sum = sum + i;"
+                            "}"
+                            "sum;")
+             .asNumber() == 7);
+}
+
+void testCompileBreakContinuePopBlockLocals() {
+  EXPECT(runBytecodeProgram("let i = 0;"
+                            "while (i < 3) {"
+                            "  {"
+                            "    let temp = i;"
+                            "    i = i + 1;"
+                            "    continue;"
+                            "  }"
+                            "}"
+                            "i;")
+             .asNumber() == 3);
+
+  EXPECT(runBytecodeProgram("let i = 0;"
+                            "while (true) {"
+                            "  {"
+                            "    let temp = 10;"
+                            "    i = i + temp;"
+                            "    break;"
+                            "  }"
+                            "}"
+                            "i;")
+             .asNumber() == 10);
+}
+
+void testCompileBreakOutsideLoop() {
+  try {
+    runBytecodeProgram("break;");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: break outside loop");
+  }
+}
+
+void testCompileContinueOutsideLoop() {
+  try {
+    runBytecodeProgram("continue;");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: continue outside loop");
+  }
+}
+
 void testCompileBlockLocalVariable() {
   EXPECT(runBytecodeProgram("let result = 0;"
                             "{"
@@ -374,6 +521,74 @@ void testCompileBytecodeFunctionReturnsArgument() {
                             "}"
                             "id(42);")
              .asNumber() == 42);
+}
+
+void testCompileBytecodeFunctionParametersUseLocalSlots() {
+  EXPECT(runBytecodeProgram("function pick(a, b, c) {"
+                            "  return b;"
+                            "}"
+                            "pick(10, 20, 30);")
+             .asNumber() == 20);
+}
+
+void testCompileBytecodeFunctionParametersAndLocalsUseSlots() {
+  EXPECT(runBytecodeProgram("function addWithLocal(a, b) {"
+                            "  let c = a + b;"
+                            "  return c;"
+                            "}"
+                            "addWithLocal(10, 20);")
+             .asNumber() == 30);
+}
+
+void testCompileBytecodeFunctionParameterRedeclaration() {
+  try {
+    runBytecodeProgram(
+        "function f(a) {"
+        "  let a = 2;"
+        "  return a;"
+        "}"
+        "f(1);");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) ==
+           "RuntimeError: variable already declared in this scope: a");
+  }
+}
+
+void testCompileBytecodeFunctionReadsGlobalVariable() {
+  EXPECT(runBytecodeProgram("let base = 10;"
+                            "function addBase(x) {"
+                            "  return x + base;"
+                            "}"
+                            "addBase(5);")
+             .asNumber() == 15);
+}
+
+void testCompileBytecodeFunctionAssignsGlobalVariable() {
+  EXPECT(runBytecodeProgram("let total = 1;"
+                            "function add(x) {"
+                            "  total = total + x;"
+                            "}"
+                            "add(4);"
+                            "total;")
+             .asNumber() == 5);
+}
+
+void testBytecodeFunctionDoesNotCaptureOuterLocal() {
+  try {
+    runBytecodeProgram(
+        "function outer() {"
+        "  let x = 10;"
+        "  function inner() {"
+        "    return x;"
+        "  }"
+        "  return inner();"
+        "}"
+        "outer();");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: undefined variable: x");
+  }
 }
 
 void testCompileBytecodeFunctionWithoutReturn() {
@@ -902,6 +1117,9 @@ void runBytecodeTests() {
   testDisassembleBooleanNullUndefinedLiterals();
   testDisassembleLogicalAndJump();
   testDisassembleLogicalOrJump();
+  testDisassembleWhileBreakJump();
+  testDisassembleWhileContinueLoop();
+  testDisassembleForContinueJumpsToIncrement();
   testCompileGlobalLet();
   testCompileGlobalExpressionUsesVariable();
   testCompileGlobalAssignment();
@@ -913,6 +1131,13 @@ void runBytecodeTests() {
   testCompileForStatement();
   testCompileForSkippedStatement();
   testCompileForWithoutInitializerStatement();
+  testCompileWhileBreakStatement();
+  testCompileWhileContinueStatement();
+  testCompileForBreakStatement();
+  testCompileForContinueStatement();
+  testCompileBreakContinuePopBlockLocals();
+  testCompileBreakOutsideLoop();
+  testCompileContinueOutsideLoop();
   testCompileBlockLocalVariable();
   testCompileNestedBlockLocalVariables();
   testCompileLocalAssignment();
@@ -920,6 +1145,12 @@ void runBytecodeTests() {
   testCompileDuplicateLocalDeclaration();
   testCompileBytecodeFunctionCall();
   testCompileBytecodeFunctionReturnsArgument();
+  testCompileBytecodeFunctionParametersUseLocalSlots();
+  testCompileBytecodeFunctionParametersAndLocalsUseSlots();
+  testCompileBytecodeFunctionParameterRedeclaration();
+  testCompileBytecodeFunctionReadsGlobalVariable();
+  testCompileBytecodeFunctionAssignsGlobalVariable();
+  testBytecodeFunctionDoesNotCaptureOuterLocal();
   testCompileBytecodeFunctionWithoutReturn();
   testBytecodeFunctionArityMismatch();
   testCompileBytecodeFunctionLocalVariable();

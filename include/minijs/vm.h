@@ -15,6 +15,8 @@ namespace minijs {
 struct CallFrame {
   std::shared_ptr<BytecodeFunction> function;
   std::size_t ip;
+  // 当前函数局部变量区在 VM 栈中的起点。
+  // 调用字节码函数时它指向第一个实参，因此参数 slot 0/1/... 可直接复用栈上的实参。
   std::size_t slotStart;
 };
 
