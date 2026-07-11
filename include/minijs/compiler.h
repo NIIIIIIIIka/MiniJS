@@ -6,17 +6,17 @@
 #include <vector>
 
 #include "minijs/ast.h"
+#include "minijs/bytecode_function.h"
 #include "minijs/chunk.h"
 #include "minijs/value.h"
 
 namespace minijs {
 
-struct BytecodeFunction;
-
 // 编译期局部变量记录。真正的运行期值保存在 VM 栈的同编号槽位。
 struct Local {
   std::string name;
   int depth;
+  bool isCaptured = false;
 };
 
 // 编译循环时保存的跳转上下文。
@@ -34,9 +34,16 @@ struct LoopContext {
   int scopeDepth = 0;
 };
 
+enum class FunctionKind {
+  Function,
+  Method,
+};
+
 // 将 AST 编译为栈式 VM 字节码。
 class Compiler {
  public:
+  explicit Compiler(Compiler* enclosing = nullptr);
+
   // 编译单个表达式，主要用于表达式级测试。
   Chunk compile(const Expr& expression);
   // 编译完整程序，保留最后一个表达式语句作为返回值。
@@ -49,7 +56,8 @@ class Compiler {
   void emitStatement(const Stmt& statement, bool keepValue);
   void emitGlobalName(const std::string& name, Opcode opcode);
 
-  std::shared_ptr<BytecodeFunction> compileFunction(const FunctionStmt& function);
+  std::shared_ptr<BytecodeFunction> compileFunction(
+      const FunctionStmt& function, FunctionKind kind = FunctionKind::Function);
   void emitByte(std::uint8_t byte);
   // 写入向前跳转指令和两个占位字节，返回待回填位置。
   std::size_t emitJump(Opcode opcode);
@@ -64,13 +72,20 @@ class Compiler {
   void addLocal(const std::string& name);
   // 从内向外查找局部变量，返回 VM 栈槽编号；找不到返回 -1。
   int resolveLocal(const std::string& name) const;
+  // 查找一个变量，看它是否来自外部作用域，如果是，就记录下来（捕获它）
+  int resolveUpvalue(const std::string& name);
+  std::uint8_t addUpvalue(bool isLocal, std::uint8_t index);
   void emitLocal(std::uint8_t slot, Opcode opcode);
 
   std::uint8_t addConstant(Value value);
   Chunk chunk_;
   // locals_ 的下标就是局部变量在当前 VM 栈帧中的槽位。
+  std::string currentFunctionName_;
   std::vector<Local> locals_;
   std::vector<LoopContext> loops_;
+  std::vector<UpvalueDescriptor> upvalues_;
+  Compiler* enclosing_ = nullptr;
+  bool isFunction_ = false;
   int scopeDepth_ = 0;
 };
 

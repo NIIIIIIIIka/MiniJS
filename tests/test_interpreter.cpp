@@ -171,12 +171,7 @@ void testObjectReferenceSemantics() {
 }
 
 void testUndefinedProperty() {
-  try {
-    run("let p = { age: 18 }; p.name;");
-    EXPECT(false);
-  } catch (const minijs::RuntimeError& error) {
-    EXPECT(std::string_view(error.what()) == "RuntimeError: undefined property: name");
-  }
+  EXPECT(run("let p = { age: 18 }; p.name;").isUndefined());
 }
 
 void testGetPropertyFromNonObject() {
@@ -497,6 +492,86 @@ void testFunctionWithoutReturnReturnsUndefined() {
   EXPECT(run("function f() { 1; } f();").isUndefined());
 }
 
+void testClassDeclarationDefinesClassValue() {
+  const minijs::Value value = run("class Box {} Box;");
+
+  EXPECT(value.isClass());
+  EXPECT(value.toString() == "<class Box>");
+}
+
+void testClassCallCreatesInstance() {
+  const minijs::Value value = run("class Box {} Box();");
+
+  EXPECT(value.isInstance());
+  EXPECT(value.toString() == "<Box instance>");
+}
+
+void testClassMethodCall() {
+  EXPECT(run("class Box { get() { return 123; } } let b = Box(); b.get();").asNumber() == 123);
+}
+
+void testClassBoundMethodCall() {
+  EXPECT(run("class Box { get() { return 123; } } let b = Box(); let get = b.get; get();")
+             .asNumber() == 123);
+}
+
+void testClassMethodThisField() {
+  EXPECT(run("class Box {"
+             "  set(value) { this.value = value; }"
+             "  get() { return this.value; }"
+             "}"
+             "let b = Box();"
+             "b.set(42);"
+             "b.get();")
+             .asNumber() == 42);
+}
+
+void testClassInstanceFieldsAreIndependent() {
+  EXPECT(run("class Box {"
+             "  set(value) { this.value = value; }"
+             "  get() { return this.value; }"
+             "}"
+             "let a = Box();"
+             "let b = Box();"
+             "a.set(1);"
+             "b.set(2);"
+             "a.get() + b.get();")
+             .asNumber() == 3);
+}
+
+void testClassMethodUsesDefinitionClosure() {
+  EXPECT(run("let x = \"global\";"
+             "class Box { get() { return x; } }"
+             "function test() {"
+             "  let x = \"local\";"
+             "  let b = Box();"
+             "  return b.get();"
+             "}"
+             "test();")
+             .toString() == "global");
+}
+
+void testClassBoundMethodUsesDefinitionClosure() {
+  EXPECT(run("let x = \"global\";"
+             "class Box { get() { return x; } }"
+             "function test(fn) {"
+             "  let x = \"local\";"
+             "  return fn();"
+             "}"
+             "let b = Box();"
+             "test(b.get);")
+             .toString() == "global");
+}
+
+void testClassCallArity() {
+  try {
+    run("class Box {} Box(1);");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: class Box expects 0 arguments");
+  }
+}
+
 void testReturnValueStillWorks() { EXPECT(run("function f() { return 1; } f();").asNumber() == 1); }
 
 void testEarlyReturnFromFunction() {
@@ -717,6 +792,15 @@ void runInterpreterTests() {
   testReturnFromFunction();
   testBareReturnFromFunction();
   testFunctionWithoutReturnReturnsUndefined();
+  testClassDeclarationDefinesClassValue();
+  testClassCallCreatesInstance();
+  testClassMethodCall();
+  testClassBoundMethodCall();
+  testClassMethodThisField();
+  testClassInstanceFieldsAreIndependent();
+  testClassMethodUsesDefinitionClosure();
+  testClassBoundMethodUsesDefinitionClosure();
+  testClassCallArity();
   testReturnValueStillWorks();
   testEarlyReturnFromFunction();
   testRecursiveFunction();

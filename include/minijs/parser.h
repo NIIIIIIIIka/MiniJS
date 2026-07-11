@@ -32,6 +32,8 @@ class Parser {
   // 解析 let 变量声明。
   StmtPtr letDeclaration();
 
+  StmtPtr classStatement();
+
   // 解析表达式语句。
   StmtPtr expressionStatement();
 

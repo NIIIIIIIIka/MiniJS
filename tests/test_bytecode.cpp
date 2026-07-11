@@ -200,6 +200,170 @@ void testDisassembleLogicalOrJump() {
   EXPECT(minijs::disassembleChunk(chunk) == expected);
 }
 
+void testDisassembleClosureCapturesOuterLocal() {
+  const minijs::Chunk script =
+      compileProgram("function outer() {"
+                     "  let x = 10;"
+                     "  function inner() {"
+                     "    return x;"
+                     "  }"
+                     "  return inner;"
+                     "}"
+                     "outer();");
+
+  const auto outer = script.constant(0).asBytecodeFunction();
+  const std::string outerBytecode = minijs::disassembleChunk(outer->chunk);
+
+  EXPECT(outerBytecode.find("OP_CONSTANT 0 10") != std::string::npos);
+  EXPECT(outerBytecode.find("OP_CLOSURE 1 <function inner>") != std::string::npos);
+  EXPECT(outerBytecode.find("| local 0") != std::string::npos);
+  EXPECT(outerBytecode.find("OP_GET_LOCAL 1") != std::string::npos);
+
+  const auto inner = outer->chunk.constant(1).asBytecodeFunction();
+  const std::string innerBytecode = minijs::disassembleChunk(inner->chunk);
+
+  EXPECT(innerBytecode.find("OP_GET_UPVALUE 0") != std::string::npos);
+  EXPECT(innerBytecode.find("OP_RETURN") != std::string::npos);
+}
+
+void testDisassembleClosureCapturesThroughUpvalue() {
+  const minijs::Chunk script =
+      compileProgram("function outer() {"
+                     "  let x = 10;"
+                     "  function middle() {"
+                     "    function inner() {"
+                     "      return x;"
+                     "    }"
+                     "    return inner;"
+                     "  }"
+                     "  return middle;"
+                     "}"
+                     "outer();");
+
+  const auto outer = script.constant(0).asBytecodeFunction();
+  const std::string outerBytecode = minijs::disassembleChunk(outer->chunk);
+  EXPECT(outerBytecode.find("OP_CLOSURE 1 <function middle>") != std::string::npos);
+  EXPECT(outerBytecode.find("| local 0") != std::string::npos);
+
+  const auto middle = outer->chunk.constant(1).asBytecodeFunction();
+  const std::string middleBytecode = minijs::disassembleChunk(middle->chunk);
+  EXPECT(middleBytecode.find("OP_CLOSURE 0 <function inner>") != std::string::npos);
+  EXPECT(middleBytecode.find("| upvalue 0") != std::string::npos);
+
+  const auto inner = middle->chunk.constant(0).asBytecodeFunction();
+  const std::string innerBytecode = minijs::disassembleChunk(inner->chunk);
+  EXPECT(innerBytecode.find("OP_GET_UPVALUE 0") != std::string::npos);
+}
+
+void testDisassembleClosureSetsUpvalue() {
+  const minijs::Chunk script =
+      compileProgram("function outer() {"
+                     "  let x = 0;"
+                     "  function add() {"
+                     "    x = x + 1;"
+                     "    return x;"
+                     "  }"
+                     "  return add;"
+                     "}"
+                     "outer();");
+
+  const auto outer = script.constant(0).asBytecodeFunction();
+  const auto add = outer->chunk.constant(1).asBytecodeFunction();
+  const std::string bytecode = minijs::disassembleChunk(add->chunk);
+
+  EXPECT(bytecode.find("OP_GET_UPVALUE 0") != std::string::npos);
+  EXPECT(bytecode.find("OP_SET_UPVALUE 0") != std::string::npos);
+}
+
+void testDisassembleClosureClosesBlockLocal() {
+  const minijs::Chunk script =
+      compileProgram("function make() {"
+                     "  let get = undefined;"
+                     "  {"
+                     "    let x = 42;"
+                     "    function inner() { return x; }"
+                     "    get = inner;"
+                     "  }"
+                     "  return get;"
+                     "}"
+                     "make();");
+
+  const auto make = script.constant(0).asBytecodeFunction();
+  const std::string bytecode = minijs::disassembleChunk(make->chunk);
+
+  EXPECT(bytecode.find("OP_CLOSURE 2 <function inner>") != std::string::npos);
+  EXPECT(bytecode.find("| local 1") != std::string::npos);
+  EXPECT(bytecode.find("OP_CLOSE_UPVALUE") != std::string::npos);
+}
+
+void testDisassembleClassMethod() {
+  const minijs::Chunk chunk = compileProgram("class Box { get() { return 123; } } Box;");
+  const std::string bytecode = minijs::disassembleChunk(chunk);
+
+  EXPECT(bytecode.find("OP_CLASS") != std::string::npos);
+  EXPECT(bytecode.find("Box") != std::string::npos);
+  EXPECT(bytecode.find("OP_CLOSURE") != std::string::npos);
+  EXPECT(bytecode.find("<function get>") != std::string::npos);
+  EXPECT(bytecode.find("OP_METHOD") != std::string::npos);
+  EXPECT(bytecode.find("get") != std::string::npos);
+}
+
+void testDisassembleBreakClosesUpvalueBeforeJump() {
+  const minijs::Chunk chunk =
+      compileProgram("let saved = undefined;"
+                     "while (true) {"
+                     "  {"
+                     "    let x = 42;"
+                     "    function get() { return x; }"
+                     "    saved = get;"
+                     "    break;"
+                     "  }"
+                     "}"
+                     "saved();");
+
+  const std::string bytecode = minijs::disassembleChunk(chunk);
+  const std::size_t closePosition = bytecode.find("OP_CLOSE_UPVALUE");
+  const std::size_t breakJumpPosition = bytecode.find("OP_JUMP ", closePosition);
+
+  EXPECT(closePosition != std::string::npos);
+  EXPECT(breakJumpPosition != std::string::npos);
+  EXPECT(closePosition < breakJumpPosition);
+}
+
+void testDisassembleLocalRecursionGetsCurrentClosure() {
+  const minijs::Chunk script =
+      compileProgram("function makeFact() {"
+                     "  function fact(n) {"
+                     "    if (n <= 1) return 1;"
+                     "    return n * fact(n - 1);"
+                     "  }"
+                     "  return fact;"
+                     "}"
+                     "makeFact();");
+
+  const auto makeFact = script.constant(0).asBytecodeFunction();
+  const auto fact = makeFact->chunk.constant(0).asBytecodeFunction();
+  const std::string bytecode = minijs::disassembleChunk(fact->chunk);
+
+  EXPECT(bytecode.find("OP_GET_CURRENT_CLOSURE") != std::string::npos);
+  EXPECT(bytecode.find("OP_CALL 1") != std::string::npos);
+  EXPECT(bytecode.find("OP_GET_GLOBAL") == std::string::npos);
+}
+
+void testDisassembleParameterShadowsCurrentClosure() {
+  const minijs::Chunk script =
+      compileProgram("function test(test) {"
+                     "  return test;"
+                     "}"
+                     "test(42);");
+
+  const auto test = script.constant(0).asBytecodeFunction();
+  const std::string bytecode = minijs::disassembleChunk(test->chunk);
+
+  EXPECT(bytecode.find("OP_GET_LOCAL 0") != std::string::npos);
+  EXPECT(bytecode.find("OP_GET_CURRENT_CLOSURE") == std::string::npos);
+}
+
 void testDisassembleWhileBreakJump() {
   const minijs::Chunk chunk = compileProgram("let i = 0; while (true) { break; } i;");
 
@@ -452,6 +616,47 @@ void testCompileContinueOutsideLoop() {
   }
 }
 
+void testBytecodeFunctionDoesNotInheritOuterBreakContext() {
+  try {
+    runBytecodeProgram("while (true) {"
+                       "  function stop() {"
+                       "    break;"
+                       "  }"
+                       "  break;"
+                       "}");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: break outside loop");
+  }
+}
+
+void testBytecodeFunctionDoesNotInheritOuterContinueContext() {
+  try {
+    runBytecodeProgram("while (true) {"
+                       "  function next() {"
+                       "    continue;"
+                       "  }"
+                       "  break;"
+                       "}");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: continue outside loop");
+  }
+}
+
+void testBytecodeFunctionUsesOwnLoopContext() {
+  EXPECT(runBytecodeProgram("function count() {"
+                            "  let i = 0;"
+                            "  while (true) {"
+                            "    i = i + 1;"
+                            "    if (i == 3) break;"
+                            "  }"
+                            "  return i;"
+                            "}"
+                            "count();")
+             .asNumber() == 3);
+}
+
 void testCompileBlockLocalVariable() {
   EXPECT(runBytecodeProgram("let result = 0;"
                             "{"
@@ -555,6 +760,23 @@ void testCompileBytecodeFunctionParameterRedeclaration() {
   }
 }
 
+void testBytecodeParameterShadowsCurrentFunctionName() {
+  EXPECT(runBytecodeProgram("function test(test) {"
+                            "  return test;"
+                            "}"
+                            "test(42);")
+             .asNumber() == 42);
+}
+
+void testBytecodeLocalShadowsCurrentFunctionName() {
+  EXPECT(runBytecodeProgram("function get() {"
+                            "  let get = 10;"
+                            "  return get;"
+                            "}"
+                            "get();")
+             .asNumber() == 10);
+}
+
 void testCompileBytecodeFunctionReadsGlobalVariable() {
   EXPECT(runBytecodeProgram("let base = 10;"
                             "function addBase(x) {"
@@ -574,21 +796,194 @@ void testCompileBytecodeFunctionAssignsGlobalVariable() {
              .asNumber() == 5);
 }
 
-void testBytecodeFunctionDoesNotCaptureOuterLocal() {
+void testBytecodeCallReturnedFunctionDirectly() {
+  EXPECT(runBytecodeProgram("function makeOne() {"
+                            "  function one() { return 1; }"
+                            "  return one;"
+                            "}"
+                            "makeOne()();")
+             .asNumber() == 1);
+}
+
+void testBytecodeClassMethodCall() {
+  EXPECT(runBytecodeProgram("class Box {"
+                            "  get() { return 123; }"
+                            "}"
+                            "let b = Box();"
+                            "b.get();")
+             .asNumber() == 123);
+}
+
+void testBytecodeClassBoundMethodCall() {
+  EXPECT(runBytecodeProgram("class Box {"
+                            "  get() { return 123; }"
+                            "}"
+                            "let b = Box();"
+                            "let get = b.get;"
+                            "get();")
+             .asNumber() == 123);
+}
+
+void testBytecodeClassMethodThisField() {
+  EXPECT(runBytecodeProgram("class Box {"
+                            "  set(value) { this.value = value; }"
+                            "  get() { return this.value; }"
+                            "}"
+                            "let b = Box();"
+                            "b.set(42);"
+                            "b.get();")
+             .asNumber() == 42);
+}
+
+void testBytecodeClassInstanceFieldsAreIndependent() {
+  EXPECT(runBytecodeProgram("class Box {"
+                            "  set(value) { this.value = value; }"
+                            "  get() { return this.value; }"
+                            "}"
+                            "let a = Box();"
+                            "let b = Box();"
+                            "a.set(1);"
+                            "b.set(2);"
+                            "a.get() + b.get();")
+             .asNumber() == 3);
+}
+
+void testBytecodeClassCallArity() {
   try {
-    runBytecodeProgram(
-        "function outer() {"
-        "  let x = 10;"
-        "  function inner() {"
-        "    return x;"
-        "  }"
-        "  return inner();"
-        "}"
-        "outer();");
+    runBytecodeProgram("class Box {} Box(1);");
     EXPECT(false);
   } catch (const minijs::RuntimeError& error) {
-    EXPECT(std::string_view(error.what()) == "RuntimeError: undefined variable: x");
+    EXPECT(std::string_view(error.what()) == "RuntimeError: class Box expects 0 arguments");
   }
+}
+
+void testBytecodeClosureKeepsOuterVariable() {
+  EXPECT(runBytecodeProgram("function makeCounter() {"
+                            "  let count = 0;"
+                            "  function next() {"
+                            "    count = count + 1;"
+                            "    return count;"
+                            "  }"
+                            "  return next;"
+                            "}"
+                            "let c = makeCounter();"
+                            "c();"
+                            "c();")
+             .asNumber() == 2);
+}
+
+void testBytecodeClosureInstancesAreIndependent() {
+  EXPECT(runBytecodeProgram("function makeCounter() {"
+                            "  let count = 0;"
+                            "  function next() {"
+                            "    count = count + 1;"
+                            "    return count;"
+                            "  }"
+                            "  return next;"
+                            "}"
+                            "let a = makeCounter();"
+                            "let b = makeCounter();"
+                            "a();"
+                            "a();"
+                            "b();")
+             .asNumber() == 1);
+}
+
+void testBytecodeClosuresShareCapturedVariable() {
+  EXPECT(runBytecodeProgram("function makePair() {"
+                            "  let x = 0;"
+                            "  function add() {"
+                            "    x = x + 1;"
+                            "  }"
+                            "  function get() {"
+                            "    return x;"
+                            "  }"
+                            "  return [add, get];"
+                            "}"
+                            "let pair = makePair();"
+                            "pair[0]();"
+                            "pair[1]();")
+             .asNumber() == 1);
+}
+
+void testBytecodeSharedUpvalueObservesMultipleWrites() {
+  EXPECT(runBytecodeProgram("function makePair() {"
+                            "  let x = 0;"
+                            "  function add() {"
+                            "    x = x + 1;"
+                            "  }"
+                            "  function get() {"
+                            "    return x;"
+                            "  }"
+                            "  return [add, get];"
+                            "}"
+                            "let pair = makePair();"
+                            "pair[0]();"
+                            "pair[0]();"
+                            "pair[1]();")
+             .asNumber() == 2);
+}
+
+void testBytecodeClosureCapturesThroughMultipleLevels() {
+  EXPECT(runBytecodeProgram("function outer() {"
+                            "  let x = 10;"
+                            "  function middle() {"
+                            "    function inner() {"
+                            "      return x;"
+                            "    }"
+                            "    return inner;"
+                            "  }"
+                            "  return middle;"
+                            "}"
+                            "let m = outer();"
+                            "let i = m();"
+                            "i();")
+             .asNumber() == 10);
+}
+
+void testBytecodeClosureCapturesBlockLocal() {
+  EXPECT(runBytecodeProgram("function make() {"
+                            "  let get = undefined;"
+                            "  {"
+                            "    let x = 42;"
+                            "    function inner() { return x; }"
+                            "    get = inner;"
+                            "  }"
+                            "  return get;"
+                            "}"
+                            "let get = make();"
+                            "get();")
+             .asNumber() == 42);
+}
+
+void testBytecodeBreakClosesCapturedLocal() {
+  EXPECT(runBytecodeProgram("let saved = undefined;"
+                            "while (true) {"
+                            "  {"
+                            "    let x = 42;"
+                            "    function get() { return x; }"
+                            "    saved = get;"
+                            "    break;"
+                            "  }"
+                            "}"
+                            "saved();")
+             .asNumber() == 42);
+}
+
+void testBytecodeContinueClosesCapturedLocal() {
+  EXPECT(runBytecodeProgram("let saved = undefined;"
+                            "let i = 0;"
+                            "while (i < 1) {"
+                            "  {"
+                            "    let x = 99;"
+                            "    function get() { return x; }"
+                            "    saved = get;"
+                            "    i = i + 1;"
+                            "    continue;"
+                            "  }"
+                            "}"
+                            "saved();")
+             .asNumber() == 99);
 }
 
 void testCompileBytecodeFunctionWithoutReturn() {
@@ -641,6 +1036,39 @@ void testCompileBytecodeRecursiveFibonacci() {
                             "}"
                             "fib(6);")
              .asNumber() == 8);
+}
+
+void testBytecodeReturnedLocalFunctionCanRecurse() {
+  EXPECT(runBytecodeProgram("function makeFact() {"
+                            "  function fact(n) {"
+                            "    if (n <= 1) {"
+                            "      return 1;"
+                            "    }"
+                            "    return n * fact(n - 1);"
+                            "  }"
+                            "  return fact;"
+                            "}"
+                            "let fact = makeFact();"
+                            "fact(5);")
+             .asNumber() == 120);
+}
+
+void testBytecodeReturnOutsideFunction() {
+  try {
+    runBytecodeProgram("return 1;");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: return outside function");
+  }
+}
+
+void testBytecodeReturnInsideTopLevelBlock() {
+  try {
+    runBytecodeProgram("{ return 1; }");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: return outside function");
+  }
 }
 
 void testBytecodeCallNonFunction() {
@@ -704,6 +1132,14 @@ void testBytecodeLenArrayBuiltin() {
 
 void testBytecodeLenStringBuiltin() { EXPECT(runBytecodeProgram("len(\"Tom\");").asNumber() == 3); }
 
+void testBytecodeLenObjectBuiltin() {
+  EXPECT(runBytecodeProgram("len({ name: \"Tom\", age: 18 });").asNumber() == 2);
+  EXPECT(runBytecodeProgram("let p = { name: \"Tom\", age: 18 };"
+                            "del(p, \"age\");"
+                            "len(p);")
+             .asNumber() == 1);
+}
+
 void testBytecodeLenArity() {
   try {
     runBytecodeProgram("len();");
@@ -718,7 +1154,8 @@ void testBytecodeLenTypeError() {
     runBytecodeProgram("len(1);");
     EXPECT(false);
   } catch (const minijs::RuntimeError& error) {
-    EXPECT(std::string_view(error.what()) == "RuntimeError: len expects string or array");
+    EXPECT(std::string_view(error.what()) ==
+           "RuntimeError: len expects string, array, or object");
   }
 }
 
@@ -789,6 +1226,42 @@ void testBytecodeHasKeyMustBeString() {
   }
 }
 
+void testBytecodeDelBuiltinObjectProperty() {
+  EXPECT(runBytecodeProgram("let p = { name: \"Tom\", age: 18 };"
+                            "del(p, \"age\");"
+                            "has(p, \"age\");")
+             .toString() == "false");
+
+  EXPECT(runBytecodeProgram("let p = { name: \"Tom\", age: 18 };"
+                            "del(p, \"age\");")
+             .toString() == "true");
+}
+
+void testBytecodeDelBuiltinMissingOrNonObject() {
+  EXPECT(runBytecodeProgram("let p = { name: \"Tom\" };"
+                            "del(p, \"age\");")
+             .toString() == "false");
+  EXPECT(runBytecodeProgram("del(123, \"age\");").toString() == "false");
+}
+
+void testBytecodeDelArity() {
+  try {
+    runBytecodeProgram("del({});");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: del expects 2 arguments");
+  }
+}
+
+void testBytecodeDelKeyMustBeString() {
+  try {
+    runBytecodeProgram("del({ name: \"Tom\" }, 123);");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: del key must be a string");
+  }
+}
+
 void testBytecodeKeysBuiltinObject() {
   EXPECT(runBytecodeProgram("let p = { name: \"Tom\", age: 18 };"
                             "len(keys(p));")
@@ -841,6 +1314,15 @@ void testBytecodeUndefinedGlobal() {
   }
 }
 
+void testBytecodeAssignUndefinedGlobal() {
+  try {
+    runBytecodeProgram("x = 1;");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: undefined variable: x");
+  }
+}
+
 void testBytecodeProgramWithoutFinalExpressionReturnsNull() {
   EXPECT(runBytecodeProgram("let x = 10;").isNull());
 }
@@ -882,6 +1364,15 @@ void testBytecodeDivisionByZero() {
     EXPECT(false);
   } catch (const minijs::RuntimeError& error) {
     EXPECT(std::string_view(error.what()) == "RuntimeError: division by zero");
+  }
+}
+
+void testBytecodeModuloByZero() {
+  try {
+    runBytecode("10 % 0;");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: modulo by zero");
   }
 }
 
@@ -933,6 +1424,15 @@ void testBytecodeArrayIndexMustBeInteger() {
   }
 }
 
+void testBytecodeIndexNonArrayValue() {
+  try {
+    runBytecode("1[0];");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: value is not an array");
+  }
+}
+
 void testCompileObjectLiteralProperty() {
   EXPECT(runBytecodeProgram("let p = { name: \"Tom\", age: 18 };"
                             "p.age;")
@@ -950,6 +1450,15 @@ void testCompileMissingObjectProperty() {
   EXPECT(runBytecodeProgram("let p = { age: 18 };"
                             "p.name;")
              .isUndefined());
+}
+
+void testBytecodeGetPropertyFromNonObject() {
+  try {
+    runBytecode("1.age;");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: value is not an object");
+  }
 }
 
 void testCompileObjectPropertyAssignment() {
@@ -1117,6 +1626,14 @@ void runBytecodeTests() {
   testDisassembleBooleanNullUndefinedLiterals();
   testDisassembleLogicalAndJump();
   testDisassembleLogicalOrJump();
+  testDisassembleClosureCapturesOuterLocal();
+  testDisassembleClosureCapturesThroughUpvalue();
+  testDisassembleClosureSetsUpvalue();
+  testDisassembleClosureClosesBlockLocal();
+  testDisassembleClassMethod();
+  testDisassembleBreakClosesUpvalueBeforeJump();
+  testDisassembleLocalRecursionGetsCurrentClosure();
+  testDisassembleParameterShadowsCurrentClosure();
   testDisassembleWhileBreakJump();
   testDisassembleWhileContinueLoop();
   testDisassembleForContinueJumpsToIncrement();
@@ -1138,6 +1655,9 @@ void runBytecodeTests() {
   testCompileBreakContinuePopBlockLocals();
   testCompileBreakOutsideLoop();
   testCompileContinueOutsideLoop();
+  testBytecodeFunctionDoesNotInheritOuterBreakContext();
+  testBytecodeFunctionDoesNotInheritOuterContinueContext();
+  testBytecodeFunctionUsesOwnLoopContext();
   testCompileBlockLocalVariable();
   testCompileNestedBlockLocalVariables();
   testCompileLocalAssignment();
@@ -1148,14 +1668,32 @@ void runBytecodeTests() {
   testCompileBytecodeFunctionParametersUseLocalSlots();
   testCompileBytecodeFunctionParametersAndLocalsUseSlots();
   testCompileBytecodeFunctionParameterRedeclaration();
+  testBytecodeParameterShadowsCurrentFunctionName();
+  testBytecodeLocalShadowsCurrentFunctionName();
   testCompileBytecodeFunctionReadsGlobalVariable();
   testCompileBytecodeFunctionAssignsGlobalVariable();
-  testBytecodeFunctionDoesNotCaptureOuterLocal();
+  testBytecodeCallReturnedFunctionDirectly();
+  testBytecodeClassMethodCall();
+  testBytecodeClassBoundMethodCall();
+  testBytecodeClassMethodThisField();
+  testBytecodeClassInstanceFieldsAreIndependent();
+  testBytecodeClassCallArity();
+  testBytecodeClosureKeepsOuterVariable();
+  testBytecodeClosureInstancesAreIndependent();
+  testBytecodeClosuresShareCapturedVariable();
+  testBytecodeSharedUpvalueObservesMultipleWrites();
+  testBytecodeClosureCapturesThroughMultipleLevels();
+  testBytecodeClosureCapturesBlockLocal();
+  testBytecodeBreakClosesCapturedLocal();
+  testBytecodeContinueClosesCapturedLocal();
   testCompileBytecodeFunctionWithoutReturn();
   testBytecodeFunctionArityMismatch();
   testCompileBytecodeFunctionLocalVariable();
   testCompileBytecodeRecursiveFunction();
   testCompileBytecodeRecursiveFibonacci();
+  testBytecodeReturnedLocalFunctionCanRecurse();
+  testBytecodeReturnOutsideFunction();
+  testBytecodeReturnInsideTopLevelBlock();
   testBytecodeCallNonFunction();
   testBytecodePrintBuiltin();
   testBytecodeBuiltinFunctionCanBeAssigned();
@@ -1164,6 +1702,7 @@ void runBytecodeTests() {
   testBytecodeClockArity();
   testBytecodeLenArrayBuiltin();
   testBytecodeLenStringBuiltin();
+  testBytecodeLenObjectBuiltin();
   testBytecodeLenArity();
   testBytecodeLenTypeError();
   testBytecodeTypeOfPrimitiveBuiltins();
@@ -1174,14 +1713,20 @@ void runBytecodeTests() {
   testBytecodeHasBuiltinArrayAndStringProperty();
   testBytecodeHasArity();
   testBytecodeHasKeyMustBeString();
+  testBytecodeDelBuiltinObjectProperty();
+  testBytecodeDelBuiltinMissingOrNonObject();
+  testBytecodeDelArity();
+  testBytecodeDelKeyMustBeString();
   testBytecodeKeysBuiltinObject();
   testBytecodeKeysBuiltinArrayAndString();
   testBytecodeKeysArity();
   testBytecodeUndefinedGlobal();
+  testBytecodeAssignUndefinedGlobal();
   testBytecodeProgramWithoutFinalExpressionReturnsNull();
   testDisassembleGlobalLetExpression();
   testDisassembleGlobalAssignment();
   testBytecodeDivisionByZero();
+  testBytecodeModuloByZero();
   testCompileArrayLiteralIndex();
   testCompileArrayVariableIndex();
   testCompileArrayExpressionElements();
@@ -1189,9 +1734,11 @@ void runBytecodeTests() {
   testCompileArrayReferenceSemantics();
   testBytecodeArrayIndexOutOfBounds();
   testBytecodeArrayIndexMustBeInteger();
+  testBytecodeIndexNonArrayValue();
   testCompileObjectLiteralProperty();
   testCompileObjectExpressionProperty();
   testCompileMissingObjectProperty();
+  testBytecodeGetPropertyFromNonObject();
   testCompileObjectPropertyAssignment();
   testCompileObjectReferenceSemantics();
   testBytecodeArrayLengthProperty();

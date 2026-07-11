@@ -161,6 +161,18 @@ void testFunctionDeclaration() {
          "(function add (a b) (block (expr (+ a b))))");
 }
 
+void testClassDeclaration() {
+  EXPECT(parseProgramToString("class Box { get() { return 123; } }") ==
+         "(class Box (method get () (block (return 123))))");
+}
+
+void testClassDeclarationWithMultipleMethods() {
+  EXPECT(parseProgramToString(
+             "class Box { set(value) { this.value = value; } get() { return this.value; } }") ==
+         "(class Box (method set (value) (block (expr (set this value value)))) "
+         "(method get () (block (return (get this value)))))");
+}
+
 void testReturnStatement() {
   EXPECT(parseProgramToString("function add(a, b) { return a + b; }") ==
          "(function add (a b) (block (return (+ a b))))");
@@ -232,6 +244,15 @@ void testMissingFunctionNameDiagnostic() {
   EXPECT(!parser.diagnostics().empty());
   EXPECT(parser.diagnostics()[0].message == "expected function name");
 }
+
+void testMissingClassNameDiagnostic() {
+  minijs::Parser parser("class { get() { return 1; } }");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(program.empty() || program[0] == nullptr);
+  EXPECT(!parser.diagnostics().empty());
+  EXPECT(parser.diagnostics()[0].message == "expected class name");
+}
 }  // namespace
 
 void runParserTests() {
@@ -269,6 +290,8 @@ void runParserTests() {
   testCallReturnedFunctionExpression();
   testMethodCallExpression();
   testFunctionDeclaration();
+  testClassDeclaration();
+  testClassDeclarationWithMultipleMethods();
   testReturnStatement();
   testBareReturnStatement();
   testUnexpectedTokenDiagnostic();
@@ -278,4 +301,5 @@ void runParserTests() {
   testInvalidAssignmentTargetDiagnostic();
   testMissingRightParenAfterArgumentsDiagnostic();
   testMissingFunctionNameDiagnostic();
+  testMissingClassNameDiagnostic();
 }

@@ -433,6 +433,35 @@ std::string formatStmt(const Stmt& statement) {
     return "(return " + formatExpr(*returnStmt->value()) + ")";
   }
 
+  if (const auto* classStmt = dynamic_cast<const ClassStmt*>(&statement)) {
+    std::string result = "(class " + classStmt->name();
+    for (const auto& method : classStmt->methods()) {
+      if (!method) {
+        continue;
+      }
+
+      result += " (method ";
+      result += method->name();
+      result += " (";
+      for (std::size_t i = 0; i < method->params().size(); ++i) {
+        if (i != 0) {
+          result += " ";
+        }
+        result += method->params()[i];
+      }
+      result += ") (block";
+      for (const StmtPtr& inner : method->body()) {
+        if (inner) {
+          result += " ";
+          result += formatStmt(*inner);
+        }
+      }
+      result += "))";
+    }
+    result += ")";
+    return result;
+  }
+
   if (dynamic_cast<const BreakStmt*>(&statement) != nullptr) {
     return "(break)";
   }
@@ -461,4 +490,11 @@ std::string formatProgram(const Program& program) {
 StringExpr::StringExpr(std::string value) : value_(value) {}
 
 const std::string& StringExpr::value() const { return value_; }
+
+ClassStmt::ClassStmt(std::string name, std::vector<std::shared_ptr<FunctionStmt>> methods)
+    : name_(std::move(name)), methods_(std::move(methods)) {}
+
+const std::string& ClassStmt::name() const { return name_; }
+
+const std::vector<std::shared_ptr<FunctionStmt>>& ClassStmt::methods() const { return methods_; }
 }  // namespace minijs

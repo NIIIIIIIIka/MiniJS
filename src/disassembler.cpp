@@ -6,6 +6,8 @@
 #include <sstream>
 #include <string_view>
 
+#include "minijs/bytecode_function.h"
+
 namespace minijs {
 namespace {
 
@@ -62,6 +64,24 @@ std::size_t methodCallInstruction(const Chunk& chunk, std::string_view name, std
   output << name << " " << static_cast<int>(nameIndex) << " "
          << chunk.constant(nameIndex).toString() << " " << static_cast<int>(argCount) << '\n';
   return offset + 3;
+}
+
+std::size_t closureInstruction(const Chunk& chunk, std::size_t offset, std::ostream& output) {
+  const std::uint8_t index = chunk.readByte(offset + 1);
+  const auto& function = chunk.constant(index).asBytecodeFunction();
+  output << "OP_CLOSURE " << static_cast<int>(index) << " "
+         << chunk.constant(index).toString() << '\n';
+
+  std::size_t next = offset + 2;
+  for (const UpvalueDescriptor& upvalue : function->upvalues) {
+    const std::uint8_t isLocal = chunk.readByte(next++);
+    const std::uint8_t slot = chunk.readByte(next++);
+    output << "     | " << (isLocal != 0 ? "local" : "upvalue") << " "
+           << static_cast<int>(slot) << '\n';
+    (void)upvalue;
+  }
+
+  return next;
 }
 
 }  // namespace
@@ -140,6 +160,20 @@ std::size_t disassembleInstruction(const Chunk& chunk, std::size_t offset, std::
       return constantInstruction(chunk, "OP_SET_PROPERTY", offset, output);
     case Opcode::MethodCall:
       return methodCallInstruction(chunk, "OP_METHOD_CALL", offset, output);
+    case Opcode::Closure:
+      return closureInstruction(chunk, offset, output);
+    case Opcode::GetUpvalue:
+      return byteInstruction(chunk, "OP_GET_UPVALUE", offset, output);
+    case Opcode::SetUpvalue:
+      return byteInstruction(chunk, "OP_SET_UPVALUE", offset, output);
+    case Opcode::CloseUpvalue:
+      return simpleInstruction("OP_CLOSE_UPVALUE", offset, output);
+    case Opcode::GetCurrentClosure:
+      return simpleInstruction("OP_GET_CURRENT_CLOSURE", offset, output);
+    case Opcode::Class:
+      return constantInstruction(chunk, "OP_CLASS", offset, output);
+    case Opcode::Method:
+      return constantInstruction(chunk, "OP_METHOD", offset, output);
   }
 
   output << "OP_UNKNOWN " << static_cast<int>(chunk.readByte(offset)) << '\n';

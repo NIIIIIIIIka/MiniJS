@@ -362,6 +362,20 @@ class ReturnStmt final : public Stmt {
   ExprPtr value_;
 };
 
+// 类声明语句。当前最小 class 语法只保存方法，实例字段后续通过 this.x 动态创建。
+class ClassStmt final : public Stmt {
+ public:
+  ClassStmt(std::string name, std::vector<std::shared_ptr<FunctionStmt>> methods);
+
+  const std::string& name() const;
+  const std::vector<std::shared_ptr<FunctionStmt>>& methods() const;
+
+ private:
+  std::string name_;
+  std::vector<std::shared_ptr<FunctionStmt>> methods_;
+};
+
+
 std::string formatExpr(const Expr& expression);
 std::string formatStmt(const Stmt& statement);
 std::string formatProgram(const Program& program);

@@ -114,6 +114,11 @@ StmtPtr Parser::statement() {
   if (match(TokenType::Continue)) {
     return continueStatement();
   }
+
+  if (match(TokenType::Class)) {
+    return classStatement();
+  }
+
   return expressionStatement();
 }
 
@@ -136,6 +141,63 @@ StmtPtr Parser::letDeclaration() {
   }
 
   return std::make_unique<LetStmt>(std::string(name.lexeme), std::move(initializer));
+}
+
+StmtPtr Parser::classStatement() {
+  if (!check(TokenType::Identifier)) {
+    report(peek(), "expected class name");
+    return nullptr;
+  }
+  const Token name = advance();
+
+  if (!match(TokenType::LeftBrace)) {
+    report(peek(), "expected '{' before class body");
+    return nullptr;
+  }
+
+  std::vector<std::shared_ptr<FunctionStmt>> methods;
+  while (!check(TokenType::RightBrace) && !isAtEnd()) {
+    if (!check(TokenType::Identifier)) {
+      report(peek(), "expected method name");
+      break;
+    }
+    const Token methodName = advance();
+
+    if (!match(TokenType::LeftParen)) {
+      report(peek(), "expected '(' after method name");
+    }
+
+    std::vector<std::string> params;
+    if (!check(TokenType::RightParen)) {
+      do {
+        if (!check(TokenType::Identifier)) {
+          report(peek(), "expected parameter name");
+          break;
+        }
+
+        params.push_back(std::string(advance().lexeme));
+      } while (match(TokenType::Comma));
+    }
+
+    if (!match(TokenType::RightParen)) {
+      report(peek(), "expected ')' after parameters");
+    }
+
+    if (!match(TokenType::LeftBrace)) {
+      report(peek(), "expected '{' before method body");
+      break;
+    }
+
+    Program body = block();
+    methods.push_back(std::make_shared<FunctionStmt>(std::string(methodName.lexeme),
+                                                     std::move(params), std::move(body)));
+  }
+
+  if (!match(TokenType::RightBrace)) {
+    report(peek(), "expected '}' after class body");
+  }
+
+  return std::make_unique<ClassStmt>(std::string(name.lexeme), std::move(methods));
 }
 
 StmtPtr Parser::expressionStatement() {

@@ -9,6 +9,13 @@
 namespace minijs {
 
 struct BytecodeFunction;
+struct BytecodeClosure;
+struct BytecodeClass;
+struct BytecodeInstance;
+struct BytecodeBoundMethod;
+struct ClassValue;
+struct InstanceValue;
+struct BoundMethodValue;
 class Environment;
 class FunctionStmt;
 class Value;
@@ -23,6 +30,12 @@ struct NativeFunction {
   NativeFn function;
 };
 
+// AST 解释器使用的函数运行时载荷。
+struct FunctionValue {
+  const FunctionStmt* declaration = nullptr;
+  std::shared_ptr<Environment> closure;
+};
+
 // 解释器当前支持的运行时值类型。
 enum class ValueType {
   Number,
@@ -35,12 +48,13 @@ enum class ValueType {
   Undefined,
   NativeFunction,
   BytecodeFunction,
-};
-
-// AST 解释器使用的函数运行时载荷。
-struct FunctionValue {
-  const FunctionStmt* declaration = nullptr;
-  std::shared_ptr<Environment> closure;
+  BytecodeClosure,
+  BytecodeClass,
+  BytecodeInstance,
+  BytecodeBoundMethod,
+  InterpreterClass,
+  InterpreterInstance,
+  InterpreterBoundMethod,
 };
 
 // MiniJS 的动态运行时值。
@@ -76,6 +90,27 @@ class Value {
   // 创建字节码函数值。
   explicit Value(std::shared_ptr<BytecodeFunction> function);
 
+  // 创建字节码闭包值。
+  explicit Value(std::shared_ptr<BytecodeClosure> closure);
+
+  // 创建字节码类值。
+  explicit Value(std::shared_ptr<BytecodeClass> klass);
+
+  // 创建字节码实例值。
+  explicit Value(std::shared_ptr<BytecodeInstance> instance);
+
+  // 创建字节码绑定方法值。
+  explicit Value(std::shared_ptr<BytecodeBoundMethod> method);
+
+  // 创建 AST 解释器类值。
+  explicit Value(std::shared_ptr<ClassValue> klass);
+
+  // 创建 AST 解释器实例值。
+  explicit Value(std::shared_ptr<InstanceValue> instance);
+
+  // 创建 AST 解释器绑定方法值。
+  explicit Value(std::shared_ptr<BoundMethodValue> method);
+
   // 创建 undefined 值。
   static Value undefined();
 
@@ -108,6 +143,27 @@ class Value {
 
   // 返回字节码函数载荷；当前值不是字节码函数时抛出运行时错误。
   const std::shared_ptr<BytecodeFunction>& asBytecodeFunction() const;
+
+  // 返回字节码闭包载荷；当前值不是字节码闭包时抛出运行时错误。
+  const std::shared_ptr<BytecodeClosure>& asBytecodeClosure() const;
+
+  // 返回字节码类载荷；当前值不是字节码类时抛出运行时错误。
+  const std::shared_ptr<BytecodeClass>& asBytecodeClass() const;
+
+  // 返回字节码实例载荷；当前值不是字节码实例时抛出运行时错误。
+  const std::shared_ptr<BytecodeInstance>& asBytecodeInstance() const;
+
+  // 返回字节码绑定方法载荷；当前值不是字节码绑定方法时抛出运行时错误。
+  const std::shared_ptr<BytecodeBoundMethod>& asBytecodeBoundMethod() const;
+
+  // 返回 AST 解释器类载荷；当前值不是类时抛出运行时错误。
+  const std::shared_ptr<ClassValue>& asClass() const;
+
+  // 返回 AST 解释器实例载荷；当前值不是实例时抛出运行时错误。
+  const std::shared_ptr<InstanceValue>& asInstance() const;
+
+  // 返回 AST 解释器绑定方法载荷；当前值不是绑定方法时抛出运行时错误。
+  const std::shared_ptr<BoundMethodValue>& asBoundMethod() const;
 
   // 返回面向用户的字符串表示。
   std::string toString() const;
@@ -148,6 +204,27 @@ class Value {
   // 返回当前值是否为字节码函数。
   bool isBytecodeFunction() const;
 
+  // 返回当前值是否为字节码闭包。
+  bool isBytecodeClosure() const;
+
+  // 返回当前值是否为字节码类。
+  bool isBytecodeClass() const;
+
+  // 返回当前值是否为字节码实例。
+  bool isBytecodeInstance() const;
+
+  // 返回当前值是否为字节码绑定方法。
+  bool isBytecodeBoundMethod() const;
+
+  // 返回当前值是否为 AST 解释器类。
+  bool isClass() const;
+
+  // 返回当前值是否为 AST 解释器实例。
+  bool isInstance() const;
+
+  // 返回当前值是否为 AST 解释器绑定方法。
+  bool isBoundMethod() const;
+
   // 比较两个运行时值是否相等；对象、数组和函数按引用身份比较。
   bool equals(const Value& other) const;
 
@@ -159,10 +236,54 @@ class Value {
   bool boolean_ = false;
   FunctionValue function_ = FunctionValue({nullptr, nullptr});
   std::shared_ptr<BytecodeFunction> bytecode_function_;
+  std::shared_ptr<BytecodeClosure> bytecode_closure_;
+  std::shared_ptr<BytecodeClass> bytecode_class_;
+  std::shared_ptr<BytecodeInstance> bytecode_instance_;
+  std::shared_ptr<BytecodeBoundMethod> bytecode_bound_method_;
+  std::shared_ptr<ClassValue> class_;
+  std::shared_ptr<InstanceValue> instance_;
+  std::shared_ptr<BoundMethodValue> bound_method_;
+
   std::shared_ptr<NativeFunction> native_function_;
   std::shared_ptr<std::vector<Value>> array_;
   std::shared_ptr<std::unordered_map<std::string, Value>> object_;
   std::string string_;
+};
+
+// 字节码 VM 使用的类运行时载荷，保存类名和方法表。
+struct BytecodeClass {
+  std::string name;
+  std::unordered_map<std::string, std::shared_ptr<BytecodeClosure>> methods;
+};
+
+// 字节码 VM 使用的实例运行时载荷，字段保存在实例自身。
+struct BytecodeInstance {
+  std::shared_ptr<BytecodeClass> klass;
+  std::unordered_map<std::string, Value> fields;
+};
+
+// 字节码 VM 使用的绑定方法载荷，保存 receiver 和方法闭包。
+struct BytecodeBoundMethod {
+  std::shared_ptr<BytecodeInstance> receiver;
+  std::shared_ptr<BytecodeClosure> method;
+};
+
+// AST 解释器使用的类运行时载荷，保存类名和方法表。
+struct ClassValue {
+  std::string name;
+  std::unordered_map<std::string, FunctionValue> methods;
+};
+
+// AST 解释器使用的实例运行时载荷，字段保存在实例自身。
+struct InstanceValue {
+  std::shared_ptr<ClassValue> klass;
+  std::unordered_map<std::string, Value> fields;
+};
+
+// AST 解释器使用的绑定方法载荷，保存接收者实例和原始方法函数。
+struct BoundMethodValue {
+  std::shared_ptr<InstanceValue> receiver;
+  FunctionValue method;
 };
 
 }  // namespace minijs

@@ -1,5 +1,6 @@
 #include "minijs/vm.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -68,7 +69,11 @@ VM::VM() {
       return Value(static_cast<double>(value.asArray().size()));
     }
 
-    throw RuntimeError("len expects string or array");
+    if (value.isObject()) {
+      return Value(static_cast<double>(value.asObject().size()));
+    }
+
+    throw RuntimeError("len expects string, array, or object");
   });
 
   defineBuiltin("typeOf", 1, [](const std::vector<Value>& arguments) -> Value {
@@ -89,7 +94,7 @@ VM::VM() {
     if (value.isObject()) {
       return Value(std::string("object"));
     }
-    if (value.isBytecodeFunction() || value.isFunction()) {
+    if (value.isBytecodeFunction() || value.isBytecodeClosure() || value.isFunction()) {
       return Value(std::string("function"));
     }
     if (value.isNativeFunction()) {
@@ -126,6 +131,22 @@ VM::VM() {
     }
 
     return Value(false);
+  });
+
+  defineBuiltin("del", 2, [](const std::vector<Value>& arguments) -> Value {
+    Value object = arguments[0];
+    const Value& key = arguments[1];
+
+    if (!key.isString()) {
+      throw RuntimeError("del key must be a string");
+    }
+
+    if (!object.isObject()) {
+      return Value(false);
+    }
+
+    const std::string& name = key.asString();
+    return Value(object.asObject().erase(name) > 0);
   });
 
   defineBuiltin("keys", 1, [](const std::vector<Value>& arguments) -> Value {
@@ -165,16 +186,19 @@ void VM::defineBuiltin(std::string name, std::size_t arity, NativeFn function) {
 Value VM::run(const Chunk& chunk) {
   stack_.clear();
   frames_.clear();
+  openUpvalues_.clear();
 
   auto script = std::make_shared<BytecodeFunction>();
   script->name = "<script>";
   script->chunk = chunk;
+  auto scriptClosure = std::make_shared<BytecodeClosure>();
+  scriptClosure->function = script;
 
-  frames_.push_back(CallFrame{script, 0, 0});
+  frames_.push_back(CallFrame{scriptClosure, 0, 0, 0});
 
   while (true) {
     CallFrame& frame = frames_.back();
-    const Chunk& chunk = frame.function->chunk;
+    const Chunk& chunk = frame.closure->function->chunk;
 
     Opcode opcode = static_cast<Opcode>(chunk.readByte(frame.ip++));
 
@@ -232,10 +256,10 @@ Value VM::run(const Chunk& chunk) {
         }
 
         CallFrame frame = frames_.back();
+        closeUpvalues(frame.slotStart);
         frames_.pop_back();
 
-        const std::size_t calleeIndex = frame.slotStart - 1;
-        stack_.resize(calleeIndex);
+        stack_.resize(frame.returnSlot);
         push(result);
 
         break;
@@ -246,6 +270,7 @@ Value VM::run(const Chunk& chunk) {
         globals_[name] = pop();
         break;
       }
+
       case Opcode::GetGlobal: {
         const std::string name = chunk.constant(chunk.readByte(frame.ip++)).asString();
         auto it = globals_.find(name);
@@ -336,7 +361,7 @@ Value VM::run(const Chunk& chunk) {
         if (callee.isNativeFunction()) {
           auto native = callee.asNativeFunction();
           expectArity(argCount, native->arity, native->name);
-
+            
           std::vector<Value> arguments;
           arguments.reserve(argCount);
           for (std::size_t i = 0; i < argCount; ++i) {
@@ -349,8 +374,49 @@ Value VM::run(const Chunk& chunk) {
           break;
         }
 
-        if (callee.isBytecodeFunction()) {
-          auto function = callee.asBytecodeFunction();
+        if (callee.isBytecodeClass()) {
+          auto klass = callee.asBytecodeClass();
+          if (argCount != 0) {
+            throw RuntimeError("class " + klass->name + " expects 0 arguments");
+          }
+
+          auto instance = std::make_shared<BytecodeInstance>();
+          instance->klass = klass;
+          stack_.resize(calleeIndex);
+          push(Value(instance));
+          break;
+        }
+
+        if (callee.isBytecodeBoundMethod()) {
+          auto boundMethod = callee.asBytecodeBoundMethod();
+          auto closure = boundMethod->method;
+          auto function = closure->function;
+
+          if (argCount != function->params.size()) {
+            throw RuntimeError("method " + function->name + " expects " +
+                               std::to_string(function->params.size()) + " arguments");
+          }
+
+          stack_[calleeIndex] = Value(boundMethod->receiver);
+          frames_.push_back(CallFrame{
+              closure,
+              0,
+              calleeIndex,
+              calleeIndex,
+          });
+          break;
+        }
+
+        if (callee.isBytecodeFunction() || callee.isBytecodeClosure()) {
+          std::shared_ptr<BytecodeClosure> closure;
+          if (callee.isBytecodeClosure()) {
+            closure = callee.asBytecodeClosure();
+          } else {
+            closure = std::make_shared<BytecodeClosure>();
+            closure->function = callee.asBytecodeFunction();
+          }
+
+          auto function = closure->function;
 
           if (argCount != function->params.size()) {
             throw RuntimeError("function " + function->name + " expects " +
@@ -360,14 +426,75 @@ Value VM::run(const Chunk& chunk) {
           // callee 位于参数前一个槽位；新函数帧从第一个参数开始。
           // 因此 OP_GET_LOCAL 0 读取的就是第一个实参，无需复制参数数组。
           frames_.push_back(CallFrame{
-              function,
+              closure,
               0,
+              calleeIndex,
               calleeIndex + 1,
           });
           break;
         }
 
         throw RuntimeError("value is not callable");
+      }
+      case Opcode::Class: {
+        const std::uint8_t nameIndex = chunk.readByte(frame.ip++);
+        auto klass = std::make_shared<BytecodeClass>();
+        klass->name = chunk.constant(nameIndex).asString();
+        push(Value(klass));
+        break;
+      }
+      case Opcode::Method: {
+        const std::uint8_t nameIndex = chunk.readByte(frame.ip++);
+        const std::string& name = chunk.constant(nameIndex).asString();
+        Value method = pop();
+        Value klass = peek();
+        klass.asBytecodeClass()->methods[name] = method.asBytecodeClosure();
+        break;
+      }
+      case Opcode::Closure: {
+        const std::uint8_t functionIndex = chunk.readByte(frame.ip++);
+        auto function = chunk.constant(functionIndex).asBytecodeFunction();
+        auto closure = std::make_shared<BytecodeClosure>();
+        closure->function = function;
+        closure->upvalues.reserve(function->upvalues.size());
+
+        for (const UpvalueDescriptor& descriptor : function->upvalues) {
+          const bool isLocal = chunk.readByte(frame.ip++) != 0;
+          const std::uint8_t index = chunk.readByte(frame.ip++);
+          if (isLocal != descriptor.isLocal || index != descriptor.index) {
+            throw RuntimeError("closure upvalue metadata mismatch");
+          }
+
+          if (isLocal) {
+            closure->upvalues.push_back(captureUpvalue(frame.slotStart + index));
+          } else {
+            closure->upvalues.push_back(frame.closure->upvalues[index]);
+          }
+        }
+
+        push(Value(closure));
+        break;
+      }
+      case Opcode::GetUpvalue: {
+        const std::uint8_t slot = chunk.readByte(frame.ip++);
+        const auto& upvalue = frame.closure->upvalues[slot];
+        push(upvalue->isClosed ? upvalue->closed : stack_[upvalue->stackIndex]);
+        break;
+      }
+      case Opcode::SetUpvalue: {
+        const std::uint8_t slot = chunk.readByte(frame.ip++);
+        const auto& upvalue = frame.closure->upvalues[slot];
+        if (upvalue->isClosed) {
+          upvalue->closed = peek();
+        } else {
+          stack_[upvalue->stackIndex] = peek();
+        }
+        break;
+      }
+      case Opcode::CloseUpvalue: {
+        closeUpvalues(stack_.size() - 1);
+        pop();
+        break;
       }
       case Opcode::MethodCall: {
         const std::uint8_t nameIndex = chunk.readByte(frame.ip++);
@@ -379,6 +506,29 @@ Value VM::run(const Chunk& chunk) {
 
         const std::size_t receiverIndex = stack_.size() - argCount - 1;
         Value receiver = stack_[receiverIndex];
+        if (receiver.isBytecodeInstance()) {
+          auto instance = receiver.asBytecodeInstance();
+          auto method = instance->klass->methods.find(name);
+          if (method == instance->klass->methods.end()) {
+            throw RuntimeError("value has no method: " + name);
+          }
+
+          auto closure = method->second;
+          auto function = closure->function;
+          if (argCount != function->params.size()) {
+            throw RuntimeError("method " + function->name + " expects " +
+                               std::to_string(function->params.size()) + " arguments");
+          }
+
+          frames_.push_back(CallFrame{
+              closure,
+              0,
+              receiverIndex,
+              receiverIndex,
+          });
+          break;
+        }
+
         if (!receiver.isArray()) {
           throw RuntimeError("method call receiver is not an array");
         }
@@ -480,6 +630,27 @@ Value VM::run(const Chunk& chunk) {
           break;
         }
 
+        if (object.isBytecodeInstance()) {
+          auto instance = object.asBytecodeInstance();
+          auto field = instance->fields.find(name);
+          if (field != instance->fields.end()) {
+            push(field->second);
+            break;
+          }
+
+          auto method = instance->klass->methods.find(name);
+          if (method != instance->klass->methods.end()) {
+            auto boundMethod = std::make_shared<BytecodeBoundMethod>();
+            boundMethod->receiver = instance;
+            boundMethod->method = method->second;
+            push(Value(boundMethod));
+            break;
+          }
+
+          push(Value::undefined());
+          break;
+        }
+
         const auto& properties = object.asObject();
 
         auto it = properties.find(name);
@@ -496,11 +667,21 @@ Value VM::run(const Chunk& chunk) {
 
         Value value = pop();
         Value object = pop();
+        if (object.isBytecodeInstance()) {
+          object.asBytecodeInstance()->fields[name] = value;
+          push(value);
+          break;
+        }
+
         object.asObject()[name] = value;
         push(value);
 
         break;
       }
+      case Opcode::GetCurrentClosure:
+        // 局部函数递归使用：把当前调用帧的 closure 压栈作为 callee。
+        push(Value(frame.closure));
+        break;
     }
   }
 }
@@ -522,6 +703,36 @@ const Value& VM::peek() const {
     throw RuntimeError("bytecode stack underflow");
   }
   return stack_.back();
+}
+
+// 捕获仍在 VM 栈上的局部变量。
+// 同一个栈槽只创建一个 open upvalue，兄弟闭包共享同一个 Upvalue。
+std::shared_ptr<Upvalue> VM::captureUpvalue(std::size_t stackIndex) {
+  for (const auto& upvalue : openUpvalues_) {
+    if (!upvalue->isClosed && upvalue->stackIndex == stackIndex) {
+      return upvalue;
+    }
+  }
+
+  auto upvalue = std::make_shared<Upvalue>();
+  upvalue->stackIndex = stackIndex;
+  openUpvalues_.push_back(upvalue);
+  return upvalue;
+}
+
+// 关闭所有指向即将离开栈的 upvalue。
+// 值从 stack_ 复制到 Upvalue::closed，之后闭包从 closed 读写。
+void VM::closeUpvalues(std::size_t firstStackIndex) {
+  for (const auto& upvalue : openUpvalues_) {
+    if (!upvalue->isClosed && upvalue->stackIndex >= firstStackIndex) {
+      upvalue->closed = stack_[upvalue->stackIndex];
+      upvalue->isClosed = true;
+    }
+  }
+  openUpvalues_.erase(
+      std::remove_if(openUpvalues_.begin(), openUpvalues_.end(),
+                     [](const std::shared_ptr<Upvalue>& upvalue) { return upvalue->isClosed; }),
+      openUpvalues_.end());
 }
 
 }  // namespace minijs

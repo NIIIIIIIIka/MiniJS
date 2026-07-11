@@ -18,7 +18,8 @@ const std::unordered_map<std::string_view, TokenType> keywordMap = {
     {"undefined", TokenType::Undefined},
     {"break", TokenType::Break},
     {"continue", TokenType::Continue},
-    {"for", TokenType::For}};
+    {"for", TokenType::For},
+    {"class", TokenType::Class}};
 }
 
 Lexer::Lexer(std::string_view source) : source_(source) {}

@@ -27,6 +27,9 @@ class Interpreter {
   // 在指定环境中执行语句列表，不改变调用方可见的最后结果语义。
   void executeBlock(const Program& statements, std::shared_ptr<Environment> environment);
 
+  Value callMethod(std::shared_ptr<InstanceValue> receiver, const FunctionValue& method,
+                   const std::vector<Value>& arguments);
+
   void defineBuiltin(std::string name, BuiltinFunction function);
   void defineBuiltins();
 

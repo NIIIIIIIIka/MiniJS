@@ -64,6 +64,8 @@ std::string_view tokenTypeName(TokenType type) {
       return "Null";
     case TokenType::Undefined:
       return "Undefined";
+    case TokenType::Class:
+      return "Class";
     case TokenType::Let:
       return "Let";
     case TokenType::If:

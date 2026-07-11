@@ -39,6 +39,13 @@ enum class Opcode : std::uint8_t {
   GetProperty,
   SetProperty,
   MethodCall,
+  Closure,
+  GetUpvalue,
+  SetUpvalue,
+  CloseUpvalue,
+  GetCurrentClosure,
+  Class,
+  Method,
 };
 
 // 一段可执行字节码，包含指令流和常量池。

@@ -20,9 +20,12 @@ bool producesValue(const Stmt& statement) {
 
 }  // namespace
 
+Compiler::Compiler(Compiler* enclosing) : enclosing_(enclosing) {}
+
 Chunk Compiler::compile(const Expr& expression) {
   chunk_ = Chunk();
   locals_.clear();
+  upvalues_.clear();
   scopeDepth_ = 0;
   emitExpression(expression);
   emitOpcode(Opcode::Return);
@@ -32,6 +35,7 @@ Chunk Compiler::compile(const Expr& expression) {
 Chunk Compiler::compileProgram(const Program& program) {
   chunk_ = Chunk();
   locals_.clear();
+  upvalues_.clear();
   scopeDepth_ = 0;
 
   std::size_t last_value_statement = program.size();
@@ -59,6 +63,7 @@ void Compiler::emitExpression(const Expr& expression) {
     emitConstant(Value(std::stod(number->value())));
     return;
   }
+
   if (const auto* object = dynamic_cast<const ObjectExpr*>(&expression)) {
     if (object->properties().size() > std::numeric_limits<std::uint8_t>::max()) {
       throw RuntimeError("too many properties in bytecode object literal");
@@ -180,7 +185,6 @@ void Compiler::emitExpression(const Expr& expression) {
     emitConstant(Value::undefined());
     return;
   }
-
   if (const auto* binary = dynamic_cast<const BinaryExpr*>(&expression)) {
     emitExpression(binary->left());
     emitExpression(binary->right());
@@ -246,7 +250,15 @@ void Compiler::emitExpression(const Expr& expression) {
       emitLocal(static_cast<std::uint8_t>(slot), Opcode::GetLocal);
       return;
     }
-    // 当前编译器只解析本函数/块内 locals_；找不到的名字按全局变量处理。
+    if (!currentFunctionName_.empty() && variable->name() == currentFunctionName_) {
+      emitOpcode(Opcode::GetCurrentClosure);
+      return;
+    }
+    const int upvalue = resolveUpvalue(variable->name());
+    if (upvalue >= 0) {
+      emitLocal(static_cast<std::uint8_t>(upvalue), Opcode::GetUpvalue);
+      return;
+    }
     emitGlobalName(variable->name(), Opcode::GetGlobal);
     return;
   }
@@ -258,7 +270,11 @@ void Compiler::emitExpression(const Expr& expression) {
       emitLocal(static_cast<std::uint8_t>(slot), Opcode::SetLocal);
       return;
     }
-    // 赋值同样遵循 local -> global；外层函数局部变量需要闭包/upvalue 才能支持。
+    const int upvalue = resolveUpvalue(assign->name());
+    if (upvalue >= 0) {
+      emitLocal(static_cast<std::uint8_t>(upvalue), Opcode::SetUpvalue);
+      return;
+    }
     emitGlobalName(assign->name(), Opcode::SetGlobal);
     return;
   }
@@ -306,12 +322,28 @@ void Compiler::emitStatement(const Stmt& statement, bool keepValue) {
   }
 
   if (const auto* functionStmt = dynamic_cast<const FunctionStmt*>(&statement)) {
-    emitConstant(Value(compileFunction(*functionStmt)));
+    std::shared_ptr<BytecodeFunction> function = compileFunction(*functionStmt);
+    emitOpcode(Opcode::Closure);
+    emitByte(addConstant(Value(function)));
+    for (const UpvalueDescriptor& upvalue : function->upvalues) {
+      emitByte(upvalue.isLocal ? 1 : 0);
+      emitByte(upvalue.index);
+    }
+
+    if (scopeDepth_ > 0) {
+      addLocal(functionStmt->name());
+      return;
+    }
+
     emitGlobalName(functionStmt->name(), Opcode::DefineGlobal);
     return;
   }
 
   if (const auto* returnStmt = dynamic_cast<const ReturnStmt*>(&statement)) {
+    if (!isFunction_) {
+      throw RuntimeError("return outside function");
+    }
+
     if (returnStmt->value() != nullptr) {
       emitExpression(*returnStmt->value());
     } else {
@@ -446,6 +478,7 @@ void Compiler::emitStatement(const Stmt& statement, bool keepValue) {
     emitLoop(loops_.back().continueTarget);
     return;
   }
+
   if (dynamic_cast<const BreakStmt*>(&statement) != nullptr) {
     if (loops_.empty()) {
       throw RuntimeError("break outside loop");
@@ -455,6 +488,41 @@ void Compiler::emitStatement(const Stmt& statement, bool keepValue) {
     emitLocalPopsToDepth(loops_.back().scopeDepth);
     const std::size_t jump = emitJump(Opcode::Jump);
     loops_.back().breakJumps.push_back(jump);
+    return;
+  }
+
+  if (const auto* classStmt = dynamic_cast<const ClassStmt*>(&statement)) {
+    emitOpcode(Opcode::Class);
+    emitByte(addConstant(Value(classStmt->name())));
+
+    const bool isLocalClass = scopeDepth_ > 0;
+    if (isLocalClass) {
+      addLocal(classStmt->name());
+    } else {
+      emitGlobalName(classStmt->name(), Opcode::DefineGlobal);
+      emitGlobalName(classStmt->name(), Opcode::GetGlobal);
+    }
+
+    for (const auto& method : classStmt->methods()) {
+      if (!method) {
+        continue;
+      }
+
+      std::shared_ptr<BytecodeFunction> function = compileFunction(*method, FunctionKind::Method);
+      emitOpcode(Opcode::Closure);
+      emitByte(addConstant(Value(function)));
+      for (const UpvalueDescriptor& upvalue : function->upvalues) {
+        emitByte(upvalue.isLocal ? 1 : 0);
+        emitByte(upvalue.index);
+      }
+
+      emitOpcode(Opcode::Method);
+      emitByte(addConstant(Value(method->name())));
+    }
+
+    if (!isLocalClass) {
+      emitOpcode(Opcode::Pop);
+    }
     return;
   }
   throw RuntimeError("unsupported bytecode statement");
@@ -469,16 +537,21 @@ void Compiler::emitGlobalName(const std::string& name, Opcode opcode) {
   chunk_.writeByte(static_cast<std::uint8_t>(index));
 }
 
-std::shared_ptr<BytecodeFunction> Compiler::compileFunction(const FunctionStmt& function) {
+std::shared_ptr<BytecodeFunction> Compiler::compileFunction(const FunctionStmt& function,
+                                                            FunctionKind kind) {
   auto bytecode_function = std::make_shared<BytecodeFunction>();
   bytecode_function->name = function.name();
   bytecode_function->params = function.params();
 
-  Compiler compiler;
+  Compiler compiler(this);
+  compiler.currentFunctionName_ = function.name();
+  compiler.isFunction_ = true;
   compiler.scopeDepth_ = 1;
-  // 参数直接占用函数帧开头的局部槽。
-  // 调用时 CallFrame::slotStart 指向第一个实参，因此参数 local 0/1/... 直接读栈上实参。
-  // 每个函数目前使用独立 Compiler，不捕获外层函数 locals_。
+  if (kind == FunctionKind::Method) {
+    // 方法调用时 CallFrame::slotStart 指向 receiver，因此 local 0 就是 this。
+    compiler.addLocal("this");
+  }
+  // 普通函数的参数直接占用函数帧开头的局部槽；方法参数排在 this 后面。
   for (const std::string& param : function.params()) {
     compiler.addLocal(param);
   }
@@ -491,6 +564,7 @@ std::shared_ptr<BytecodeFunction> Compiler::compileFunction(const FunctionStmt& 
 
   compiler.emitConstant(Value::undefined());
   compiler.emitOpcode(Opcode::Return);
+  bytecode_function->upvalues = std::move(compiler.upvalues_);
   bytecode_function->chunk = std::move(compiler.chunk_);
   return bytecode_function;
 }
@@ -522,7 +596,7 @@ void Compiler::emitLocalPopsToDepth(int depth) {
     if (it->depth <= depth) {
       break;
     }
-    emitOpcode(Opcode::Pop);
+    emitOpcode(it->isCaptured ? Opcode::CloseUpvalue : Opcode::Pop);
   }
 }
 
@@ -544,7 +618,7 @@ void Compiler::endScope() {
 
   // locals_ 和运行时栈按同一顺序增长；退出作用域时也必须同步回退。
   while (!locals_.empty() && locals_.back().depth > scopeDepth_) {
-    emitOpcode(Opcode::Pop);
+    emitOpcode(locals_.back().isCaptured ? Opcode::CloseUpvalue : Opcode::Pop);
     locals_.pop_back();
   }
 }
@@ -563,7 +637,7 @@ void Compiler::addLocal(const std::string& name) {
     throw RuntimeError("too many local variables");
   }
 
-  locals_.push_back(Local{name, scopeDepth_});
+  locals_.push_back(Local{name, scopeDepth_, false});
 }
 
 int Compiler::resolveLocal(const std::string& name) const {
@@ -574,6 +648,44 @@ int Compiler::resolveLocal(const std::string& name) const {
     }
   }
   return -1;
+}
+
+// 查找当前函数引用的外层变量。
+// 如果直接外层有 local，则记录为 local upvalue；
+// 否则递归询问外层 compiler，让多层闭包通过 upvalue 链转发。
+int Compiler::resolveUpvalue(const std::string& name) {
+  if (enclosing_ == nullptr) {
+    return -1;
+  }
+
+  const int local = enclosing_->resolveLocal(name);
+  if (local >= 0) {
+    enclosing_->locals_[static_cast<std::size_t>(local)].isCaptured = true;
+    return addUpvalue(true, static_cast<std::uint8_t>(local));
+  }
+
+  const int upvalue = enclosing_->resolveUpvalue(name);
+  if (upvalue >= 0) {
+    return addUpvalue(false, static_cast<std::uint8_t>(upvalue));
+  }
+
+  return -1;
+}
+
+// 在当前函数的 upvalue 表中登记捕获来源；同一来源只保留一份。
+std::uint8_t Compiler::addUpvalue(bool isLocal, std::uint8_t index) {
+  for (std::size_t i = 0; i < upvalues_.size(); ++i) {
+    if (upvalues_[i].isLocal == isLocal && upvalues_[i].index == index) {
+      return static_cast<std::uint8_t>(i);
+    }
+  }
+
+  if (upvalues_.size() > std::numeric_limits<std::uint8_t>::max()) {
+    throw RuntimeError("too many closure variables");
+  }
+
+  upvalues_.push_back(UpvalueDescriptor{isLocal, index});
+  return static_cast<std::uint8_t>(upvalues_.size() - 1);
 }
 
 std::uint8_t Compiler::addConstant(Value value) {

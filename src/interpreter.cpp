@@ -244,6 +244,19 @@ void Interpreter::execute(const Stmt& statement) {
     environment_->define(letStmt->name(), value);
     return;
   }
+  if (const auto* classStmt = dynamic_cast<const ClassStmt*>(&statement)) {
+    auto klass = std::make_shared<ClassValue>();
+    klass->name = classStmt->name();
+
+    for (const auto& method : classStmt->methods()) {
+      if (method) {
+        klass->methods[method->name()] = FunctionValue{method.get(), environment_};
+      }
+    }
+
+    environment_->define(classStmt->name(), Value(klass));
+    return;
+  }
 
   if (const auto* ifStmt = dynamic_cast<const IfStmt*>(&statement)) {
     if (evaluate(ifStmt->condition()).isTruthy()) {
@@ -523,6 +536,21 @@ Value Interpreter::evaluate(const Expr& expression) {
       const BuiltinFunction& builtinFunction = callee.asBuiltinFunction();
       return builtinFunction(arguments);
     }
+
+    if (callee.isClass()) {
+      if (!arguments.empty()) {
+        throw RuntimeError("class " + callee.asClass()->name + " expects 0 arguments");
+      }
+      auto instance = std::make_shared<InstanceValue>();
+      instance->klass = callee.asClass();
+      return Value(instance);
+    }
+
+    if (callee.isBoundMethod()) {
+      const auto boundMethod = callee.asBoundMethod();
+      return callMethod(boundMethod->receiver, boundMethod->method, arguments);
+    }
+
     if (callee.isFunction()) {
       const FunctionValue& function = callee.asFunction();
       const FunctionStmt* declaration = function.declaration;
@@ -569,6 +597,16 @@ Value Interpreter::evaluate(const Expr& expression) {
       return callArrayMethod(object, call->name(), arguments);
     }
 
+    if (object.isInstance()) {
+      auto instance = object.asInstance();
+      auto method = instance->klass->methods.find(call->name());
+      if (method == instance->klass->methods.end()) {
+        throw RuntimeError("value has no method: " + call->name());
+      }
+
+      return callMethod(instance, method->second, arguments);
+    }
+
     throw RuntimeError("value has no method: " + call->name());
   }
   if (const auto* object = dynamic_cast<const ObjectExpr*>(&expression)) {
@@ -590,10 +628,28 @@ Value Interpreter::evaluate(const Expr& expression) {
       return Value(static_cast<double>(object.asString().size()));
     }
 
+    if (object.isInstance()) {
+      auto instance = object.asInstance();
+      auto field = instance->fields.find(get->name());
+      if (field != instance->fields.end()) {
+        return field->second;
+      }
+
+      auto it = instance->klass->methods.find(get->name());
+      if (it != instance->klass->methods.end()) {
+        auto bound_method = std::make_shared<BoundMethodValue>();
+        bound_method->receiver = instance;
+        bound_method->method = it->second;
+        return Value(bound_method);
+      }
+      return Value::undefined();
+    }
+
+
     const auto& properties = object.asObject();
     auto it = properties.find(get->name());
     if (it == properties.end()) {
-      throw RuntimeError("undefined property: " + get->name());
+      return Value::undefined();
     }
 
     return it->second;
@@ -603,10 +659,43 @@ Value Interpreter::evaluate(const Expr& expression) {
     Value object = evaluate(set->object());
     Value value = evaluate(set->value());
 
-    object.asObject()[set->name()] = value;
-    return value;
+    if (object.isObject()) {
+      object.asObject()[set->name()] = value;
+      return value;
+    }
+
+    if (object.isInstance()) {
+      object.asInstance()->fields[set->name()] = value;
+      return value;
+    }
   }
   throw RuntimeError("unknown expression type");
+}
+
+Value Interpreter::callMethod(std::shared_ptr<InstanceValue> receiver, const FunctionValue& method,
+                              const std::vector<Value>& arguments) {
+  const FunctionStmt* declaration = method.declaration;
+  if (declaration == nullptr) {
+    throw RuntimeError("value is not callable");
+  }
+
+  if (arguments.size() != declaration->params().size()) {
+    throw RuntimeError("method " + declaration->name() + " expects " +
+                       std::to_string(declaration->params().size()) + " arguments");
+  }
+
+  auto method_environment = std::make_shared<Environment>(method.closure);
+  method_environment->define("this", Value(std::move(receiver)));
+  for (std::size_t i = 0; i < declaration->params().size(); ++i) {
+    method_environment->define(declaration->params()[i], arguments[i]);
+  }
+
+  try {
+    executeBlock(declaration->body(), method_environment);
+    return Value::undefined();
+  } catch (const ReturnSignal& signal) {
+    return signal.value();
+  }
 }
 
 void Interpreter::executeBlock(const Program& statements,

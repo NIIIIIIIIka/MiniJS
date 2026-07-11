@@ -49,6 +49,7 @@ enum class TokenType {
   Undefined,
 
   // 保留关键字。
+  Class,
   Let,
   If,
   Else,
