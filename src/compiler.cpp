@@ -520,13 +520,12 @@ void Compiler::emitStatement(const Stmt& statement, bool keepValue) {
 
     if (hasSuperclass) {
       beginScope();
-      // Keep the superclass in a hidden local named "super" so every method closure can capture
-      // the superclass that was visible where the class was defined.
+      // 将父类保存在隐藏局部变量 super 中，让每个方法闭包都能捕获类定义处的父类。
       emitVariableRead(*classStmt->superclass());
       addLocal("super");
 
-      // OP_INHERIT consumes the temporary superclass and links Child.superclass = Parent.
-      // The temporary child class is popped, while local "super" stays alive until methods close it.
+      // OP_INHERIT 消耗临时父类值并建立 Child.superclass = Parent。
+      // 临时压入的子类会被弹出；局部变量 super 会保留到方法闭包捕获完成后再关闭。
       emitVariableRead(classStmt->name());
       emitVariableRead("super");
       emitOpcode(Opcode::Inherit);
@@ -539,8 +538,8 @@ void Compiler::emitStatement(const Stmt& statement, bool keepValue) {
       }
 
       if (hasSuperclass) {
-        // OP_METHOD expects the class below the closure; inherited classes no longer keep it on
-        // the stack, so push it only for this method binding.
+        // OP_METHOD 要求 closure 下方是 class；继承类不会长期把 class 留在栈上，
+        // 因此这里只为当前方法绑定临时压入一次。
         emitVariableRead(classStmt->name());
       }
 

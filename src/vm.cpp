@@ -84,7 +84,11 @@ VM::VM() {
       return Value(static_cast<double>(value.asObject().size()));
     }
 
-    throw RuntimeError("len expects string, array, or object");
+    if (value.isBytecodeInstance()) {
+      return Value(static_cast<double>(value.asBytecodeInstance()->fields.size()));
+    }
+
+    throw RuntimeError("len expects string, array, object, or instance");
   });
 
   defineBuiltin("typeOf", 1, [](const std::vector<Value>& arguments) -> Value {
@@ -104,6 +108,12 @@ VM::VM() {
     }
     if (value.isObject()) {
       return Value(std::string("object"));
+    }
+    if (value.isBytecodeClass()) {
+      return Value(std::string("class"));
+    }
+    if (value.isBytecodeInstance()) {
+      return Value(std::string("instance"));
     }
     if (value.isBytecodeFunction() || value.isBytecodeClosure() || value.isFunction()) {
       return Value(std::string("function"));
@@ -134,6 +144,10 @@ VM::VM() {
     if (object.isObject()) {
       return Value(object.asObject().find(name) != object.asObject().end());
     }
+    if (object.isBytecodeInstance()) {
+      const auto& fields = object.asBytecodeInstance()->fields;
+      return Value(fields.find(name) != fields.end());
+    }
     if (object.isArray()) {
       return Value(name == "length" || name == "push" || name == "pop");
     }
@@ -152,11 +166,14 @@ VM::VM() {
       throw RuntimeError("del key must be a string");
     }
 
+    const std::string& name = key.asString();
+    if (object.isBytecodeInstance()) {
+      return Value(object.asBytecodeInstance()->fields.erase(name) > 0);
+    }
     if (!object.isObject()) {
       return Value(false);
     }
 
-    const std::string& name = key.asString();
     return Value(object.asObject().erase(name) > 0);
   });
 
@@ -167,6 +184,12 @@ VM::VM() {
     if (object.isObject()) {
       for (const auto& key : object.asObject()) {
         keys.push_back(Value(key.first));
+      }
+      return Value(std::move(keys));
+    }
+    if (object.isBytecodeInstance()) {
+      for (const auto& field : object.asBytecodeInstance()->fields) {
+        keys.push_back(Value(field.first));
       }
       return Value(std::move(keys));
     }
@@ -586,9 +609,9 @@ Value VM::run(const Chunk& chunk) {
           throw RuntimeError("superclass has no method: " + name);
         }
 
-        // Stack before:  [..., superclass, receiver, arg0, arg1, ...]
-        // Stack after:   [..., receiver, arg0, arg1, ...]
-        // The method is found on superclass, but local 0 / this is still the current receiver.
+        // 重排前栈布局：[..., superclass, receiver, arg0, arg1, ...]
+        // 重排后栈布局：[..., receiver, arg0, arg1, ...]
+        // 方法从 superclass 上查找，但 local 0 / this 仍然是当前 receiver。
         stack_[superclassIndex] = receiver;
         for (std::size_t i = 0; i < argCount; ++i) {
           stack_[superclassIndex + 1 + i] = stack_[receiverIndex + 1 + i];

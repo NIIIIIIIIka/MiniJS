@@ -1411,6 +1411,15 @@ void testBytecodeLenObjectBuiltin() {
              .asNumber() == 1);
 }
 
+void testBytecodeLenInstanceBuiltin() {
+  EXPECT(runBytecodeProgram("class Box {}"
+                            "let b = Box();"
+                            "b.x = 1;"
+                            "b.y = 2;"
+                            "len(b);")
+             .asNumber() == 2);
+}
+
 void testBytecodeLenArity() {
   try {
     runBytecodeProgram("len();");
@@ -1426,7 +1435,7 @@ void testBytecodeLenTypeError() {
     EXPECT(false);
   } catch (const minijs::RuntimeError& error) {
     EXPECT(std::string_view(error.what()) ==
-           "RuntimeError: len expects string, array, or object");
+           "RuntimeError: len expects string, array, object, or instance");
   }
 }
 
@@ -1441,6 +1450,8 @@ void testBytecodeTypeOfPrimitiveBuiltins() {
 void testBytecodeTypeOfContainers() {
   EXPECT(runBytecodeProgram("typeOf([1, 2]);").toString() == "array");
   EXPECT(runBytecodeProgram("typeOf({ age: 18 });").toString() == "object");
+  EXPECT(runBytecodeProgram("class Box {} typeOf(Box);").toString() == "class");
+  EXPECT(runBytecodeProgram("class Box {} typeOf(Box());").toString() == "instance");
 }
 
 void testBytecodeTypeOfFunctions() {
@@ -1467,6 +1478,18 @@ void testBytecodeHasBuiltinObjectProperty() {
              .toString() == "true");
   EXPECT(runBytecodeProgram("let p = { name: \"Tom\" };"
                             "has(p, \"score\");")
+             .toString() == "false");
+}
+
+void testBytecodeHasBuiltinInstanceField() {
+  EXPECT(runBytecodeProgram("class Box {}"
+                            "let b = Box();"
+                            "b.name = \"Tom\";"
+                            "has(b, \"name\");")
+             .toString() == "true");
+  EXPECT(runBytecodeProgram("class Box { get() { return 1; } }"
+                            "let b = Box();"
+                            "has(b, \"get\");")
              .toString() == "false");
 }
 
@@ -1506,6 +1529,24 @@ void testBytecodeDelBuiltinObjectProperty() {
   EXPECT(runBytecodeProgram("let p = { name: \"Tom\", age: 18 };"
                             "del(p, \"age\");")
              .toString() == "true");
+}
+
+void testBytecodeDelBuiltinInstanceField() {
+  EXPECT(runBytecodeProgram("class Box {}"
+                            "let b = Box();"
+                            "b.name = \"Tom\";"
+                            "del(b, \"name\");")
+             .toString() == "true");
+  EXPECT(runBytecodeProgram("class Box {}"
+                            "let b = Box();"
+                            "b.name = \"Tom\";"
+                            "del(b, \"name\");"
+                            "has(b, \"name\");")
+             .toString() == "false");
+  EXPECT(runBytecodeProgram("class Box { get() { return 1; } }"
+                            "let b = Box();"
+                            "del(b, \"get\");")
+             .toString() == "false");
 }
 
 void testBytecodeDelBuiltinMissingOrNonObject() {
@@ -1549,6 +1590,21 @@ void testBytecodeKeysBuiltinObject() {
   EXPECT(runBytecodeProgram("let p = { name: \"Tom\", age: 18 };"
                             "let ks = keys(p);"
                             "ks[0] != ks[1];")
+             .toString() == "true");
+}
+
+void testBytecodeKeysBuiltinInstanceFields() {
+  EXPECT(runBytecodeProgram("class Box {}"
+                            "let b = Box();"
+                            "b.name = \"Tom\";"
+                            "b.age = 18;"
+                            "len(keys(b));")
+             .asNumber() == 2);
+  EXPECT(runBytecodeProgram("class Box {}"
+                            "let b = Box();"
+                            "b.name = \"Tom\";"
+                            "let ks = keys(b);"
+                            "len(ks) == 1 && has(b, ks[0]);")
              .toString() == "true");
 }
 
@@ -2001,6 +2057,7 @@ void runBytecodeTests() {
   testBytecodeLenArrayBuiltin();
   testBytecodeLenStringBuiltin();
   testBytecodeLenObjectBuiltin();
+  testBytecodeLenInstanceBuiltin();
   testBytecodeLenArity();
   testBytecodeLenTypeError();
   testBytecodeTypeOfPrimitiveBuiltins();
@@ -2008,14 +2065,17 @@ void runBytecodeTests() {
   testBytecodeTypeOfFunctions();
   testBytecodeTypeOfArity();
   testBytecodeHasBuiltinObjectProperty();
+  testBytecodeHasBuiltinInstanceField();
   testBytecodeHasBuiltinArrayAndStringProperty();
   testBytecodeHasArity();
   testBytecodeHasKeyMustBeString();
   testBytecodeDelBuiltinObjectProperty();
+  testBytecodeDelBuiltinInstanceField();
   testBytecodeDelBuiltinMissingOrNonObject();
   testBytecodeDelArity();
   testBytecodeDelKeyMustBeString();
   testBytecodeKeysBuiltinObject();
+  testBytecodeKeysBuiltinInstanceFields();
   testBytecodeKeysBuiltinArrayAndString();
   testBytecodeKeysArity();
   testBytecodeUndefinedGlobal();

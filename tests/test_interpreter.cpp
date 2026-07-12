@@ -326,6 +326,18 @@ void testHasBuiltinObjectProperty() {
   EXPECT(run("let p = { name: \"Tom\" }; has(p, \"score\");").toString() == "false");
 }
 
+void testHasBuiltinInstanceField() {
+  EXPECT(run("class Box {}"
+             "let b = Box();"
+             "b.name = \"Tom\";"
+             "has(b, \"name\");")
+             .toString() == "true");
+  EXPECT(run("class Box { get() { return 1; } }"
+             "let b = Box();"
+             "has(b, \"get\");")
+             .toString() == "false");
+}
+
 void testHasBuiltinArrayAndStringProperty() {
   EXPECT(run("let a = [1, 2, 3]; has(a, \"length\");").toString() == "true");
   EXPECT(run("let a = [1, 2, 3]; has(a, \"push\");").toString() == "true");
@@ -359,6 +371,21 @@ void testKeysBuiltinObject() {
              .toString() == "true");
 }
 
+void testKeysBuiltinInstanceFields() {
+  EXPECT(run("class Box {}"
+             "let b = Box();"
+             "b.name = \"Tom\";"
+             "b.age = 18;"
+             "keys(b).length;")
+             .asNumber() == 2);
+  EXPECT(run("class Box {}"
+             "let b = Box();"
+             "b.name = \"Tom\";"
+             "let ks = keys(b);"
+             "ks.length == 1 && has(b, ks[0]);")
+             .toString() == "true");
+}
+
 void testKeysBuiltinArrayAndString() {
   EXPECT(run("keys([1, 2]).length;").asNumber() == 3);
   EXPECT(run("let ks = keys([1, 2]); has([1, 2], ks[0]) && has([1, 2], ks[1]) && "
@@ -385,6 +412,24 @@ void testDelBuiltinObjectProperty() {
   EXPECT(run("let p = { name: \"Tom\" }; del(p, \"name\");").toString() == "true");
   EXPECT(run("let p = { name: \"Tom\", age: 18 }; del(p, \"name\"); keys(p).length;").asNumber() ==
          1);
+}
+
+void testDelBuiltinInstanceField() {
+  EXPECT(run("class Box {}"
+             "let b = Box();"
+             "b.name = \"Tom\";"
+             "del(b, \"name\");")
+             .toString() == "true");
+  EXPECT(run("class Box {}"
+             "let b = Box();"
+             "b.name = \"Tom\";"
+             "del(b, \"name\");"
+             "has(b, \"name\");")
+             .toString() == "false");
+  EXPECT(run("class Box { get() { return 1; } }"
+             "let b = Box();"
+             "del(b, \"get\");")
+             .toString() == "false");
 }
 
 void testDelBuiltinNonObject() {
@@ -421,6 +466,8 @@ void testTypeOfBuiltin() {
   EXPECT(run("typeOf({});").toString() == "object");
   EXPECT(run("typeOf(print);").toString() == "builtin");
   EXPECT(run("function f() { return 1; } typeOf(f);").toString() == "function");
+  EXPECT(run("class Box {} typeOf(Box);").toString() == "class");
+  EXPECT(run("class Box {} typeOf(Box());").toString() == "instance");
 }
 
 void testTypeOfBuiltinArity() {
@@ -437,6 +484,12 @@ void testLenBuiltin() {
   EXPECT(run("len([1, 2, 3]);").asNumber() == 3);
   EXPECT(run("len({ name: \"Tom\", age: 18 });").asNumber() == 2);
   EXPECT(run("len(keys({ a: 1, b: 2 }));").asNumber() == 2);
+  EXPECT(run("class Box {}"
+             "let b = Box();"
+             "b.x = 1;"
+             "b.y = 2;"
+             "len(b);")
+             .asNumber() == 2);
 }
 
 void testLenBuiltinErrors() {
@@ -958,13 +1011,16 @@ void runInterpreterTests() {
   testUnknownFunction();
   testPrintArity();
   testHasBuiltinObjectProperty();
+  testHasBuiltinInstanceField();
   testHasBuiltinArrayAndStringProperty();
   testHasBuiltinArity();
   testHasBuiltinKeyMustBeString();
   testKeysBuiltinObject();
+  testKeysBuiltinInstanceFields();
   testKeysBuiltinArrayAndString();
   testKeysBuiltinArity();
   testDelBuiltinObjectProperty();
+  testDelBuiltinInstanceField();
   testDelBuiltinNonObject();
   testDelBuiltinArity();
   testDelBuiltinKeyMustBeString();

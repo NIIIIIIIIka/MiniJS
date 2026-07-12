@@ -139,6 +139,11 @@ void Interpreter::defineBuiltins() {
       return Value(object.asObject().find(name) != object.asObject().end());
     }
 
+    if (object.isInstance()) {
+      const auto& fields = object.asInstance()->fields;
+      return Value(fields.find(name) != fields.end());
+    }
+
     if (object.isArray()) {
       return Value(name == "length" || name == "push" || name == "pop");
     }
@@ -158,6 +163,12 @@ void Interpreter::defineBuiltins() {
     if (object.isObject()) {
       for (const auto& key : object.asObject()) {
         keys.push_back(Value(key.first));
+      }
+      return Value(std::move(keys));
+    }
+    if (object.isInstance()) {
+      for (const auto& field : object.asInstance()->fields) {
+        keys.push_back(Value(field.first));
       }
       return Value(std::move(keys));
     }
@@ -186,11 +197,14 @@ void Interpreter::defineBuiltins() {
       throw RuntimeError("del key must be a string");
     }
 
+    const std::string& name = key.asString();
+    if (object.isInstance()) {
+      return Value(object.asInstance()->fields.erase(name) > 0);
+    }
     if (!object.isObject()) {
       return Value(false);
     }
 
-    const std::string& name = key.asString();
     auto& properties = object.asObject();
     return Value(properties.erase(name) > 0);
   });
@@ -213,6 +227,12 @@ void Interpreter::defineBuiltins() {
     }
     if (value.isObject()) {
       return Value(std::string("object"));
+    }
+    if (value.isClass()) {
+      return Value(std::string("class"));
+    }
+    if (value.isInstance()) {
+      return Value(std::string("instance"));
     }
     if (value.isFunction()) {
       return Value(std::string("function"));
@@ -243,6 +263,9 @@ void Interpreter::defineBuiltins() {
     if (value.isObject()) {
       return Value(static_cast<double>(value.asObject().size()));
     }
+    if (value.isInstance()) {
+      return Value(static_cast<double>(value.asInstance()->fields.size()));
+    }
 
     throw RuntimeError("value has no length");
   });
@@ -270,8 +293,8 @@ void Interpreter::execute(const Stmt& statement) {
 
     auto method_environment = environment_;
     if (superclass != nullptr) {
-      // super is lexical: methods remember the superclass from this class declaration.
-      // this is still supplied later by the receiver when the method is called.
+      // super 是词法绑定：方法记住类声明处的父类。
+      // this 仍然在方法调用时由 receiver 提供。
       method_environment = std::make_shared<Environment>(environment_);
       method_environment->define("super", Value(superclass));
     }
