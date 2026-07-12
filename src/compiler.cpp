@@ -119,6 +119,26 @@ void Compiler::emitExpression(const Expr& expression) {
     return;
   }
 
+  if (const auto* superCall = dynamic_cast<const SuperCallExpr*>(&expression)) {
+    if (currentClass_ != ClassKind::Subclass) {
+      throw RuntimeError("super outside subclass method");
+    }
+    if (superCall->arguments().size() > std::numeric_limits<std::uint8_t>::max()) {
+      throw RuntimeError("too many call arguments");
+    }
+
+    emitVariableRead("super");
+    emitVariableRead("this");
+    for (const ExprPtr& argument : superCall->arguments()) {
+      emitExpression(*argument);
+    }
+
+    emitOpcode(Opcode::SuperCall);
+    emitByte(addConstant(Value(superCall->method())));
+    emitByte(static_cast<std::uint8_t>(superCall->arguments().size()));
+    return;
+  }
+
   if (const auto* array = dynamic_cast<const ArrayExpr*>(&expression)) {
     if (array->elements().size() > std::numeric_limits<std::uint8_t>::max()) {
       throw RuntimeError("too many elements in bytecode array literal");
@@ -245,21 +265,10 @@ void Compiler::emitExpression(const Expr& expression) {
   }
 
   if (const auto* variable = dynamic_cast<const VariableExpr*>(&expression)) {
-    const int slot = resolveLocal(variable->name());
-    if (slot >= 0) {
-      emitLocal(static_cast<std::uint8_t>(slot), Opcode::GetLocal);
-      return;
+    if (variable->name() == "this" && currentClass_ == ClassKind::None) {
+      throw RuntimeError("this outside method");
     }
-    if (!currentFunctionName_.empty() && variable->name() == currentFunctionName_) {
-      emitOpcode(Opcode::GetCurrentClosure);
-      return;
-    }
-    const int upvalue = resolveUpvalue(variable->name());
-    if (upvalue >= 0) {
-      emitLocal(static_cast<std::uint8_t>(upvalue), Opcode::GetUpvalue);
-      return;
-    }
-    emitGlobalName(variable->name(), Opcode::GetGlobal);
+    emitVariableRead(variable->name());
     return;
   }
 
@@ -492,6 +501,10 @@ void Compiler::emitStatement(const Stmt& statement, bool keepValue) {
   }
 
   if (const auto* classStmt = dynamic_cast<const ClassStmt*>(&statement)) {
+    const bool hasSuperclass = classStmt->superclass().has_value();
+    const ClassKind enclosingClass = currentClass_;
+    currentClass_ = hasSuperclass ? ClassKind::Subclass : ClassKind::Class;
+
     emitOpcode(Opcode::Class);
     emitByte(addConstant(Value(classStmt->name())));
 
@@ -500,12 +513,35 @@ void Compiler::emitStatement(const Stmt& statement, bool keepValue) {
       addLocal(classStmt->name());
     } else {
       emitGlobalName(classStmt->name(), Opcode::DefineGlobal);
-      emitGlobalName(classStmt->name(), Opcode::GetGlobal);
+      if (!hasSuperclass) {
+        emitGlobalName(classStmt->name(), Opcode::GetGlobal);
+      }
+    }
+
+    if (hasSuperclass) {
+      beginScope();
+      // Keep the superclass in a hidden local named "super" so every method closure can capture
+      // the superclass that was visible where the class was defined.
+      emitVariableRead(*classStmt->superclass());
+      addLocal("super");
+
+      // OP_INHERIT consumes the temporary superclass and links Child.superclass = Parent.
+      // The temporary child class is popped, while local "super" stays alive until methods close it.
+      emitVariableRead(classStmt->name());
+      emitVariableRead("super");
+      emitOpcode(Opcode::Inherit);
+      emitOpcode(Opcode::Pop);
     }
 
     for (const auto& method : classStmt->methods()) {
       if (!method) {
         continue;
+      }
+
+      if (hasSuperclass) {
+        // OP_METHOD expects the class below the closure; inherited classes no longer keep it on
+        // the stack, so push it only for this method binding.
+        emitVariableRead(classStmt->name());
       }
 
       std::shared_ptr<BytecodeFunction> function = compileFunction(*method, FunctionKind::Method);
@@ -518,11 +554,17 @@ void Compiler::emitStatement(const Stmt& statement, bool keepValue) {
 
       emitOpcode(Opcode::Method);
       emitByte(addConstant(Value(method->name())));
+      if (hasSuperclass) {
+        emitOpcode(Opcode::Pop);
+      }
     }
 
-    if (!isLocalClass) {
+    if (hasSuperclass) {
+      endScope();
+    } else if (!isLocalClass) {
       emitOpcode(Opcode::Pop);
     }
+    currentClass_ = enclosingClass;
     return;
   }
   throw RuntimeError("unsupported bytecode statement");
@@ -537,6 +579,24 @@ void Compiler::emitGlobalName(const std::string& name, Opcode opcode) {
   chunk_.writeByte(static_cast<std::uint8_t>(index));
 }
 
+void Compiler::emitVariableRead(const std::string& name) {
+  const int slot = resolveLocal(name);
+  if (slot >= 0) {
+    emitLocal(static_cast<std::uint8_t>(slot), Opcode::GetLocal);
+    return;
+  }
+  if (!currentFunctionName_.empty() && name == currentFunctionName_) {
+    emitOpcode(Opcode::GetCurrentClosure);
+    return;
+  }
+  const int upvalue = resolveUpvalue(name);
+  if (upvalue >= 0) {
+    emitLocal(static_cast<std::uint8_t>(upvalue), Opcode::GetUpvalue);
+    return;
+  }
+  emitGlobalName(name, Opcode::GetGlobal);
+}
+
 std::shared_ptr<BytecodeFunction> Compiler::compileFunction(const FunctionStmt& function,
                                                             FunctionKind kind) {
   auto bytecode_function = std::make_shared<BytecodeFunction>();
@@ -546,6 +606,7 @@ std::shared_ptr<BytecodeFunction> Compiler::compileFunction(const FunctionStmt& 
   Compiler compiler(this);
   compiler.currentFunctionName_ = function.name();
   compiler.isFunction_ = true;
+  compiler.currentClass_ = currentClass_;
   compiler.scopeDepth_ = 1;
   if (kind == FunctionKind::Method) {
     // 方法调用时 CallFrame::slotStart 指向 receiver，因此 local 0 就是 this。

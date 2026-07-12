@@ -39,6 +39,12 @@ enum class FunctionKind {
   Method,
 };
 
+enum class ClassKind {
+  None,
+  Class,
+  Subclass,
+};
+
 // 将 AST 编译为栈式 VM 字节码。
 class Compiler {
  public:
@@ -55,6 +61,7 @@ class Compiler {
   void emitOpcode(Opcode opcode);
   void emitStatement(const Stmt& statement, bool keepValue);
   void emitGlobalName(const std::string& name, Opcode opcode);
+  void emitVariableRead(const std::string& name);
 
   std::shared_ptr<BytecodeFunction> compileFunction(
       const FunctionStmt& function, FunctionKind kind = FunctionKind::Function);
@@ -86,6 +93,7 @@ class Compiler {
   std::vector<UpvalueDescriptor> upvalues_;
   Compiler* enclosing_ = nullptr;
   bool isFunction_ = false;
+  ClassKind currentClass_ = ClassKind::None;
   int scopeDepth_ = 0;
 };
 

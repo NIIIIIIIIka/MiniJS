@@ -63,6 +63,7 @@ enum class TokenType {
   // 特殊 token。
   Invalid,
   Eof,
+  Super,
 };
 
 // 词法分析器输出的单个 token。

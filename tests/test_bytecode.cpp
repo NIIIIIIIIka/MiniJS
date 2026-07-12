@@ -1,4 +1,5 @@
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <string_view>
 
@@ -306,6 +307,42 @@ void testDisassembleClassMethod() {
   EXPECT(bytecode.find("<function get>") != std::string::npos);
   EXPECT(bytecode.find("OP_METHOD") != std::string::npos);
   EXPECT(bytecode.find("get") != std::string::npos);
+}
+
+void testDisassembleClassInheritance() {
+  const minijs::Chunk chunk =
+      compileProgram("class Animal {} class Dog < Animal { speak() { return \"woof\"; } } Dog;");
+  const std::string bytecode = minijs::disassembleChunk(chunk);
+
+  EXPECT(bytecode.find("OP_CLASS") != std::string::npos);
+  EXPECT(bytecode.find("Animal") != std::string::npos);
+  EXPECT(bytecode.find("Dog") != std::string::npos);
+  EXPECT(bytecode.find("OP_INHERIT") != std::string::npos);
+  EXPECT(bytecode.find("OP_METHOD") != std::string::npos);
+  EXPECT(bytecode.find("speak") != std::string::npos);
+}
+
+void testDisassembleSuperMethodCall() {
+  const minijs::Chunk chunk =
+      compileProgram("class Animal { speak() { return \"animal\"; } }"
+                     "class Dog < Animal { speak() { return super.speak(); } }"
+                     "Dog().speak();");
+  const std::string bytecode = minijs::disassembleChunk(chunk);
+
+  EXPECT(bytecode.find("OP_INHERIT") != std::string::npos);
+  EXPECT(bytecode.find("speak") != std::string::npos);
+
+  std::shared_ptr<minijs::BytecodeFunction> dogSpeak;
+  for (const minijs::Value& constant : chunk.constants()) {
+    if (constant.isBytecodeFunction() && constant.asBytecodeFunction()->name == "speak") {
+      dogSpeak = constant.asBytecodeFunction();
+    }
+  }
+
+  EXPECT(dogSpeak != nullptr);
+  const std::string methodBytecode = minijs::disassembleChunk(dogSpeak->chunk);
+  EXPECT(methodBytecode.find("OP_SUPER_CALL") != std::string::npos);
+  EXPECT(methodBytecode.find("speak") != std::string::npos);
 }
 
 void testDisassembleBreakClosesUpvalueBeforeJump() {
@@ -848,12 +885,246 @@ void testBytecodeClassInstanceFieldsAreIndependent() {
              .asNumber() == 3);
 }
 
+void testBytecodeClassInitInitializesInstance() {
+  EXPECT(runBytecodeProgram("class Box {"
+                            "  init(value) { this.value = value; }"
+                            "  get() { return this.value; }"
+                            "}"
+                            "let b = Box(42);"
+                            "b.get();")
+             .asNumber() == 42);
+}
+
+void testBytecodeClassInitReturnValueIsIgnored() {
+  EXPECT(runBytecodeProgram("class Box {"
+                            "  init(value) { this.value = value; return 999; }"
+                            "  get() { return this.value; }"
+                            "}"
+                            "let b = Box(42);"
+                            "b.get();")
+             .asNumber() == 42);
+}
+
+void testBytecodeClassInitReturnsInstance() {
+  EXPECT(runBytecodeProgram("class Box {"
+                            "  init() { return 999; }"
+                            "  get() { return 123; }"
+                            "}"
+                            "Box().get();")
+             .asNumber() == 123);
+}
+
+void testBytecodeClassInitInstancesAreIndependent() {
+  EXPECT(runBytecodeProgram("class Box {"
+                            "  init(value) { this.value = value; }"
+                            "  get() { return this.value; }"
+                            "}"
+                            "let a = Box(1);"
+                            "let b = Box(2);"
+                            "a.get() + b.get();")
+             .asNumber() == 3);
+}
+
+void testBytecodeClassMethodCallsAnotherMethod() {
+  EXPECT(runBytecodeProgram("class Counter {"
+                            "  init(value) { this.value = value; }"
+                            "  inc() { this.value = this.value + 1; }"
+                            "  next() { this.inc(); return this.value; }"
+                            "}"
+                            "let c = Counter(10);"
+                            "c.next();")
+             .asNumber() == 11);
+}
+
+void testBytecodeClassInheritsMethod() {
+  EXPECT(runBytecodeProgram("class Animal { speak() { return \"animal\"; } }"
+                            "class Dog < Animal {}"
+                            "Dog().speak();")
+             .toString() == "animal");
+}
+
+void testBytecodeClassOverridesInheritedMethod() {
+  EXPECT(runBytecodeProgram("class Animal { speak() { return \"animal\"; } }"
+                            "class Dog < Animal { speak() { return \"dog\"; } }"
+                            "Dog().speak();")
+             .toString() == "dog");
+}
+
+void testBytecodeClassInheritsInit() {
+  EXPECT(runBytecodeProgram("class Parent {"
+                            "  init(value) { this.value = value; }"
+                            "  get() { return this.value; }"
+                            "}"
+                            "class Child < Parent {}"
+                            "Child(123).get();")
+             .asNumber() == 123);
+}
+
+void testBytecodeClassSuperclassMustBeClass() {
+  try {
+    runBytecodeProgram("let Parent = 123; class Child < Parent {}");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: superclass must be a class");
+  }
+}
+
+void testBytecodeClassSuperMethodCall() {
+  EXPECT(runBytecodeProgram("class Animal { speak() { return \"animal\"; } }"
+                            "class Dog < Animal { speak() { return super.speak() + \" dog\"; } }"
+                            "Dog().speak();")
+             .toString() == "animal dog");
+}
+
+void testBytecodeClassSuperMethodUsesCurrentReceiver() {
+  EXPECT(runBytecodeProgram("class Parent { value() { return this.name; } }"
+                            "class Child < Parent { value() { return super.value() + \" child\"; } }"
+                            "let c = Child();"
+                            "c.name = \"receiver\";"
+                            "c.value();")
+             .toString() == "receiver child");
+}
+
+void testBytecodeClassSuperAcrossMultipleLevels() {
+  EXPECT(runBytecodeProgram("class A { name() { return \"A\"; } }"
+                            "class B < A { name() { return super.name() + \"B\"; } }"
+                            "class C < B { name() { return super.name() + \"C\"; } }"
+                            "C().name();")
+             .toString() == "ABC");
+}
+
+void testBytecodeClassBoundMethodKeepsSuperBinding() {
+  EXPECT(runBytecodeProgram("class A { name() { return \"A\"; } }"
+                            "class B < A { name() { return super.name() + \"B\"; } }"
+                            "let b = B();"
+                            "let f = b.name;"
+                            "f();")
+             .toString() == "AB");
+}
+
+void testBytecodeClassSuperInitInitializesReceiver() {
+  EXPECT(runBytecodeProgram("class A { init(value) { this.value = value; } }"
+                            "class B < A {"
+                            "  init(value) { super.init(value + 1); }"
+                            "  get() { return this.value; }"
+                            "}"
+                            "B(41).get();")
+             .asNumber() == 42);
+}
+
+void testBytecodeClassSuperMissingMethod() {
+  try {
+    runBytecodeProgram("class Animal {}"
+                       "class Dog < Animal { speak() { return super.missing(); } }"
+                       "Dog().speak();");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: superclass has no method: missing");
+  }
+}
+
+void testBytecodeClassSuperOutsideSubclassMethod() {
+  try {
+    runBytecodeProgram("class Box { get() { return super.get(); } } Box().get();");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: super outside subclass method");
+  }
+}
+
+void testBytecodeSuperOutsideMethod() {
+  try {
+    runBytecodeProgram("super.get();");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: super outside subclass method");
+  }
+}
+
+void testBytecodeThisOutsideMethod() {
+  try {
+    runBytecodeProgram("this.name;");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: this outside method");
+  }
+}
+
+void testBytecodeClassMethodUsesDefinitionClosure() {
+  EXPECT(runBytecodeProgram("let x = \"global\";"
+                            "class Box { get() { return x; } }"
+                            "function test() {"
+                            "  let x = \"local\";"
+                            "  let b = Box();"
+                            "  return b.get();"
+                            "}"
+                            "test();")
+             .toString() == "global");
+}
+
+void testBytecodeClassBoundMethodUsesDefinitionClosure() {
+  EXPECT(runBytecodeProgram("let x = \"global\";"
+                            "class Box { get() { return x; } }"
+                            "function test(fn) {"
+                            "  let x = \"local\";"
+                            "  return fn();"
+                            "}"
+                            "let b = Box();"
+                            "test(b.get);")
+             .toString() == "global");
+}
+
 void testBytecodeClassCallArity() {
   try {
     runBytecodeProgram("class Box {} Box(1);");
     EXPECT(false);
   } catch (const minijs::RuntimeError& error) {
     EXPECT(std::string_view(error.what()) == "RuntimeError: class Box expects 0 arguments");
+  }
+}
+
+void testBytecodeClassInitArity() {
+  try {
+    runBytecodeProgram("class Box { init(value) { this.value = value; } } Box();");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: method init expects 1 arguments");
+  }
+}
+
+void testBytecodeClassUnknownMethod() {
+  try {
+    runBytecodeProgram("class Box {} let b = Box(); b.missing();");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: value has no method: missing");
+  }
+}
+
+void testBytecodeClassMissingFieldReturnsUndefined() {
+  EXPECT(runBytecodeProgram("class Box {} let b = Box(); b.name;").isUndefined());
+}
+
+void testBytecodeClassMethodArity() {
+  try {
+    runBytecodeProgram("class Box { set(value) { this.value = value; } }"
+                       "let b = Box();"
+                       "b.set();");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: method set expects 1 arguments");
+  }
+}
+
+void testBytecodeClassBoundMethodArity() {
+  try {
+    runBytecodeProgram("class Box { set(value) { this.value = value; } }"
+                       "let b = Box();"
+                       "let set = b.set;"
+                       "set();");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: method set expects 1 arguments");
   }
 }
 
@@ -1631,6 +1902,8 @@ void runBytecodeTests() {
   testDisassembleClosureSetsUpvalue();
   testDisassembleClosureClosesBlockLocal();
   testDisassembleClassMethod();
+  testDisassembleClassInheritance();
+  testDisassembleSuperMethodCall();
   testDisassembleBreakClosesUpvalueBeforeJump();
   testDisassembleLocalRecursionGetsCurrentClosure();
   testDisassembleParameterShadowsCurrentClosure();
@@ -1677,7 +1950,32 @@ void runBytecodeTests() {
   testBytecodeClassBoundMethodCall();
   testBytecodeClassMethodThisField();
   testBytecodeClassInstanceFieldsAreIndependent();
+  testBytecodeClassInitInitializesInstance();
+  testBytecodeClassInitReturnValueIsIgnored();
+  testBytecodeClassInitReturnsInstance();
+  testBytecodeClassInitInstancesAreIndependent();
+  testBytecodeClassMethodCallsAnotherMethod();
+  testBytecodeClassInheritsMethod();
+  testBytecodeClassOverridesInheritedMethod();
+  testBytecodeClassInheritsInit();
+  testBytecodeClassSuperclassMustBeClass();
+  testBytecodeClassSuperMethodCall();
+  testBytecodeClassSuperMethodUsesCurrentReceiver();
+  testBytecodeClassSuperAcrossMultipleLevels();
+  testBytecodeClassBoundMethodKeepsSuperBinding();
+  testBytecodeClassSuperInitInitializesReceiver();
+  testBytecodeClassSuperMissingMethod();
+  testBytecodeClassSuperOutsideSubclassMethod();
+  testBytecodeSuperOutsideMethod();
+  testBytecodeThisOutsideMethod();
+  testBytecodeClassMethodUsesDefinitionClosure();
+  testBytecodeClassBoundMethodUsesDefinitionClosure();
   testBytecodeClassCallArity();
+  testBytecodeClassInitArity();
+  testBytecodeClassUnknownMethod();
+  testBytecodeClassMissingFieldReturnsUndefined();
+  testBytecodeClassMethodArity();
+  testBytecodeClassBoundMethodArity();
   testBytecodeClosureKeepsOuterVariable();
   testBytecodeClosureInstancesAreIndependent();
   testBytecodeClosuresShareCapturedVariable();

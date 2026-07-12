@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -228,6 +229,18 @@ class SetExpr final : public Expr {
   ExprPtr value_;
 };
 
+class SuperCallExpr final : public Expr {
+ public:
+  SuperCallExpr(std::string method, std::vector<ExprPtr> arguments);
+
+  const std::string& method() const;
+  const std::vector<ExprPtr>& arguments() const;
+
+ private:
+  std::string method_;
+  std::vector<ExprPtr> arguments_;
+};
+
 // 具名函数调用表达式。
 class CallExpr final : public Expr {
  public:
@@ -362,16 +375,19 @@ class ReturnStmt final : public Stmt {
   ExprPtr value_;
 };
 
-// 类声明语句。当前最小 class 语法只保存方法，实例字段后续通过 this.x 动态创建。
+// 类声明语句。实例字段通过 this.x 动态创建；superclass 为空表示没有父类。
 class ClassStmt final : public Stmt {
  public:
-  ClassStmt(std::string name, std::vector<std::shared_ptr<FunctionStmt>> methods);
+  ClassStmt(std::string name, std::optional<std::string> superclass,
+            std::vector<std::shared_ptr<FunctionStmt>> methods);
 
   const std::string& name() const;
+  const std::optional<std::string>& superclass() const;
   const std::vector<std::shared_ptr<FunctionStmt>>& methods() const;
 
  private:
   std::string name_;
+  std::optional<std::string> superclass_;
   std::vector<std::shared_ptr<FunctionStmt>> methods_;
 };
 

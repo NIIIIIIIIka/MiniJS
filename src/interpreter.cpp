@@ -37,6 +37,16 @@ Value callArrayMethod(Value object, const std::string& name, const std::vector<V
   throw RuntimeError("undefined method: " + name);
 }
 
+const FunctionValue* findMethod(const std::shared_ptr<ClassValue>& klass, const std::string& name) {
+  for (auto current = klass; current != nullptr; current = current->superclass) {
+    const auto method = current->methods.find(name);
+    if (method != current->methods.end()) {
+      return &method->second;
+    }
+  }
+  return nullptr;
+}
+
 class ReturnSignal {
  public:
   explicit ReturnSignal(Value value) : value_(value) {}
@@ -245,12 +255,30 @@ void Interpreter::execute(const Stmt& statement) {
     return;
   }
   if (const auto* classStmt = dynamic_cast<const ClassStmt*>(&statement)) {
+    std::shared_ptr<ClassValue> superclass;
+    if (classStmt->superclass().has_value()) {
+      Value value = environment_->get(*classStmt->superclass());
+      if (!value.isClass()) {
+        throw RuntimeError("superclass must be a class");
+      }
+      superclass = value.asClass();
+    }
+
     auto klass = std::make_shared<ClassValue>();
     klass->name = classStmt->name();
+    klass->superclass = superclass;
+
+    auto method_environment = environment_;
+    if (superclass != nullptr) {
+      // super is lexical: methods remember the superclass from this class declaration.
+      // this is still supplied later by the receiver when the method is called.
+      method_environment = std::make_shared<Environment>(environment_);
+      method_environment->define("super", Value(superclass));
+    }
 
     for (const auto& method : classStmt->methods()) {
       if (method) {
-        klass->methods[method->name()] = FunctionValue{method.get(), environment_};
+        klass->methods[method->name()] = FunctionValue{method.get(), method_environment};
       }
     }
 
@@ -384,7 +412,14 @@ Value Interpreter::evaluate(const Expr& expression) {
   }
 
   if (const auto* variable = dynamic_cast<const VariableExpr*>(&expression)) {
-    return environment_->get(variable->name());
+    try {
+      return environment_->get(variable->name());
+    } catch (const RuntimeError&) {
+      if (variable->name() == "this") {
+        throw RuntimeError("this outside method");
+      }
+      throw;
+    }
   }
 
   if (const auto* grouping = dynamic_cast<const GroupingExpr*>(&expression)) {
@@ -538,11 +573,18 @@ Value Interpreter::evaluate(const Expr& expression) {
     }
 
     if (callee.isClass()) {
-      if (!arguments.empty()) {
-        throw RuntimeError("class " + callee.asClass()->name + " expects 0 arguments");
-      }
+      auto klass = callee.asClass();
+
       auto instance = std::make_shared<InstanceValue>();
-      instance->klass = callee.asClass();
+      instance->klass = klass;
+      const FunctionValue* init = findMethod(klass, "init");
+      if (init == nullptr) {
+        if (!arguments.empty()) {
+          throw RuntimeError("class " + klass->name + " expects 0 arguments");
+        }
+        return Value(instance);
+      }
+      callMethod(instance, *init, arguments);
       return Value(instance);
     }
 
@@ -599,15 +641,43 @@ Value Interpreter::evaluate(const Expr& expression) {
 
     if (object.isInstance()) {
       auto instance = object.asInstance();
-      auto method = instance->klass->methods.find(call->name());
-      if (method == instance->klass->methods.end()) {
+      const FunctionValue* method = findMethod(instance->klass, call->name());
+      if (method == nullptr) {
         throw RuntimeError("value has no method: " + call->name());
       }
 
-      return callMethod(instance, method->second, arguments);
+      return callMethod(instance, *method, arguments);
     }
 
     throw RuntimeError("value has no method: " + call->name());
+  }
+  if (const auto* call = dynamic_cast<const SuperCallExpr*>(&expression)) {
+    Value superValue;
+    Value thisValue;
+    try {
+      superValue = environment_->get("super");
+      thisValue = environment_->get("this");
+    } catch (const RuntimeError&) {
+      throw RuntimeError("super outside subclass method");
+    }
+    if (!superValue.isClass()) {
+      throw RuntimeError("superclass must be a class");
+    }
+    if (!thisValue.isInstance()) {
+      throw RuntimeError("this must be an instance");
+    }
+
+    std::vector<Value> arguments;
+    for (const ExprPtr& argument : call->arguments()) {
+      arguments.push_back(evaluate(*argument));
+    }
+
+    const FunctionValue* method = findMethod(superValue.asClass(), call->method());
+    if (method == nullptr) {
+      throw RuntimeError("superclass has no method: " + call->method());
+    }
+
+    return callMethod(thisValue.asInstance(), *method, arguments);
   }
   if (const auto* object = dynamic_cast<const ObjectExpr*>(&expression)) {
     std::unordered_map<std::string, Value> properties;
@@ -635,11 +705,11 @@ Value Interpreter::evaluate(const Expr& expression) {
         return field->second;
       }
 
-      auto it = instance->klass->methods.find(get->name());
-      if (it != instance->klass->methods.end()) {
+      const FunctionValue* method = findMethod(instance->klass, get->name());
+      if (method != nullptr) {
         auto bound_method = std::make_shared<BoundMethodValue>();
         bound_method->receiver = instance;
-        bound_method->method = it->second;
+        bound_method->method = *method;
         return Value(bound_method);
       }
       return Value::undefined();

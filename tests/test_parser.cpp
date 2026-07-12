@@ -166,6 +166,17 @@ void testClassDeclaration() {
          "(class Box (method get () (block (return 123))))");
 }
 
+void testClassDeclarationWithSuperclass() {
+  EXPECT(parseProgramToString("class Dog < Animal { speak() { return \"woof\"; } }") ==
+         "(class Dog < Animal (method speak () (block (return \"woof\"))))");
+}
+
+void testSuperMethodCall() {
+  EXPECT(parseProgramToString(
+             "class Dog < Animal { speak() { return super.speak(\"loud\"); } }") ==
+         "(class Dog < Animal (method speak () (block (return (super-call speak \"loud\")))))");
+}
+
 void testClassDeclarationWithMultipleMethods() {
   EXPECT(parseProgramToString(
              "class Box { set(value) { this.value = value; } get() { return this.value; } }") ==
@@ -291,6 +302,8 @@ void runParserTests() {
   testMethodCallExpression();
   testFunctionDeclaration();
   testClassDeclaration();
+  testClassDeclarationWithSuperclass();
+  testSuperMethodCall();
   testClassDeclarationWithMultipleMethods();
   testReturnStatement();
   testBareReturnStatement();

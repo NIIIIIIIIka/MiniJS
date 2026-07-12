@@ -19,7 +19,8 @@ const std::unordered_map<std::string_view, TokenType> keywordMap = {
     {"break", TokenType::Break},
     {"continue", TokenType::Continue},
     {"for", TokenType::For},
-    {"class", TokenType::Class}};
+    {"class", TokenType::Class},
+    {"super", TokenType::Super}};
 }
 
 Lexer::Lexer(std::string_view source) : source_(source) {}

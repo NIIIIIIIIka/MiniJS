@@ -92,6 +92,8 @@ std::string_view tokenTypeName(TokenType type) {
       return "AndAnd";
     case TokenType::OrOr:
       return "OrOr";
+    case TokenType::Super:
+      return "Super";
   }
 
   return "Unknown";

@@ -22,6 +22,8 @@ struct CallFrame {
   // 调用字节码函数时它指向第一个实参，因此参数 slot 0/1/... 可直接复用栈上的实参。
   // 调用字节码方法时它指向 receiver，因此 local 0 就是 this。
   std::size_t slotStart;
+  // 构造器 init 专用：忽略函数体返回值，改为返回 local 0 的 receiver。
+  bool returnsReceiver = false;
 };
 
 // 执行 Chunk 的栈式虚拟机。
@@ -37,6 +39,9 @@ class VM {
   void push(Value value);
   Value pop();
   const Value& peek() const;
+  void callBytecodeClosure(std::shared_ptr<BytecodeClosure> closure, std::size_t argCount,
+                           std::size_t returnSlot, std::size_t slotStart, const std::string& label,
+                           bool returnsReceiver = false);
   std::shared_ptr<Upvalue> captureUpvalue(std::size_t stackIndex);
   void closeUpvalues(std::size_t firstStackIndex);
 

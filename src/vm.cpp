@@ -48,6 +48,17 @@ void expectArity(std::size_t actual, std::size_t expected, const std::string& na
   }
 }
 
+std::shared_ptr<BytecodeClosure> findMethod(const std::shared_ptr<BytecodeClass>& klass,
+                                            const std::string& name) {
+  for (auto current = klass; current != nullptr; current = current->superclass) {
+    const auto method = current->methods.find(name);
+    if (method != current->methods.end()) {
+      return method->second;
+    }
+  }
+  return nullptr;
+}
+
 }  // namespace
 
 VM::VM() {
@@ -255,10 +266,12 @@ Value VM::run(const Chunk& chunk) {
           return result;
         }
 
-        CallFrame frame = frames_.back();
+        if (frame.returnsReceiver) {
+          result = stack_[frame.slotStart];  // this
+        }
+
         closeUpvalues(frame.slotStart);
         frames_.pop_back();
-
         stack_.resize(frame.returnSlot);
         push(result);
 
@@ -376,34 +389,28 @@ Value VM::run(const Chunk& chunk) {
 
         if (callee.isBytecodeClass()) {
           auto klass = callee.asBytecodeClass();
-          if (argCount != 0) {
+          auto init = findMethod(klass, "init");
+          if (init == nullptr && argCount != 0) {
             throw RuntimeError("class " + klass->name + " expects 0 arguments");
           }
 
           auto instance = std::make_shared<BytecodeInstance>();
           instance->klass = klass;
-          stack_.resize(calleeIndex);
-          push(Value(instance));
+          if (init == nullptr) {
+            stack_.resize(calleeIndex);
+            push(Value(instance));
+            break;
+          }
+
+          stack_[calleeIndex] = Value(instance);
+          callBytecodeClosure(init, argCount, calleeIndex, calleeIndex, "method", true);
           break;
         }
 
         if (callee.isBytecodeBoundMethod()) {
           auto boundMethod = callee.asBytecodeBoundMethod();
-          auto closure = boundMethod->method;
-          auto function = closure->function;
-
-          if (argCount != function->params.size()) {
-            throw RuntimeError("method " + function->name + " expects " +
-                               std::to_string(function->params.size()) + " arguments");
-          }
-
           stack_[calleeIndex] = Value(boundMethod->receiver);
-          frames_.push_back(CallFrame{
-              closure,
-              0,
-              calleeIndex,
-              calleeIndex,
-          });
+          callBytecodeClosure(boundMethod->method, argCount, calleeIndex, calleeIndex, "method");
           break;
         }
 
@@ -416,21 +423,9 @@ Value VM::run(const Chunk& chunk) {
             closure->function = callee.asBytecodeFunction();
           }
 
-          auto function = closure->function;
-
-          if (argCount != function->params.size()) {
-            throw RuntimeError("function " + function->name + " expects " +
-                               std::to_string(function->params.size()) + " arguments");
-          }
-
           // callee 位于参数前一个槽位；新函数帧从第一个参数开始。
           // 因此 OP_GET_LOCAL 0 读取的就是第一个实参，无需复制参数数组。
-          frames_.push_back(CallFrame{
-              closure,
-              0,
-              calleeIndex,
-              calleeIndex + 1,
-          });
+          callBytecodeClosure(closure, argCount, calleeIndex, calleeIndex + 1, "function");
           break;
         }
 
@@ -449,6 +444,19 @@ Value VM::run(const Chunk& chunk) {
         Value method = pop();
         Value klass = peek();
         klass.asBytecodeClass()->methods[name] = method.asBytecodeClosure();
+        break;
+      }
+      case Opcode::Inherit: {
+        Value superclass = pop();
+        Value subclass = peek();
+        if (!superclass.isBytecodeClass()) {
+          throw RuntimeError("superclass must be a class");
+        }
+        if (!subclass.isBytecodeClass()) {
+          throw RuntimeError("subclass must be a class");
+        }
+
+        subclass.asBytecodeClass()->superclass = superclass.asBytecodeClass();
         break;
       }
       case Opcode::Closure: {
@@ -508,24 +516,12 @@ Value VM::run(const Chunk& chunk) {
         Value receiver = stack_[receiverIndex];
         if (receiver.isBytecodeInstance()) {
           auto instance = receiver.asBytecodeInstance();
-          auto method = instance->klass->methods.find(name);
-          if (method == instance->klass->methods.end()) {
+          auto method = findMethod(instance->klass, name);
+          if (method == nullptr) {
             throw RuntimeError("value has no method: " + name);
           }
 
-          auto closure = method->second;
-          auto function = closure->function;
-          if (argCount != function->params.size()) {
-            throw RuntimeError("method " + function->name + " expects " +
-                               std::to_string(function->params.size()) + " arguments");
-          }
-
-          frames_.push_back(CallFrame{
-              closure,
-              0,
-              receiverIndex,
-              receiverIndex,
-          });
+          callBytecodeClosure(method, argCount, receiverIndex, receiverIndex, "method");
           break;
         }
 
@@ -565,6 +561,41 @@ Value VM::run(const Chunk& chunk) {
         }
 
         throw RuntimeError("unknown array method: " + name);
+      }
+      case Opcode::SuperCall: {
+        const std::uint8_t nameIndex = chunk.readByte(frame.ip++);
+        const std::string& name = chunk.constant(nameIndex).asString();
+        const std::uint8_t argCount = chunk.readByte(frame.ip++);
+        if (stack_.size() < static_cast<std::size_t>(argCount) + 2) {
+          throw RuntimeError("super call stack underflow");
+        }
+
+        const std::size_t receiverIndex = stack_.size() - argCount - 1;
+        const std::size_t superclassIndex = receiverIndex - 1;
+        Value superclass = stack_[superclassIndex];
+        Value receiver = stack_[receiverIndex];
+        if (!superclass.isBytecodeClass()) {
+          throw RuntimeError("superclass must be a class");
+        }
+        if (!receiver.isBytecodeInstance()) {
+          throw RuntimeError("this must be an instance");
+        }
+
+        auto method = findMethod(superclass.asBytecodeClass(), name);
+        if (method == nullptr) {
+          throw RuntimeError("superclass has no method: " + name);
+        }
+
+        // Stack before:  [..., superclass, receiver, arg0, arg1, ...]
+        // Stack after:   [..., receiver, arg0, arg1, ...]
+        // The method is found on superclass, but local 0 / this is still the current receiver.
+        stack_[superclassIndex] = receiver;
+        for (std::size_t i = 0; i < argCount; ++i) {
+          stack_[superclassIndex + 1 + i] = stack_[receiverIndex + 1 + i];
+        }
+        stack_.resize(superclassIndex + 1 + argCount);
+        callBytecodeClosure(method, argCount, superclassIndex, superclassIndex, "method");
+        break;
       }
       case Opcode::Array: {
         const std::uint8_t count = chunk.readByte(frame.ip++);
@@ -638,11 +669,11 @@ Value VM::run(const Chunk& chunk) {
             break;
           }
 
-          auto method = instance->klass->methods.find(name);
-          if (method != instance->klass->methods.end()) {
+          auto method = findMethod(instance->klass, name);
+          if (method != nullptr) {
             auto boundMethod = std::make_shared<BytecodeBoundMethod>();
             boundMethod->receiver = instance;
-            boundMethod->method = method->second;
+            boundMethod->method = method;
             push(Value(boundMethod));
             break;
           }
@@ -703,6 +734,24 @@ const Value& VM::peek() const {
     throw RuntimeError("bytecode stack underflow");
   }
   return stack_.back();
+}
+
+void VM::callBytecodeClosure(std::shared_ptr<BytecodeClosure> closure, std::size_t argCount,
+                             std::size_t returnSlot, std::size_t slotStart,
+                             const std::string& label, bool returnsReceiver) {
+  auto function = closure->function;
+  if (argCount != function->params.size()) {
+    throw RuntimeError(label + " " + function->name + " expects " +
+                       std::to_string(function->params.size()) + " arguments");
+  }
+
+  frames_.push_back(CallFrame{
+      closure,
+      0,
+      returnSlot,
+      slotStart,
+      returnsReceiver,
+  });
 }
 
 // 捕获仍在 VM 栈上的局部变量。

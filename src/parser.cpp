@@ -1,5 +1,6 @@
 ﻿#include "minijs/parser.h"
 
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -150,6 +151,15 @@ StmtPtr Parser::classStatement() {
   }
   const Token name = advance();
 
+  std::optional<std::string> superclass;
+  if (match(TokenType::Less)) {
+    if (!check(TokenType::Identifier)) {
+      report(peek(), "expected superclass name");
+      return nullptr;
+    }
+    superclass = std::string(advance().lexeme);
+  }
+
   if (!match(TokenType::LeftBrace)) {
     report(peek(), "expected '{' before class body");
     return nullptr;
@@ -197,7 +207,8 @@ StmtPtr Parser::classStatement() {
     report(peek(), "expected '}' after class body");
   }
 
-  return std::make_unique<ClassStmt>(std::string(name.lexeme), std::move(methods));
+  return std::make_unique<ClassStmt>(std::string(name.lexeme), std::move(superclass),
+                                     std::move(methods));
 }
 
 StmtPtr Parser::expressionStatement() {
@@ -521,6 +532,37 @@ ExprPtr Parser::primary() {
   if (match(TokenType::Identifier)) {
     const Token& token = previous();
     return std::make_unique<VariableExpr>(std::string(token.lexeme));
+  }
+
+  if (match(TokenType::Super)) {
+    if (!match(TokenType::Dot)) {
+      report(peek(), "expected '.' after super");
+      return std::make_unique<NumberExpr>("0");
+    }
+
+    if (!check(TokenType::Identifier)) {
+      report(peek(), "expected superclass method name");
+      return std::make_unique<NumberExpr>("0");
+    }
+    std::string method = std::string(advance().lexeme);
+
+    if (!match(TokenType::LeftParen)) {
+      report(peek(), "expected '(' after super method name");
+      return std::make_unique<NumberExpr>("0");
+    }
+
+    std::vector<ExprPtr> arguments;
+    if (!check(TokenType::RightParen)) {
+      do {
+        arguments.push_back(expression());
+      } while (match(TokenType::Comma));
+    }
+
+    if (!match(TokenType::RightParen)) {
+      report(peek(), "expected ')' after arguments");
+    }
+
+    return std::make_unique<SuperCallExpr>(std::move(method), std::move(arguments));
   }
 
   if (match(TokenType::Null)) {

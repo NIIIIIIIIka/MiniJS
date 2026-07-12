@@ -182,6 +182,13 @@ const std::string& SetExpr::name() const { return name_; }
 
 const Expr& SetExpr::value() const { return *value_; }
 
+SuperCallExpr::SuperCallExpr(std::string method, std::vector<ExprPtr> arguments)
+    : method_(std::move(method)), arguments_(std::move(arguments)) {}
+
+const std::string& SuperCallExpr::method() const { return method_; }
+
+const std::vector<ExprPtr>& SuperCallExpr::arguments() const { return arguments_; }
+
 CallExpr::CallExpr(ExprPtr callee, std::vector<ExprPtr> arguments)
     : callee_(std::move(callee)), arguments_(std::move(arguments)) {}
 
@@ -354,6 +361,16 @@ std::string formatExpr(const Expr& expression) {
     result += ")";
     return result;
   }
+
+  if (const auto* call = dynamic_cast<const SuperCallExpr*>(&expression)) {
+    std::string result = "(super-call ";
+    result += call->method();
+    for (const ExprPtr& arg : call->arguments()) {
+      result += " " + formatExpr(*arg);
+    }
+    result += ")";
+    return result;
+  }
   throw std::logic_error("unknown expression type");
 }
 
@@ -435,6 +452,10 @@ std::string formatStmt(const Stmt& statement) {
 
   if (const auto* classStmt = dynamic_cast<const ClassStmt*>(&statement)) {
     std::string result = "(class " + classStmt->name();
+    if (classStmt->superclass().has_value()) {
+      result += " < ";
+      result += *classStmt->superclass();
+    }
     for (const auto& method : classStmt->methods()) {
       if (!method) {
         continue;
@@ -491,10 +512,13 @@ StringExpr::StringExpr(std::string value) : value_(value) {}
 
 const std::string& StringExpr::value() const { return value_; }
 
-ClassStmt::ClassStmt(std::string name, std::vector<std::shared_ptr<FunctionStmt>> methods)
-    : name_(std::move(name)), methods_(std::move(methods)) {}
+ClassStmt::ClassStmt(std::string name, std::optional<std::string> superclass,
+                     std::vector<std::shared_ptr<FunctionStmt>> methods)
+    : name_(std::move(name)), superclass_(std::move(superclass)), methods_(std::move(methods)) {}
 
 const std::string& ClassStmt::name() const { return name_; }
+
+const std::optional<std::string>& ClassStmt::superclass() const { return superclass_; }
 
 const std::vector<std::shared_ptr<FunctionStmt>>& ClassStmt::methods() const { return methods_; }
 }  // namespace minijs

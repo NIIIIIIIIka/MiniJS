@@ -253,6 +253,7 @@ class Value {
 // 字节码 VM 使用的类运行时载荷，保存类名和方法表。
 struct BytecodeClass {
   std::string name;
+  std::shared_ptr<BytecodeClass> superclass;
   std::unordered_map<std::string, std::shared_ptr<BytecodeClosure>> methods;
 };
 
@@ -271,6 +272,7 @@ struct BytecodeBoundMethod {
 // AST 解释器使用的类运行时载荷，保存类名和方法表。
 struct ClassValue {
   std::string name;
+  std::shared_ptr<ClassValue> superclass;
   std::unordered_map<std::string, FunctionValue> methods;
 };
 

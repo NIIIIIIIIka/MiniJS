@@ -166,6 +166,7 @@ void testUnterminatedStringAtNewline() {
 
 void testTokenTypeName() {
   EXPECT(minijs::tokenTypeName(TokenType::Class) == "Class");
+  EXPECT(minijs::tokenTypeName(TokenType::Super) == "Super");
   EXPECT(minijs::tokenTypeName(TokenType::Let) == "Let");
   EXPECT(minijs::tokenTypeName(TokenType::String) == "String");
   EXPECT(minijs::tokenTypeName(TokenType::Eof) == "Eof");

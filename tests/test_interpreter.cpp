@@ -539,6 +539,171 @@ void testClassInstanceFieldsAreIndependent() {
              .asNumber() == 3);
 }
 
+void testClassInitInitializesInstance() {
+  EXPECT(run("class Box {"
+             "  init(value) { this.value = value; }"
+             "  get() { return this.value; }"
+             "}"
+             "let b = Box(42);"
+             "b.get();")
+             .asNumber() == 42);
+}
+
+void testClassInitReturnValueIsIgnored() {
+  EXPECT(run("class Box {"
+             "  init(value) { this.value = value; return 999; }"
+             "  get() { return this.value; }"
+             "}"
+             "let b = Box(42);"
+             "b.get();")
+             .asNumber() == 42);
+}
+
+void testClassInitReturnsInstance() {
+  EXPECT(run("class Box {"
+             "  init() { return 999; }"
+             "  get() { return 123; }"
+             "}"
+             "Box().get();")
+             .asNumber() == 123);
+}
+
+void testClassInitInstancesAreIndependent() {
+  EXPECT(run("class Box {"
+             "  init(value) { this.value = value; }"
+             "  get() { return this.value; }"
+             "}"
+             "let a = Box(1);"
+             "let b = Box(2);"
+             "a.get() + b.get();")
+             .asNumber() == 3);
+}
+
+void testClassMethodCallsAnotherMethod() {
+  EXPECT(run("class Counter {"
+             "  init(value) { this.value = value; }"
+             "  inc() { this.value = this.value + 1; }"
+             "  next() { this.inc(); return this.value; }"
+             "}"
+             "let c = Counter(10);"
+             "c.next();")
+             .asNumber() == 11);
+}
+
+void testClassInheritsMethod() {
+  EXPECT(run("class Animal { speak() { return \"animal\"; } }"
+             "class Dog < Animal {}"
+             "Dog().speak();")
+             .toString() == "animal");
+}
+
+void testClassOverridesInheritedMethod() {
+  EXPECT(run("class Animal { speak() { return \"animal\"; } }"
+             "class Dog < Animal { speak() { return \"dog\"; } }"
+             "Dog().speak();")
+             .toString() == "dog");
+}
+
+void testClassInheritsInit() {
+  EXPECT(run("class Parent {"
+             "  init(value) { this.value = value; }"
+             "  get() { return this.value; }"
+             "}"
+             "class Child < Parent {}"
+             "Child(123).get();")
+             .asNumber() == 123);
+}
+
+void testClassSuperclassMustBeClass() {
+  try {
+    run("let Parent = 123; class Child < Parent {}");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: superclass must be a class");
+  }
+}
+
+void testClassSuperMethodCall() {
+  EXPECT(run("class Animal { speak() { return \"animal\"; } }"
+             "class Dog < Animal { speak() { return super.speak() + \" dog\"; } }"
+             "Dog().speak();")
+             .toString() == "animal dog");
+}
+
+void testClassSuperMethodUsesCurrentReceiver() {
+  EXPECT(run("class Parent { value() { return this.name; } }"
+             "class Child < Parent { value() { return super.value() + \" child\"; } }"
+             "let c = Child();"
+             "c.name = \"receiver\";"
+             "c.value();")
+             .toString() == "receiver child");
+}
+
+void testClassSuperAcrossMultipleLevels() {
+  EXPECT(run("class A { name() { return \"A\"; } }"
+             "class B < A { name() { return super.name() + \"B\"; } }"
+             "class C < B { name() { return super.name() + \"C\"; } }"
+             "C().name();")
+             .toString() == "ABC");
+}
+
+void testClassBoundMethodKeepsSuperBinding() {
+  EXPECT(run("class A { name() { return \"A\"; } }"
+             "class B < A { name() { return super.name() + \"B\"; } }"
+             "let b = B();"
+             "let f = b.name;"
+             "f();")
+             .toString() == "AB");
+}
+
+void testClassSuperInitInitializesReceiver() {
+  EXPECT(run("class A { init(value) { this.value = value; } }"
+             "class B < A {"
+             "  init(value) { super.init(value + 1); }"
+             "  get() { return this.value; }"
+             "}"
+             "B(41).get();")
+             .asNumber() == 42);
+}
+
+void testClassSuperMissingMethod() {
+  try {
+    run("class Animal {}"
+        "class Dog < Animal { speak() { return super.missing(); } }"
+        "Dog().speak();");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: superclass has no method: missing");
+  }
+}
+
+void testClassSuperOutsideSubclassMethod() {
+  try {
+    run("class Box { get() { return super.get(); } } Box().get();");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: super outside subclass method");
+  }
+}
+
+void testSuperOutsideMethod() {
+  try {
+    run("super.get();");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: super outside subclass method");
+  }
+}
+
+void testThisOutsideMethod() {
+  try {
+    run("this.name;");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: this outside method");
+  }
+}
+
 void testClassMethodUsesDefinitionClosure() {
   EXPECT(run("let x = \"global\";"
              "class Box { get() { return x; } }"
@@ -570,6 +735,28 @@ void testClassCallArity() {
   } catch (const minijs::RuntimeError& error) {
     EXPECT(std::string_view(error.what()) == "RuntimeError: class Box expects 0 arguments");
   }
+}
+
+void testClassInitArity() {
+  try {
+    run("class Box { init(value) { this.value = value; } } Box();");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: method init expects 1 arguments");
+  }
+}
+
+void testClassUnknownMethod() {
+  try {
+    run("class Box {} let b = Box(); b.missing();");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: value has no method: missing");
+  }
+}
+
+void testClassMissingFieldReturnsUndefined() {
+  EXPECT(run("class Box {} let b = Box(); b.name;").isUndefined());
 }
 
 void testReturnValueStillWorks() { EXPECT(run("function f() { return 1; } f();").asNumber() == 1); }
@@ -798,9 +985,30 @@ void runInterpreterTests() {
   testClassBoundMethodCall();
   testClassMethodThisField();
   testClassInstanceFieldsAreIndependent();
+  testClassInitInitializesInstance();
+  testClassInitReturnValueIsIgnored();
+  testClassInitReturnsInstance();
+  testClassInitInstancesAreIndependent();
+  testClassMethodCallsAnotherMethod();
+  testClassInheritsMethod();
+  testClassOverridesInheritedMethod();
+  testClassInheritsInit();
+  testClassSuperclassMustBeClass();
+  testClassSuperMethodCall();
+  testClassSuperMethodUsesCurrentReceiver();
+  testClassSuperAcrossMultipleLevels();
+  testClassBoundMethodKeepsSuperBinding();
+  testClassSuperInitInitializesReceiver();
+  testClassSuperMissingMethod();
+  testClassSuperOutsideSubclassMethod();
+  testSuperOutsideMethod();
+  testThisOutsideMethod();
   testClassMethodUsesDefinitionClosure();
   testClassBoundMethodUsesDefinitionClosure();
   testClassCallArity();
+  testClassInitArity();
+  testClassUnknownMethod();
+  testClassMissingFieldReturnsUndefined();
   testReturnValueStillWorks();
   testEarlyReturnFromFunction();
   testRecursiveFunction();
