@@ -592,6 +592,32 @@ void testClassInstanceFieldsAreIndependent() {
              .asNumber() == 3);
 }
 
+void testClassFieldCanShadowMethod() {
+  EXPECT(run("class Box { get() { return \"method\"; } }"
+             "let b = Box();"
+             "b.get = \"field\";"
+             "b.get;")
+             .toString() == "field");
+}
+
+void testClassMethodVisibleAfterDeletingShadowField() {
+  EXPECT(run("class Box { get() { return \"method\"; } }"
+             "let b = Box();"
+             "b.get = \"field\";"
+             "del(b, \"get\");"
+             "b.get();")
+             .toString() == "method");
+}
+
+void testClassFieldCanShadowInheritedMethod() {
+  EXPECT(run("class Parent { get() { return \"parent\"; } }"
+             "class Child < Parent {}"
+             "let child = Child();"
+             "child.get = \"field\";"
+             "child.get;")
+             .toString() == "field");
+}
+
 void testClassInitInitializesInstance() {
   EXPECT(run("class Box {"
              "  init(value) { this.value = value; }"
@@ -1041,6 +1067,9 @@ void runInterpreterTests() {
   testClassBoundMethodCall();
   testClassMethodThisField();
   testClassInstanceFieldsAreIndependent();
+  testClassFieldCanShadowMethod();
+  testClassMethodVisibleAfterDeletingShadowField();
+  testClassFieldCanShadowInheritedMethod();
   testClassInitInitializesInstance();
   testClassInitReturnValueIsIgnored();
   testClassInitReturnsInstance();

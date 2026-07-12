@@ -885,6 +885,32 @@ void testBytecodeClassInstanceFieldsAreIndependent() {
              .asNumber() == 3);
 }
 
+void testBytecodeClassFieldCanShadowMethod() {
+  EXPECT(runBytecodeProgram("class Box { get() { return \"method\"; } }"
+                            "let b = Box();"
+                            "b.get = \"field\";"
+                            "b.get;")
+             .toString() == "field");
+}
+
+void testBytecodeClassMethodVisibleAfterDeletingShadowField() {
+  EXPECT(runBytecodeProgram("class Box { get() { return \"method\"; } }"
+                            "let b = Box();"
+                            "b.get = \"field\";"
+                            "del(b, \"get\");"
+                            "b.get();")
+             .toString() == "method");
+}
+
+void testBytecodeClassFieldCanShadowInheritedMethod() {
+  EXPECT(runBytecodeProgram("class Parent { get() { return \"parent\"; } }"
+                            "class Child < Parent {}"
+                            "let child = Child();"
+                            "child.get = \"field\";"
+                            "child.get;")
+             .toString() == "field");
+}
+
 void testBytecodeClassInitInitializesInstance() {
   EXPECT(runBytecodeProgram("class Box {"
                             "  init(value) { this.value = value; }"
@@ -2006,6 +2032,9 @@ void runBytecodeTests() {
   testBytecodeClassBoundMethodCall();
   testBytecodeClassMethodThisField();
   testBytecodeClassInstanceFieldsAreIndependent();
+  testBytecodeClassFieldCanShadowMethod();
+  testBytecodeClassMethodVisibleAfterDeletingShadowField();
+  testBytecodeClassFieldCanShadowInheritedMethod();
   testBytecodeClassInitInitializesInstance();
   testBytecodeClassInitReturnValueIsIgnored();
   testBytecodeClassInitReturnsInstance();
