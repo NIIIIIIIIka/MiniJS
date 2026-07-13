@@ -533,7 +533,7 @@ void Compiler::emitStatement(const Stmt& statement, bool keepValue) {
     }
 
     for (const auto& method : classStmt->methods()) {
-      if (!method) {
+      if (!method.function) {
         continue;
       }
 
@@ -543,7 +543,14 @@ void Compiler::emitStatement(const Stmt& statement, bool keepValue) {
         emitVariableRead(classStmt->name());
       }
 
-      std::shared_ptr<BytecodeFunction> function = compileFunction(*method, FunctionKind::Method);
+      const ClassKind methodClass = currentClass_;
+      if (method.isStatic) {
+        currentClass_ = ClassKind::None;
+      }
+      std::shared_ptr<BytecodeFunction> function =
+          compileFunction(*method.function, method.isStatic ? FunctionKind::Function
+                                                            : FunctionKind::Method);
+      currentClass_ = methodClass;
       emitOpcode(Opcode::Closure);
       emitByte(addConstant(Value(function)));
       for (const UpvalueDescriptor& upvalue : function->upvalues) {
@@ -551,8 +558,8 @@ void Compiler::emitStatement(const Stmt& statement, bool keepValue) {
         emitByte(upvalue.index);
       }
 
-      emitOpcode(Opcode::Method);
-      emitByte(addConstant(Value(method->name())));
+      emitOpcode(method.isStatic ? Opcode::StaticMethod : Opcode::Method);
+      emitByte(addConstant(Value(method.function->name())));
       if (hasSuperclass) {
         emitOpcode(Opcode::Pop);
       }

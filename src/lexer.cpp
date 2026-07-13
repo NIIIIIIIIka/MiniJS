@@ -20,6 +20,7 @@ const std::unordered_map<std::string_view, TokenType> keywordMap = {
     {"continue", TokenType::Continue},
     {"for", TokenType::For},
     {"class", TokenType::Class},
+    {"static", TokenType::Static},
     {"super", TokenType::Super}};
 }
 

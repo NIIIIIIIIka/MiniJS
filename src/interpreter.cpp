@@ -47,6 +47,17 @@ const FunctionValue* findMethod(const std::shared_ptr<ClassValue>& klass, const 
   return nullptr;
 }
 
+const FunctionValue* findStaticMethod(const std::shared_ptr<ClassValue>& klass,
+                                      const std::string& name) {
+  for (auto current = klass; current != nullptr; current = current->superclass) {
+    const auto method = current->staticMethods.find(name);
+    if (method != current->staticMethods.end()) {
+      return &method->second;
+    }
+  }
+  return nullptr;
+}
+
 class ReturnSignal {
  public:
   explicit ReturnSignal(Value value) : value_(value) {}
@@ -300,8 +311,14 @@ void Interpreter::execute(const Stmt& statement) {
     }
 
     for (const auto& method : classStmt->methods()) {
-      if (method) {
-        klass->methods[method->name()] = FunctionValue{method.get(), method_environment};
+      if (method.function) {
+        if (method.isStatic) {
+          klass->staticMethods[method.function->name()] =
+              FunctionValue{method.function.get(), environment_};
+        } else {
+          klass->methods[method.function->name()] =
+              FunctionValue{method.function.get(), method_environment};
+        }
       }
     }
 
@@ -618,31 +635,10 @@ Value Interpreter::evaluate(const Expr& expression) {
 
     if (callee.isFunction()) {
       const FunctionValue& function = callee.asFunction();
-      const FunctionStmt* declaration = function.declaration;
-
-      if (declaration == nullptr) {
-        if (callee_variable != nullptr) {
-          throw RuntimeError(callee_variable->name() + " is not callable");
-        }
-        throw RuntimeError("value is not callable");
+      if (function.declaration == nullptr && callee_variable != nullptr) {
+        throw RuntimeError(callee_variable->name() + " is not callable");
       }
-
-      if (call->arguments().size() != declaration->params().size()) {
-        throw RuntimeError("function " + declaration->name() + " expects " +
-                           std::to_string(declaration->params().size()) + " arguments");
-      }
-
-      auto call_environment = std::make_shared<Environment>(function.closure);
-      for (std::size_t i = 0; i < declaration->params().size(); ++i) {
-        call_environment->define(declaration->params()[i], arguments[i]);
-      }
-
-      try {
-        executeBlock(declaration->body(), call_environment);
-        return Value::undefined();
-      } catch (const ReturnSignal& signal) {
-        return signal.value();
-      }
+      return callFunction(function, arguments);
     }
     if (!callee.isFunction()) {
       if (callee_variable != nullptr) {
@@ -670,6 +666,15 @@ Value Interpreter::evaluate(const Expr& expression) {
       }
 
       return callMethod(instance, *method, arguments);
+    }
+
+    if (object.isClass()) {
+      const FunctionValue* method = findStaticMethod(object.asClass(), call->name());
+      if (method == nullptr) {
+        throw RuntimeError("value has no method: " + call->name());
+      }
+
+      return callFunction(*method, arguments);
     }
 
     throw RuntimeError("value has no method: " + call->name());
@@ -738,6 +743,15 @@ Value Interpreter::evaluate(const Expr& expression) {
       return Value::undefined();
     }
 
+    if (object.isClass()) {
+      const FunctionValue* method = findStaticMethod(object.asClass(), get->name());
+      if (method != nullptr) {
+        return Value(method->declaration, method->closure);
+      }
+
+      return Value::undefined();
+    }
+
 
     const auto& properties = object.asObject();
     auto it = properties.find(get->name());
@@ -785,6 +799,31 @@ Value Interpreter::callMethod(std::shared_ptr<InstanceValue> receiver, const Fun
 
   try {
     executeBlock(declaration->body(), method_environment);
+    return Value::undefined();
+  } catch (const ReturnSignal& signal) {
+    return signal.value();
+  }
+}
+
+Value Interpreter::callFunction(const FunctionValue& function,
+                                const std::vector<Value>& arguments) {
+  const FunctionStmt* declaration = function.declaration;
+  if (declaration == nullptr) {
+    throw RuntimeError("value is not callable");
+  }
+
+  if (arguments.size() != declaration->params().size()) {
+    throw RuntimeError("function " + declaration->name() + " expects " +
+                       std::to_string(declaration->params().size()) + " arguments");
+  }
+
+  auto call_environment = std::make_shared<Environment>(function.closure);
+  for (std::size_t i = 0; i < declaration->params().size(); ++i) {
+    call_environment->define(declaration->params()[i], arguments[i]);
+  }
+
+  try {
+    executeBlock(declaration->body(), call_environment);
     return Value::undefined();
   } catch (const ReturnSignal& signal) {
     return signal.value();

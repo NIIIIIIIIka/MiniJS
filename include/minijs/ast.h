@@ -349,6 +349,11 @@ class FunctionStmt final : public Stmt {
   Program body_;
 };
 
+struct ClassMethod {
+  std::shared_ptr<FunctionStmt> function;
+  bool isStatic = false;
+};
+
 class ForStmt final : public Stmt {
  public:
   ForStmt(StmtPtr initializer, ExprPtr condition, ExprPtr increment, StmtPtr body);
@@ -379,16 +384,16 @@ class ReturnStmt final : public Stmt {
 class ClassStmt final : public Stmt {
  public:
   ClassStmt(std::string name, std::optional<std::string> superclass,
-            std::vector<std::shared_ptr<FunctionStmt>> methods);
+            std::vector<ClassMethod> methods);
 
   const std::string& name() const;
   const std::optional<std::string>& superclass() const;
-  const std::vector<std::shared_ptr<FunctionStmt>>& methods() const;
+  const std::vector<ClassMethod>& methods() const;
 
  private:
   std::string name_;
   std::optional<std::string> superclass_;
-  std::vector<std::shared_ptr<FunctionStmt>> methods_;
+  std::vector<ClassMethod> methods_;
 };
 
 

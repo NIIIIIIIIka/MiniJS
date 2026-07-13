@@ -568,6 +568,44 @@ void testClassBoundMethodCall() {
              .asNumber() == 123);
 }
 
+void testClassStaticMethodCall() {
+  EXPECT(run("class Box { static make(value) { return value + 1; } }"
+             "Box.make(41);")
+             .asNumber() == 42);
+}
+
+void testClassStaticFactoryMethod() {
+  EXPECT(run("class Box {"
+             "  static create(value) { return Box(value); }"
+             "  init(value) { this.value = value; }"
+             "  get() { return this.value; }"
+             "}"
+             "Box.create(123).get();")
+             .asNumber() == 123);
+}
+
+void testClassStaticAndInstanceMethodsAreSeparate() {
+  EXPECT(run("class Box {"
+             "  static name() { return \"class\"; }"
+             "  name() { return \"instance\"; }"
+             "}"
+             "Box.name() + \" \" + Box().name();")
+             .toString() == "class instance");
+}
+
+void testClassInheritsStaticMethod() {
+  EXPECT(run("class Parent { static make() { return \"parent\"; } }"
+             "class Child < Parent {}"
+             "Child.make();")
+             .toString() == "parent");
+}
+
+void testClassInstanceDoesNotSeeStaticMethod() {
+  EXPECT(run("class Box { static make() { return 1; } }"
+             "Box().make;")
+             .isUndefined());
+}
+
 void testClassMethodThisField() {
   EXPECT(run("class Box {"
              "  set(value) { this.value = value; }"
@@ -1065,6 +1103,11 @@ void runInterpreterTests() {
   testClassCallCreatesInstance();
   testClassMethodCall();
   testClassBoundMethodCall();
+  testClassStaticMethodCall();
+  testClassStaticFactoryMethod();
+  testClassStaticAndInstanceMethodsAreSeparate();
+  testClassInheritsStaticMethod();
+  testClassInstanceDoesNotSeeStaticMethod();
   testClassMethodThisField();
   testClassInstanceFieldsAreIndependent();
   testClassFieldCanShadowMethod();

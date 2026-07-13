@@ -457,21 +457,21 @@ std::string formatStmt(const Stmt& statement) {
       result += *classStmt->superclass();
     }
     for (const auto& method : classStmt->methods()) {
-      if (!method) {
+      if (!method.function) {
         continue;
       }
 
-      result += " (method ";
-      result += method->name();
+      result += method.isStatic ? " (static method " : " (method ";
+      result += method.function->name();
       result += " (";
-      for (std::size_t i = 0; i < method->params().size(); ++i) {
+      for (std::size_t i = 0; i < method.function->params().size(); ++i) {
         if (i != 0) {
           result += " ";
         }
-        result += method->params()[i];
+        result += method.function->params()[i];
       }
       result += ") (block";
-      for (const StmtPtr& inner : method->body()) {
+      for (const StmtPtr& inner : method.function->body()) {
         if (inner) {
           result += " ";
           result += formatStmt(*inner);
@@ -513,12 +513,12 @@ StringExpr::StringExpr(std::string value) : value_(value) {}
 const std::string& StringExpr::value() const { return value_; }
 
 ClassStmt::ClassStmt(std::string name, std::optional<std::string> superclass,
-                     std::vector<std::shared_ptr<FunctionStmt>> methods)
+                     std::vector<ClassMethod> methods)
     : name_(std::move(name)), superclass_(std::move(superclass)), methods_(std::move(methods)) {}
 
 const std::string& ClassStmt::name() const { return name_; }
 
 const std::optional<std::string>& ClassStmt::superclass() const { return superclass_; }
 
-const std::vector<std::shared_ptr<FunctionStmt>>& ClassStmt::methods() const { return methods_; }
+const std::vector<ClassMethod>& ClassStmt::methods() const { return methods_; }
 }  // namespace minijs

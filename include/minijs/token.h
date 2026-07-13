@@ -59,6 +59,7 @@ enum class TokenType {
   Break,
   Continue,
   For,
+  Static,
 
   // 特殊 token。
   Invalid,

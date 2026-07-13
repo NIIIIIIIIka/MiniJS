@@ -29,6 +29,7 @@ class Interpreter {
 
   Value callMethod(std::shared_ptr<InstanceValue> receiver, const FunctionValue& method,
                    const std::vector<Value>& arguments);
+  Value callFunction(const FunctionValue& function, const std::vector<Value>& arguments);
 
   void defineBuiltin(std::string name, BuiltinFunction function);
   void defineBuiltins();

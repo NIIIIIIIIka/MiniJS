@@ -255,6 +255,7 @@ struct BytecodeClass {
   std::string name;
   std::shared_ptr<BytecodeClass> superclass;
   std::unordered_map<std::string, std::shared_ptr<BytecodeClosure>> methods;
+  std::unordered_map<std::string, std::shared_ptr<BytecodeClosure>> staticMethods;
 };
 
 // 字节码 VM 使用的实例运行时载荷，字段保存在实例自身。
@@ -274,6 +275,7 @@ struct ClassValue {
   std::string name;
   std::shared_ptr<ClassValue> superclass;
   std::unordered_map<std::string, FunctionValue> methods;
+  std::unordered_map<std::string, FunctionValue> staticMethods;
 };
 
 // AST 解释器使用的实例运行时载荷，字段保存在实例自身。

@@ -174,6 +174,8 @@ std::size_t disassembleInstruction(const Chunk& chunk, std::size_t offset, std::
       return constantInstruction(chunk, "OP_CLASS", offset, output);
     case Opcode::Method:
       return constantInstruction(chunk, "OP_METHOD", offset, output);
+    case Opcode::StaticMethod:
+      return constantInstruction(chunk, "OP_STATIC_METHOD", offset, output);
     case Opcode::Inherit:
       return simpleInstruction("OP_INHERIT", offset, output);
     case Opcode::SuperCall:

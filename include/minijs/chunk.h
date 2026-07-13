@@ -46,6 +46,7 @@ enum class Opcode : std::uint8_t {
   GetCurrentClosure,
   Class,
   Method,
+  StaticMethod,
   Inherit,
   SuperCall,
 };

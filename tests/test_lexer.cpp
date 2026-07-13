@@ -82,10 +82,10 @@ void testBracketsAndControlKeywords() {
       TokenType::LeftBrace,  TokenType::While,       TokenType::LeftParen,    TokenType::False,
       TokenType::RightParen, TokenType::LeftBracket, TokenType::RightBracket, TokenType::RightBrace,
       TokenType::Else,       TokenType::Function,    TokenType::Return,       TokenType::Break,
-      TokenType::Continue,   TokenType::For,         TokenType::Eof,
+      TokenType::Continue,   TokenType::For,         TokenType::Static,       TokenType::Eof,
   };
 
-  EXPECT(scanTypes("if (true) { while(false) [] } else function return break continue for") ==
+  EXPECT(scanTypes("if (true) { while(false) [] } else function return break continue for static") ==
          expected);
 }
 
@@ -167,6 +167,7 @@ void testUnterminatedStringAtNewline() {
 void testTokenTypeName() {
   EXPECT(minijs::tokenTypeName(TokenType::Class) == "Class");
   EXPECT(minijs::tokenTypeName(TokenType::Super) == "Super");
+  EXPECT(minijs::tokenTypeName(TokenType::Static) == "Static");
   EXPECT(minijs::tokenTypeName(TokenType::Let) == "Let");
   EXPECT(minijs::tokenTypeName(TokenType::String) == "String");
   EXPECT(minijs::tokenTypeName(TokenType::Eof) == "Eof");

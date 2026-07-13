@@ -309,6 +309,17 @@ void testDisassembleClassMethod() {
   EXPECT(bytecode.find("get") != std::string::npos);
 }
 
+void testDisassembleClassStaticMethod() {
+  const minijs::Chunk chunk =
+      compileProgram("class Box { static make() { return 123; } } Box;");
+  const std::string bytecode = minijs::disassembleChunk(chunk);
+
+  EXPECT(bytecode.find("OP_CLASS") != std::string::npos);
+  EXPECT(bytecode.find("<function make>") != std::string::npos);
+  EXPECT(bytecode.find("OP_STATIC_METHOD") != std::string::npos);
+  EXPECT(bytecode.find("make") != std::string::npos);
+}
+
 void testDisassembleClassInheritance() {
   const minijs::Chunk chunk =
       compileProgram("class Animal {} class Dog < Animal { speak() { return \"woof\"; } } Dog;");
@@ -859,6 +870,46 @@ void testBytecodeClassBoundMethodCall() {
                             "let get = b.get;"
                             "get();")
              .asNumber() == 123);
+}
+
+void testBytecodeClassStaticMethodCall() {
+  EXPECT(runBytecodeProgram("class Box {"
+                            "  static make(value) { return value + 1; }"
+                            "}"
+                            "Box.make(41);")
+             .asNumber() == 42);
+}
+
+void testBytecodeClassStaticFactoryMethod() {
+  EXPECT(runBytecodeProgram("class Box {"
+                            "  static create(value) { return Box(value); }"
+                            "  init(value) { this.value = value; }"
+                            "  get() { return this.value; }"
+                            "}"
+                            "Box.create(123).get();")
+             .asNumber() == 123);
+}
+
+void testBytecodeClassStaticAndInstanceMethodsAreSeparate() {
+  EXPECT(runBytecodeProgram("class Box {"
+                            "  static name() { return \"class\"; }"
+                            "  name() { return \"instance\"; }"
+                            "}"
+                            "Box.name() + \" \" + Box().name();")
+             .toString() == "class instance");
+}
+
+void testBytecodeClassInheritsStaticMethod() {
+  EXPECT(runBytecodeProgram("class Parent { static make() { return \"parent\"; } }"
+                            "class Child < Parent {}"
+                            "Child.make();")
+             .toString() == "parent");
+}
+
+void testBytecodeClassInstanceDoesNotSeeStaticMethod() {
+  EXPECT(runBytecodeProgram("class Box { static make() { return 1; } }"
+                            "Box().make;")
+             .isUndefined());
 }
 
 void testBytecodeClassMethodThisField() {
@@ -1984,6 +2035,7 @@ void runBytecodeTests() {
   testDisassembleClosureSetsUpvalue();
   testDisassembleClosureClosesBlockLocal();
   testDisassembleClassMethod();
+  testDisassembleClassStaticMethod();
   testDisassembleClassInheritance();
   testDisassembleSuperMethodCall();
   testDisassembleBreakClosesUpvalueBeforeJump();
@@ -2030,6 +2082,11 @@ void runBytecodeTests() {
   testBytecodeCallReturnedFunctionDirectly();
   testBytecodeClassMethodCall();
   testBytecodeClassBoundMethodCall();
+  testBytecodeClassStaticMethodCall();
+  testBytecodeClassStaticFactoryMethod();
+  testBytecodeClassStaticAndInstanceMethodsAreSeparate();
+  testBytecodeClassInheritsStaticMethod();
+  testBytecodeClassInstanceDoesNotSeeStaticMethod();
   testBytecodeClassMethodThisField();
   testBytecodeClassInstanceFieldsAreIndependent();
   testBytecodeClassFieldCanShadowMethod();

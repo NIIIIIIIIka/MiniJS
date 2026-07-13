@@ -59,6 +59,17 @@ std::shared_ptr<BytecodeClosure> findMethod(const std::shared_ptr<BytecodeClass>
   return nullptr;
 }
 
+std::shared_ptr<BytecodeClosure> findStaticMethod(const std::shared_ptr<BytecodeClass>& klass,
+                                                  const std::string& name) {
+  for (auto current = klass; current != nullptr; current = current->superclass) {
+    const auto method = current->staticMethods.find(name);
+    if (method != current->staticMethods.end()) {
+      return method->second;
+    }
+  }
+  return nullptr;
+}
+
 }  // namespace
 
 VM::VM() {
@@ -469,6 +480,14 @@ Value VM::run(const Chunk& chunk) {
         klass.asBytecodeClass()->methods[name] = method.asBytecodeClosure();
         break;
       }
+      case Opcode::StaticMethod: {
+        const std::uint8_t nameIndex = chunk.readByte(frame.ip++);
+        const std::string& name = chunk.constant(nameIndex).asString();
+        Value method = pop();
+        Value klass = peek();
+        klass.asBytecodeClass()->staticMethods[name] = method.asBytecodeClosure();
+        break;
+      }
       case Opcode::Inherit: {
         Value superclass = pop();
         Value subclass = peek();
@@ -545,6 +564,16 @@ Value VM::run(const Chunk& chunk) {
           }
 
           callBytecodeClosure(method, argCount, receiverIndex, receiverIndex, "method");
+          break;
+        }
+
+        if (receiver.isBytecodeClass()) {
+          auto method = findStaticMethod(receiver.asBytecodeClass(), name);
+          if (method == nullptr) {
+            throw RuntimeError("value has no method: " + name);
+          }
+
+          callBytecodeClosure(method, argCount, receiverIndex, receiverIndex + 1, "function");
           break;
         }
 
@@ -698,6 +727,17 @@ Value VM::run(const Chunk& chunk) {
             boundMethod->receiver = instance;
             boundMethod->method = method;
             push(Value(boundMethod));
+            break;
+          }
+
+          push(Value::undefined());
+          break;
+        }
+
+        if (object.isBytecodeClass()) {
+          auto method = findStaticMethod(object.asBytecodeClass(), name);
+          if (method != nullptr) {
+            push(Value(method));
             break;
           }
 

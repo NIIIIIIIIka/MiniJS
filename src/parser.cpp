@@ -165,8 +165,9 @@ StmtPtr Parser::classStatement() {
     return nullptr;
   }
 
-  std::vector<std::shared_ptr<FunctionStmt>> methods;
+  std::vector<ClassMethod> methods;
   while (!check(TokenType::RightBrace) && !isAtEnd()) {
+    const bool isStatic = match(TokenType::Static);
     if (!check(TokenType::Identifier)) {
       report(peek(), "expected method name");
       break;
@@ -199,8 +200,11 @@ StmtPtr Parser::classStatement() {
     }
 
     Program body = block();
-    methods.push_back(std::make_shared<FunctionStmt>(std::string(methodName.lexeme),
-                                                     std::move(params), std::move(body)));
+    methods.push_back(ClassMethod{
+        std::make_shared<FunctionStmt>(std::string(methodName.lexeme), std::move(params),
+                                       std::move(body)),
+        isStatic,
+    });
   }
 
   if (!match(TokenType::RightBrace)) {

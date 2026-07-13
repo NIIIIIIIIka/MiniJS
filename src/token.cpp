@@ -84,6 +84,8 @@ std::string_view tokenTypeName(TokenType type) {
       return "Continue";
     case TokenType::For:
       return "For";
+    case TokenType::Static:
+      return "Static";
     case TokenType::Invalid:
       return "Invalid";
     case TokenType::Eof:
