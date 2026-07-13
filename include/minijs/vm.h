@@ -2,7 +2,9 @@
 
 #include <memory>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "minijs/bytecode_function.h"
@@ -54,6 +56,17 @@ class VM {
   std::unordered_map<std::string, Value> globals_;
   // 未来 GC 管理的堆对象链表。当前阶段只建立链表所有权入口。
   Obj* objects_ = nullptr;
+
+  template <typename T, typename... Args>
+  T* allocateObject(Args&&... args);
 };
 
+template <typename T, typename... Args>
+T* VM::allocateObject(Args&&... args) {
+  static_assert(std::is_base_of_v<Obj, T>, "allocateObject requires an Obj-derived type");
+  auto* object = new T(std::forward<Args>(args)...);
+  object->next = objects_;
+  objects_ = object;
+  return object;
+}
 }  // namespace minijs
