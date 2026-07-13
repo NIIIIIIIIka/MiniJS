@@ -906,10 +906,47 @@ void testBytecodeClassInheritsStaticMethod() {
              .toString() == "parent");
 }
 
+void testBytecodeClassOverridesStaticMethod() {
+  EXPECT(runBytecodeProgram("class Parent { static name() { return \"parent\"; } }"
+                            "class Child < Parent { static name() { return \"child\"; } }"
+                            "Child.name();")
+             .toString() == "child");
+}
+
 void testBytecodeClassInstanceDoesNotSeeStaticMethod() {
   EXPECT(runBytecodeProgram("class Box { static make() { return 1; } }"
                             "Box().make;")
              .isUndefined());
+}
+
+void testBytecodeClassInstanceCannotCallStaticMethod() {
+  try {
+    runBytecodeProgram("class Box { static make() { return 1; } }"
+                       "Box().make();");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: value has no method: make");
+  }
+}
+
+void testBytecodeClassStaticMethodCannotUseThis() {
+  try {
+    runBytecodeProgram("class Box { static get() { return this.value; } }"
+                       "Box.get();");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: this outside method");
+  }
+}
+
+void testBytecodeClassStaticMethodArity() {
+  try {
+    runBytecodeProgram("class Box { static make(value) { return value; } }"
+                       "Box.make();");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: function make expects 1 arguments");
+  }
 }
 
 void testBytecodeClassMethodThisField() {
@@ -2086,7 +2123,11 @@ void runBytecodeTests() {
   testBytecodeClassStaticFactoryMethod();
   testBytecodeClassStaticAndInstanceMethodsAreSeparate();
   testBytecodeClassInheritsStaticMethod();
+  testBytecodeClassOverridesStaticMethod();
   testBytecodeClassInstanceDoesNotSeeStaticMethod();
+  testBytecodeClassInstanceCannotCallStaticMethod();
+  testBytecodeClassStaticMethodCannotUseThis();
+  testBytecodeClassStaticMethodArity();
   testBytecodeClassMethodThisField();
   testBytecodeClassInstanceFieldsAreIndependent();
   testBytecodeClassFieldCanShadowMethod();

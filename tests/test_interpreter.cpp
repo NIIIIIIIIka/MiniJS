@@ -600,10 +600,47 @@ void testClassInheritsStaticMethod() {
              .toString() == "parent");
 }
 
+void testClassOverridesStaticMethod() {
+  EXPECT(run("class Parent { static name() { return \"parent\"; } }"
+             "class Child < Parent { static name() { return \"child\"; } }"
+             "Child.name();")
+             .toString() == "child");
+}
+
 void testClassInstanceDoesNotSeeStaticMethod() {
   EXPECT(run("class Box { static make() { return 1; } }"
              "Box().make;")
              .isUndefined());
+}
+
+void testClassInstanceCannotCallStaticMethod() {
+  try {
+    run("class Box { static make() { return 1; } }"
+        "Box().make();");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: value has no method: make");
+  }
+}
+
+void testClassStaticMethodCannotUseThis() {
+  try {
+    run("class Box { static get() { return this.value; } }"
+        "Box.get();");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: this outside method");
+  }
+}
+
+void testClassStaticMethodArity() {
+  try {
+    run("class Box { static make(value) { return value; } }"
+        "Box.make();");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: function make expects 1 arguments");
+  }
 }
 
 void testClassMethodThisField() {
@@ -1107,7 +1144,11 @@ void runInterpreterTests() {
   testClassStaticFactoryMethod();
   testClassStaticAndInstanceMethodsAreSeparate();
   testClassInheritsStaticMethod();
+  testClassOverridesStaticMethod();
   testClassInstanceDoesNotSeeStaticMethod();
+  testClassInstanceCannotCallStaticMethod();
+  testClassStaticMethodCannotUseThis();
+  testClassStaticMethodArity();
   testClassMethodThisField();
   testClassInstanceFieldsAreIndependent();
   testClassFieldCanShadowMethod();
