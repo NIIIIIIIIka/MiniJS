@@ -219,6 +219,15 @@ VM::VM() {
   });
 }
 
+VM::~VM() {
+  Obj* object = objects_;
+  while (object != nullptr) {
+    Obj* next = object->next;
+    delete object;
+    object = next;
+  }
+}
+
 void VM::defineBuiltin(std::string name, std::size_t arity, NativeFn function) {
   auto native = std::make_shared<NativeFunction>();
   native->name = name;

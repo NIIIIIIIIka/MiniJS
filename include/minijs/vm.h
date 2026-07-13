@@ -8,6 +8,7 @@
 #include "minijs/bytecode_function.h"
 #include "minijs/bytecode_closure.h"
 #include "minijs/chunk.h"
+#include "minijs/object.h"
 #include "minijs/value.h"
 
 namespace minijs {
@@ -30,6 +31,7 @@ struct CallFrame {
 class VM {
  public:
   VM();
+  ~VM();
 
   Value run(const Chunk& chunk);
 
@@ -50,6 +52,8 @@ class VM {
   std::vector<CallFrame> frames_;
   std::vector<std::shared_ptr<Upvalue>> openUpvalues_;
   std::unordered_map<std::string, Value> globals_;
+  // 未来 GC 管理的堆对象链表。当前阶段只建立链表所有权入口。
+  Obj* objects_ = nullptr;
 };
 
 }  // namespace minijs
