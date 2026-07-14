@@ -7,6 +7,7 @@
 #include "minijs/ast.h"
 #include "minijs/bytecode_closure.h"
 #include "minijs/bytecode_function.h"
+#include "minijs/object.h"
 #include "minijs/runtime_error.h"
 
 namespace minijs {
@@ -39,6 +40,8 @@ Value::Value(std::unordered_map<std::string, Value> properties)
       object_(std::make_shared<std::unordered_map<std::string, Value>>(std::move(properties))) {}
 
 Value::Value(std::string string) : value_type_(ValueType::String), string_(std::move(string)) {}
+
+Value::Value(ObjString* string) : value_type_(ValueType::GcString), gc_string_(string) {}
 
 Value::Value(std::shared_ptr<BytecodeFunction> function)
     : value_type_(ValueType::BytecodeFunction), bytecode_function_(std::move(function)) {}
@@ -76,6 +79,9 @@ double Value::asNumber() const {
 const std::string& Value::asString() const {
   if (!isString()) {
     throw RuntimeError("value is not a string");
+  }
+  if (value_type_ == ValueType::GcString) {
+    return gc_string_->value;
   }
   return string_;
 }
@@ -231,6 +237,8 @@ std::string Value::toString() const {
       return "[object Object]";
     case ValueType::String:
       return string_;
+    case ValueType::GcString:
+      return gc_string_->value;
     case ValueType::Null:
       return "null";
     case ValueType::Undefined:
@@ -263,6 +271,8 @@ bool Value::isTruthy() const {
       return false;
     case ValueType::String:
       return !string_.empty();
+    case ValueType::GcString:
+      return !gc_string_->value.empty();
     case ValueType::Undefined:
       return false;
   }
@@ -282,7 +292,9 @@ bool Value::isFunction() const { return value_type_ == ValueType::Function; }
 
 bool Value::isArray() const { return value_type_ == ValueType::Array; }
 
-bool Value::isString() const { return value_type_ == ValueType::String; }
+bool Value::isString() const {
+  return value_type_ == ValueType::String || value_type_ == ValueType::GcString;
+}
 
 bool Value::isObject() const { return value_type_ == ValueType::Object; }
 
@@ -309,6 +321,10 @@ bool Value::isInstance() const { return value_type_ == ValueType::InterpreterIns
 bool Value::isBoundMethod() const { return value_type_ == ValueType::InterpreterBoundMethod; }
 
 bool Value::equals(const Value& other) const {
+  if (isString() && other.isString()) {
+    return asString() == other.asString();
+  }
+
   if (value_type_ != other.value_type_) {
     return false;
   }
@@ -320,6 +336,8 @@ bool Value::equals(const Value& other) const {
       return boolean_ == other.boolean_;
     case ValueType::String:
       return string_ == other.string_;
+    case ValueType::GcString:
+      return gc_string_ == other.gc_string_;
     case ValueType::Null:
     case ValueType::Undefined:
       return true;

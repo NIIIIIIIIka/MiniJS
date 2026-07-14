@@ -789,6 +789,14 @@ Value VM::run(const Chunk& chunk) {
   }
 }
 
+std::size_t VM::objectCount() const {
+  std::size_t count = 0;
+  for (Obj* object = objects_; object != nullptr; object = object->next) {
+    ++count;
+  }
+  return count;
+}
+
 void VM::push(Value value) { stack_.push_back(std::move(value)); }
 
 Value VM::pop() {

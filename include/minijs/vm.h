@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include <cstddef>
 #include <memory>
 #include <string>
 #include <type_traits>
@@ -36,7 +37,7 @@ class VM {
   ~VM();
 
   Value run(const Chunk& chunk);
-
+  std::size_t objectCount() const;
  private:
   void defineBuiltin(std::string name, std::size_t arity, NativeFn function);
 

@@ -8,6 +8,7 @@
 
 namespace minijs {
 
+struct ObjString;
 struct BytecodeFunction;
 struct BytecodeClosure;
 struct BytecodeClass;
@@ -55,6 +56,7 @@ enum class ValueType {
   InterpreterClass,
   InterpreterInstance,
   InterpreterBoundMethod,
+  GcString,
 };
 
 // MiniJS 的动态运行时值。
@@ -86,6 +88,8 @@ class Value {
 
   // 创建字符串值。
   explicit Value(std::string string);
+
+  explicit Value(ObjString* string);
 
   // 创建字节码函数值。
   explicit Value(std::shared_ptr<BytecodeFunction> function);
@@ -248,6 +252,7 @@ class Value {
   std::shared_ptr<std::vector<Value>> array_;
   std::shared_ptr<std::unordered_map<std::string, Value>> object_;
   std::string string_;
+  ObjString* gc_string_ = nullptr;
 };
 
 // 字节码 VM 使用的类运行时载荷，保存类名和方法表。

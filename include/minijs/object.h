@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 namespace minijs {
 
 // 未来由 VM 垃圾回收器统一管理的堆对象类型。
@@ -23,6 +25,12 @@ struct Obj {
   ObjType type;
   bool marked = false;
   Obj* next = nullptr;
+};
+
+struct ObjString final : public Obj {
+  explicit ObjString(std::string value);
+
+  std::string value;
 };
 
 }  // namespace minijs
