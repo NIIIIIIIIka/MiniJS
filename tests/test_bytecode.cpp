@@ -58,6 +58,35 @@ void testCompileBooleanNullUndefinedLiterals() {
 
 void testCompileStringLiteral() { EXPECT(runBytecode("\"Tom\";").toString() == "Tom"); }
 
+void testBytecodeStringConstantUsesGcObject() {
+  minijs::Parser parser("\"Tom\";");
+  minijs::ExprPtr expression = parser.parse();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compile(*expression);
+
+  minijs::VM vm;
+  EXPECT(vm.objectCount() == 0);
+  EXPECT(vm.run(chunk).toString() == "Tom");
+  EXPECT(vm.objectCount() == 1);
+}
+
+void testBytecodeNonStringConstantDoesNotAllocateGcObject() {
+  minijs::Parser parser("42;");
+  minijs::ExprPtr expression = parser.parse();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compile(*expression);
+
+  minijs::VM vm;
+  EXPECT(vm.run(chunk).asNumber() == 42);
+  EXPECT(vm.objectCount() == 0);
+}
+
 void testCompileStringConcatenation() {
   EXPECT(runBytecode("\"hello \" + \"world\";").toString() == "hello world");
   EXPECT(runBytecode("\"age: \" + 18;").toString() == "age: 18");
@@ -2054,6 +2083,8 @@ void runBytecodeTests() {
   testCompileModuloExpression();
   testCompileBooleanNullUndefinedLiterals();
   testCompileStringLiteral();
+  testBytecodeStringConstantUsesGcObject();
+  testBytecodeNonStringConstantDoesNotAllocateGcObject();
   testCompileStringConcatenation();
   testCompileComparisonExpressions();
   testCompileLogicalNot();

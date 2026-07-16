@@ -259,7 +259,12 @@ Value VM::run(const Chunk& chunk) {
     switch (opcode) {
       case Opcode::Constant: {
         const std::uint8_t index = chunk.readByte(frame.ip++);
-        push(chunk.constant(index));
+        const Value& constant = chunk.constant(index);
+        if (constant.isString()) {
+          push(Value(allocateObject<ObjString>(constant.asString())));
+        } else {
+          push(constant);
+        }
         break;
       }
       case Opcode::Add: {
@@ -306,7 +311,7 @@ Value VM::run(const Chunk& chunk) {
         Value result = pop();
 
         if (frames_.size() == 1) {
-          return result;
+          return copyOutValue(result);
         }
 
         if (frame.returnsReceiver) {
@@ -795,6 +800,31 @@ std::size_t VM::objectCount() const {
     ++count;
   }
   return count;
+}
+
+Value VM::copyOutValue(const Value& value) const {
+  if (value.isString()) {
+    return Value(value.asString());
+  }
+
+  if (value.isArray()) {
+    std::vector<Value> elements;
+    elements.reserve(value.asArray().size());
+    for (const Value& element : value.asArray()) {
+      elements.push_back(copyOutValue(element));
+    }
+    return Value(std::move(elements));
+  }
+
+  if (value.isObject()) {
+    std::unordered_map<std::string, Value> properties;
+    for (const auto& property : value.asObject()) {
+      properties[property.first] = copyOutValue(property.second);
+    }
+    return Value(std::move(properties));
+  }
+
+  return value;
 }
 
 void VM::push(Value value) { stack_.push_back(std::move(value)); }

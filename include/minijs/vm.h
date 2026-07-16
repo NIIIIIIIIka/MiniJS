@@ -38,8 +38,10 @@ class VM {
 
   Value run(const Chunk& chunk);
   std::size_t objectCount() const;
+
  private:
   void defineBuiltin(std::string name, std::size_t arity, NativeFn function);
+  Value copyOutValue(const Value& value) const;
 
   void push(Value value);
   Value pop();
