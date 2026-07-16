@@ -124,6 +124,9 @@ class Value {
   // 返回字符串载荷；当前值不是字符串时抛出运行时错误。
   const std::string& asString() const;
 
+  // 返回 GC 字符串对象；当前值不是 GC 字符串时抛出运行时错误。
+  ObjString* asGcString() const;
+
   // 返回函数载荷；调用方应保证当前值是函数。
   const FunctionValue& asFunction() const;
 
@@ -228,6 +231,9 @@ class Value {
 
   // 返回当前值是否为 AST 解释器绑定方法。
   bool isBoundMethod() const;
+
+  // 返回当前值是否为 VM 管理的 GC 字符串。
+  bool isGcString() const;
 
   // 比较两个运行时值是否相等；对象、数组和函数按引用身份比较。
   bool equals(const Value& other) const;

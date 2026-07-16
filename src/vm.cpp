@@ -894,4 +894,93 @@ void VM::closeUpvalues(std::size_t firstStackIndex) {
       openUpvalues_.end());
 }
 
+void VM::markRoots() {
+  for (const Value& value : stack_) {
+    markValue(value);
+  }
+
+  for (const auto& global : globals_) {
+    markValue(global.second);
+  }
+
+  for (const auto& upvalue : openUpvalues_) {
+    if (upvalue->isClosed) {
+      markValue(upvalue->closed);
+    } else if (upvalue->stackIndex < stack_.size()) {
+      markValue(stack_[upvalue->stackIndex]);
+    }
+  }
+
+}
+
+void VM::markValue(const Value& value) {
+  if (value.isGcString()) {
+    markObject(value.asGcString());
+    return;
+  }
+
+  if (value.isArray()) {
+    for (const Value& element : value.asArray()) {
+      markValue(element);
+    }
+    return;
+  }
+
+  if (value.isObject()) {
+    for (const auto& property : value.asObject()) {
+      markValue(property.second);
+    }
+    return;
+  }
+
+  if (value.isBytecodeInstance()) {
+    for (const auto& field : value.asBytecodeInstance()->fields) {
+      markValue(field.second);
+    }
+    return;
+  }
+
+  if (value.isBytecodeBoundMethod()) {
+    markValue(Value(value.asBytecodeBoundMethod()->receiver));
+  }
+}
+
+void VM::markObject(Obj* object) {
+  if (object == nullptr || object->marked) {
+    return;
+  }
+
+  object->marked = true;
+}
+
+void VM::sweep() {
+  Obj* previous = nullptr;
+  Obj* object = objects_;
+
+  while (object != nullptr) {
+    if (object->marked) {
+      object->marked = false;
+      previous = object;
+      object = object->next;
+      continue;
+    }
+
+    Obj* unreached = object;
+    object = object->next;
+
+    if (previous == nullptr) {
+      objects_ = object;
+    } else {
+      previous->next = object;
+    }
+
+    delete unreached;
+  }
+}
+
+void VM::collectGarbage() {
+  markRoots();
+  sweep();
+}
+
 }  // namespace minijs

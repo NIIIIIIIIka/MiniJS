@@ -87,6 +87,57 @@ void testBytecodeNonStringConstantDoesNotAllocateGcObject() {
   EXPECT(vm.objectCount() == 0);
 }
 
+void testBytecodeGcCollectsUnreachableStringConstant() {
+  minijs::Parser parser("\"Tom\";");
+  minijs::ExprPtr expression = parser.parse();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compile(*expression);
+
+  minijs::VM vm;
+  EXPECT(vm.run(chunk).toString() == "Tom");
+  EXPECT(vm.objectCount() == 1);
+
+  vm.collectGarbage();
+  EXPECT(vm.objectCount() == 0);
+}
+
+void testBytecodeGcKeepsGlobalString() {
+  minijs::Parser parser("let name = \"Tom\"; name;");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compileProgram(program);
+
+  minijs::VM vm;
+  EXPECT(vm.run(chunk).toString() == "Tom");
+  EXPECT(vm.objectCount() == 1);
+
+  vm.collectGarbage();
+  EXPECT(vm.objectCount() == 1);
+}
+
+void testBytecodeGcKeepsStringInGlobalObjectField() {
+  minijs::Parser parser("let person = { name: \"Tom\" }; person;");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compileProgram(program);
+
+  minijs::VM vm;
+  EXPECT(vm.run(chunk).isObject());
+  EXPECT(vm.objectCount() == 1);
+
+  vm.collectGarbage();
+  EXPECT(vm.objectCount() == 1);
+}
+
 void testCompileStringConcatenation() {
   EXPECT(runBytecode("\"hello \" + \"world\";").toString() == "hello world");
   EXPECT(runBytecode("\"age: \" + 18;").toString() == "age: 18");
@@ -2085,6 +2136,9 @@ void runBytecodeTests() {
   testCompileStringLiteral();
   testBytecodeStringConstantUsesGcObject();
   testBytecodeNonStringConstantDoesNotAllocateGcObject();
+  testBytecodeGcCollectsUnreachableStringConstant();
+  testBytecodeGcKeepsGlobalString();
+  testBytecodeGcKeepsStringInGlobalObjectField();
   testCompileStringConcatenation();
   testCompileComparisonExpressions();
   testCompileLogicalNot();

@@ -86,6 +86,13 @@ const std::string& Value::asString() const {
   return string_;
 }
 
+ObjString* Value::asGcString() const {
+  if (!isGcString()) {
+    throw RuntimeError("value is not a GC string");
+  }
+  return gc_string_;
+}
+
 const FunctionValue& Value::asFunction() const {
   if (!isFunction()) {
     throw RuntimeError("value is not a function");
@@ -319,6 +326,8 @@ bool Value::isClass() const { return value_type_ == ValueType::InterpreterClass;
 bool Value::isInstance() const { return value_type_ == ValueType::InterpreterInstance; }
 
 bool Value::isBoundMethod() const { return value_type_ == ValueType::InterpreterBoundMethod; }
+
+bool Value::isGcString() const { return value_type_ == ValueType::GcString; }
 
 bool Value::equals(const Value& other) const {
   if (isString() && other.isString()) {

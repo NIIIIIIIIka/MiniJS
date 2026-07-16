@@ -39,6 +39,8 @@ class VM {
   Value run(const Chunk& chunk);
   std::size_t objectCount() const;
 
+  void collectGarbage();
+
  private:
   void defineBuiltin(std::string name, std::size_t arity, NativeFn function);
   Value copyOutValue(const Value& value) const;
@@ -51,6 +53,10 @@ class VM {
                            bool returnsReceiver = false);
   std::shared_ptr<Upvalue> captureUpvalue(std::size_t stackIndex);
   void closeUpvalues(std::size_t firstStackIndex);
+  void markRoots();
+  void markValue(const Value& value);
+  void markObject(Obj* object);
+  void sweep();
 
   // 操作数栈，同时承载当前调用帧的参数和局部变量槽位。
   std::vector<Value> stack_;
