@@ -8,6 +8,7 @@
 #include <string>
 #include <utility>
 
+#include "minijs/gc_object.h"
 #include "minijs/runtime_error.h"
 
 namespace minijs {
@@ -666,11 +667,13 @@ Value VM::run(const Chunk& chunk) {
       }
       case Opcode::Array: {
         const std::uint8_t count = chunk.readByte(frame.ip++);
+        collectGarbageIfNeeded();
+
         std::vector<Value> elements(count);
         for (std::size_t i = count; i > 0; --i) {
           elements[i - 1] = pop();
         }
-        push(Value(std::move(elements)));
+        push(Value(allocateObject<ObjArray>(std::move(elements))));
         break;
       }
       case Opcode::GetIndex: {
@@ -910,9 +913,31 @@ void VM::markRoots() {
 
 }
 
+void VM::collectGarbageIfNeeded() {
+  if (objectCount_ + 1 <= nextGcObjectCount_) {
+    return;
+  }
+
+  collectGarbage();
+  nextGcObjectCount_ = std::max<std::size_t>(objectCount_ * 2, 8);
+}
+
 void VM::markValue(const Value& value) {
   if (value.isGcString()) {
     markObject(value.asGcString());
+    return;
+  }
+
+  if (value.isGcArray()) {
+    ObjArray* array = value.asGcArray();
+    if (array->marked) {
+      return;
+    }
+
+    markObject(array);
+    for (const Value& element : array->elements) {
+      markValue(element);
+    }
     return;
   }
 

@@ -54,6 +54,7 @@ class VM {
                            bool returnsReceiver = false);
   std::shared_ptr<Upvalue> captureUpvalue(std::size_t stackIndex);
   void closeUpvalues(std::size_t firstStackIndex);
+  void collectGarbageIfNeeded();
   void markRoots();
   void markValue(const Value& value);
   void markObject(Obj* object);
@@ -76,10 +77,7 @@ class VM {
 template <typename T, typename... Args>
 T* VM::allocateObject(Args&&... args) {
   static_assert(std::is_base_of_v<Obj, T>, "allocateObject requires an Obj-derived type");
-  if (objectCount_ + 1 > nextGcObjectCount_) {
-    collectGarbage();
-    nextGcObjectCount_ = std::max<std::size_t>(objectCount_ * 2, 8);
-  }
+  collectGarbageIfNeeded();
 
   auto* object = new T(std::forward<Args>(args)...);
   object->next = objects_;

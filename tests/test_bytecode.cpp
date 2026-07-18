@@ -184,6 +184,87 @@ void testBytecodeAutoGcKeepsReachableGlobalStrings() {
   EXPECT(vm.objectCount() == 9);
 }
 
+void testBytecodeArrayLiteralUsesGcObject() {
+  minijs::Parser parser("[1, 2, 3];");
+  minijs::ExprPtr expression = parser.parse();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compile(*expression);
+
+  minijs::VM vm;
+  EXPECT(vm.run(chunk).toString() == "[1, 2, 3]");
+  EXPECT(vm.objectCount() == 1);
+}
+
+void testBytecodeGcKeepsStringInGcArray() {
+  minijs::Parser parser("let names = [\"Tom\"]; names;");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compileProgram(program);
+
+  minijs::VM vm;
+  EXPECT(vm.run(chunk).toString() == "[Tom]");
+  EXPECT(vm.objectCount() == 2);
+
+  vm.collectGarbage();
+  EXPECT(vm.objectCount() == 2);
+}
+
+void testBytecodeAutoGcKeepsArrayElementsDuringAllocation() {
+  minijs::Parser parser("let s0 = \"s0\";"
+                        "let s1 = \"s1\";"
+                        "let s2 = \"s2\";"
+                        "let s3 = \"s3\";"
+                        "let s4 = \"s4\";"
+                        "let s5 = \"s5\";"
+                        "let s6 = \"s6\";"
+                        "let s7 = \"s7\";"
+                        "let s8 = \"s8\";"
+                        "let s9 = \"s9\";"
+                        "let s10 = \"s10\";"
+                        "let s11 = \"s11\";"
+                        "let s12 = \"s12\";"
+                        "let s13 = \"s13\";"
+                        "let s14 = \"s14\";"
+                        "let names = [\"Tom\"];"
+                        "names;");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compileProgram(program);
+
+  minijs::VM vm;
+  EXPECT(vm.run(chunk).toString() == "[Tom]");
+  EXPECT(vm.objectCount() == 17);
+
+  vm.collectGarbage();
+  EXPECT(vm.objectCount() == 17);
+}
+
+void testBytecodeGcCollectsUnreachableArrayAndString() {
+  minijs::Parser parser("[\"Tom\"]; undefined;");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compileProgram(program);
+
+  minijs::VM vm;
+  EXPECT(vm.run(chunk).isUndefined());
+  EXPECT(vm.objectCount() == 2);
+
+  vm.collectGarbage();
+  EXPECT(vm.objectCount() == 0);
+}
+
 void testCompileStringConcatenation() {
   EXPECT(runBytecode("\"hello \" + \"world\";").toString() == "hello world");
   EXPECT(runBytecode("\"age: \" + 18;").toString() == "age: 18");
@@ -2187,6 +2268,10 @@ void runBytecodeTests() {
   testBytecodeGcKeepsStringInGlobalObjectField();
   testBytecodeAutoGcCollectsUnreachableStrings();
   testBytecodeAutoGcKeepsReachableGlobalStrings();
+  testBytecodeArrayLiteralUsesGcObject();
+  testBytecodeGcKeepsStringInGcArray();
+  testBytecodeAutoGcKeepsArrayElementsDuringAllocation();
+  testBytecodeGcCollectsUnreachableArrayAndString();
   testCompileStringConcatenation();
   testCompileComparisonExpressions();
   testCompileLogicalNot();

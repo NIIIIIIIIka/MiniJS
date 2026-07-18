@@ -7,6 +7,7 @@
 #include "minijs/ast.h"
 #include "minijs/bytecode_closure.h"
 #include "minijs/bytecode_function.h"
+#include "minijs/gc_object.h"
 #include "minijs/object.h"
 #include "minijs/runtime_error.h"
 
@@ -42,6 +43,8 @@ Value::Value(std::unordered_map<std::string, Value> properties)
 Value::Value(std::string string) : value_type_(ValueType::String), string_(std::move(string)) {}
 
 Value::Value(ObjString* string) : value_type_(ValueType::GcString), gc_string_(string) {}
+
+Value::Value(ObjArray* array) : value_type_(ValueType::GcArray), gc_array_(array) {}
 
 Value::Value(std::shared_ptr<BytecodeFunction> function)
     : value_type_(ValueType::BytecodeFunction), bytecode_function_(std::move(function)) {}
@@ -93,6 +96,13 @@ ObjString* Value::asGcString() const {
   return gc_string_;
 }
 
+ObjArray* Value::asGcArray() const {
+  if (!isGcArray()) {
+    throw RuntimeError("value is not a GC array");
+  }
+  return gc_array_;
+}
+
 const FunctionValue& Value::asFunction() const {
   if (!isFunction()) {
     throw RuntimeError("value is not a function");
@@ -104,12 +114,18 @@ const std::vector<Value>& Value::asArray() const {
   if (!isArray()) {
     throw RuntimeError("value is not an array");
   }
+  if (value_type_ == ValueType::GcArray) {
+    return gc_array_->elements;
+  }
   return *array_;
 }
 
 std::vector<Value>& Value::asArray() {
   if (!isArray()) {
     throw RuntimeError("value is not an array");
+  }
+  if (value_type_ == ValueType::GcArray) {
+    return gc_array_->elements;
   }
   return *array_;
 }
@@ -229,13 +245,15 @@ std::string Value::toString() const {
         return "<bound method>";
       }
       return "<bound method " + bound_method_->method.declaration->name() + ">";
-    case ValueType::Array: {
+    case ValueType::Array:
+    case ValueType::GcArray: {
       std::string result = "[";
-      for (std::size_t i = 0; i < array_->size(); ++i) {
+      const std::vector<Value>& elements = asArray();
+      for (std::size_t i = 0; i < elements.size(); ++i) {
         if (i != 0) {
           result += ", ";
         }
-        result += (*array_)[i].toString();
+        result += elements[i].toString();
       }
       result += "]";
       return result;
@@ -264,6 +282,7 @@ bool Value::isTruthy() const {
     case ValueType::Function:
     case ValueType::NativeFunction:
     case ValueType::Array:
+    case ValueType::GcArray:
     case ValueType::Object:
     case ValueType::BytecodeFunction:
     case ValueType::BytecodeClosure:
@@ -297,7 +316,9 @@ bool Value::isBoolean() const { return value_type_ == ValueType::Boolean; }
 
 bool Value::isFunction() const { return value_type_ == ValueType::Function; }
 
-bool Value::isArray() const { return value_type_ == ValueType::Array; }
+bool Value::isArray() const {
+  return value_type_ == ValueType::Array || value_type_ == ValueType::GcArray;
+}
 
 bool Value::isString() const {
   return value_type_ == ValueType::String || value_type_ == ValueType::GcString;
@@ -329,6 +350,8 @@ bool Value::isBoundMethod() const { return value_type_ == ValueType::Interpreter
 
 bool Value::isGcString() const { return value_type_ == ValueType::GcString; }
 
+bool Value::isGcArray() const { return value_type_ == ValueType::GcArray; }
+
 bool Value::equals(const Value& other) const {
   if (isString() && other.isString()) {
     return asString() == other.asString();
@@ -352,6 +375,8 @@ bool Value::equals(const Value& other) const {
       return true;
     case ValueType::Array:
       return array_ == other.array_;
+    case ValueType::GcArray:
+      return gc_array_ == other.gc_array_;
     case ValueType::Object:
       return object_ == other.object_;
     case ValueType::Function:

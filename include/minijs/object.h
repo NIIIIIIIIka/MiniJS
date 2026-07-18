@@ -21,6 +21,7 @@ enum class ObjType {
 // 所有 GC 堆对象共享的头部。next 用于挂入 VM 的对象链表。
 struct Obj {
   explicit Obj(ObjType type);
+  virtual ~Obj() = default;
 
   ObjType type;
   bool marked = false;
