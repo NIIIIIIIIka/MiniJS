@@ -138,6 +138,52 @@ void testBytecodeGcKeepsStringInGlobalObjectField() {
   EXPECT(vm.objectCount() == 1);
 }
 
+void testBytecodeAutoGcCollectsUnreachableStrings() {
+  minijs::Parser parser("\"s0\";"
+                        "\"s1\";"
+                        "\"s2\";"
+                        "\"s3\";"
+                        "\"s4\";"
+                        "\"s5\";"
+                        "\"s6\";"
+                        "\"s7\";"
+                        "\"s8\";"
+                        "\"s9\";");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compileProgram(program);
+
+  minijs::VM vm;
+  EXPECT(vm.run(chunk).toString() == "s9");
+  EXPECT(vm.objectCount() == 2);
+}
+
+void testBytecodeAutoGcKeepsReachableGlobalStrings() {
+  minijs::Parser parser("let s0 = \"s0\";"
+                        "let s1 = \"s1\";"
+                        "let s2 = \"s2\";"
+                        "let s3 = \"s3\";"
+                        "let s4 = \"s4\";"
+                        "let s5 = \"s5\";"
+                        "let s6 = \"s6\";"
+                        "let s7 = \"s7\";"
+                        "let s8 = \"s8\";"
+                        "s0;");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compileProgram(program);
+
+  minijs::VM vm;
+  EXPECT(vm.run(chunk).toString() == "s0");
+  EXPECT(vm.objectCount() == 9);
+}
+
 void testCompileStringConcatenation() {
   EXPECT(runBytecode("\"hello \" + \"world\";").toString() == "hello world");
   EXPECT(runBytecode("\"age: \" + 18;").toString() == "age: 18");
@@ -2139,6 +2185,8 @@ void runBytecodeTests() {
   testBytecodeGcCollectsUnreachableStringConstant();
   testBytecodeGcKeepsGlobalString();
   testBytecodeGcKeepsStringInGlobalObjectField();
+  testBytecodeAutoGcCollectsUnreachableStrings();
+  testBytecodeAutoGcKeepsReachableGlobalStrings();
   testCompileStringConcatenation();
   testCompileComparisonExpressions();
   testCompileLogicalNot();

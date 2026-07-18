@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <memory>
 #include <string>
@@ -65,6 +66,8 @@ class VM {
   std::unordered_map<std::string, Value> globals_;
   // 未来 GC 管理的堆对象链表。当前阶段只建立链表所有权入口。
   Obj* objects_ = nullptr;
+  std::size_t objectCount_ = 0;
+  std::size_t nextGcObjectCount_ = 8;
 
   template <typename T, typename... Args>
   T* allocateObject(Args&&... args);
@@ -73,9 +76,15 @@ class VM {
 template <typename T, typename... Args>
 T* VM::allocateObject(Args&&... args) {
   static_assert(std::is_base_of_v<Obj, T>, "allocateObject requires an Obj-derived type");
+  if (objectCount_ + 1 > nextGcObjectCount_) {
+    collectGarbage();
+    nextGcObjectCount_ = std::max<std::size_t>(objectCount_ * 2, 8);
+  }
+
   auto* object = new T(std::forward<Args>(args)...);
   object->next = objects_;
   objects_ = object;
+  ++objectCount_;
   return object;
 }
 }  // namespace minijs

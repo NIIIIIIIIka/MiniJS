@@ -226,6 +226,7 @@ VM::~VM() {
     delete object;
     object = next;
   }
+  objectCount_ = 0;
 }
 
 void VM::defineBuiltin(std::string name, std::size_t arity, NativeFn function) {
@@ -795,11 +796,7 @@ Value VM::run(const Chunk& chunk) {
 }
 
 std::size_t VM::objectCount() const {
-  std::size_t count = 0;
-  for (Obj* object = objects_; object != nullptr; object = object->next) {
-    ++count;
-  }
-  return count;
+  return objectCount_;
 }
 
 Value VM::copyOutValue(const Value& value) const {
@@ -973,7 +970,7 @@ void VM::sweep() {
     } else {
       previous->next = object;
     }
-
+    --objectCount_;
     delete unreached;
   }
 }
