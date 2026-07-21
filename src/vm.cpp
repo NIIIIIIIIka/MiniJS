@@ -696,13 +696,15 @@ Value VM::run(const Chunk& chunk) {
         const std::uint8_t namesIndex = chunk.readByte(frame.ip++);
         const std::vector<Value>& names = chunk.constant(namesIndex).asArray();
 
+        collectGarbageIfNeeded();
+
         std::unordered_map<std::string, Value> properties;
         for (std::size_t i = names.size(); i > 0; --i) {
           Value value = pop();
           const std::string& name = names[i - 1].asString();
           properties[name] = value;
         }
-        push(Value(std::move(properties)));
+        push(Value(allocateObject<ObjObject>(std::move(properties))));
         break;
       }
       case Opcode::GetProperty: {
@@ -937,6 +939,19 @@ void VM::markValue(const Value& value) {
     markObject(array);
     for (const Value& element : array->elements) {
       markValue(element);
+    }
+    return;
+  }
+
+  if (value.isGcObject()) {
+    ObjObject* object = value.asGcObject();
+    if (object->marked) {
+      return;
+    }
+
+    markObject(object);
+    for (const auto& property : object->properties) {
+      markValue(property.second);
     }
     return;
   }

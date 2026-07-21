@@ -46,6 +46,8 @@ Value::Value(ObjString* string) : value_type_(ValueType::GcString), gc_string_(s
 
 Value::Value(ObjArray* array) : value_type_(ValueType::GcArray), gc_array_(array) {}
 
+Value::Value(ObjObject* object) : value_type_(ValueType::GcObject), gc_object_(object) {}
+
 Value::Value(std::shared_ptr<BytecodeFunction> function)
     : value_type_(ValueType::BytecodeFunction), bytecode_function_(std::move(function)) {}
 
@@ -103,6 +105,13 @@ ObjArray* Value::asGcArray() const {
   return gc_array_;
 }
 
+ObjObject* Value::asGcObject() const {
+  if (!isGcObject()) {
+    throw RuntimeError("value is not a GC object");
+  }
+  return gc_object_;
+}
+
 const FunctionValue& Value::asFunction() const {
   if (!isFunction()) {
     throw RuntimeError("value is not a function");
@@ -134,12 +143,18 @@ const std::unordered_map<std::string, Value>& Value::asObject() const {
   if (!isObject()) {
     throw RuntimeError("value is not an object");
   }
+  if (value_type_ == ValueType::GcObject) {
+    return gc_object_->properties;
+  }
   return *object_;
 }
 
 std::unordered_map<std::string, Value>& Value::asObject() {
   if (!isObject()) {
     throw RuntimeError("value is not an object");
+  }
+  if (value_type_ == ValueType::GcObject) {
+    return gc_object_->properties;
   }
   return *object_;
 }
@@ -259,6 +274,7 @@ std::string Value::toString() const {
       return result;
     }
     case ValueType::Object:
+    case ValueType::GcObject:
       return "[object Object]";
     case ValueType::String:
       return string_;
@@ -284,6 +300,7 @@ bool Value::isTruthy() const {
     case ValueType::Array:
     case ValueType::GcArray:
     case ValueType::Object:
+    case ValueType::GcObject:
     case ValueType::BytecodeFunction:
     case ValueType::BytecodeClosure:
     case ValueType::BytecodeClass:
@@ -324,7 +341,9 @@ bool Value::isString() const {
   return value_type_ == ValueType::String || value_type_ == ValueType::GcString;
 }
 
-bool Value::isObject() const { return value_type_ == ValueType::Object; }
+bool Value::isObject() const {
+  return value_type_ == ValueType::Object || value_type_ == ValueType::GcObject;
+}
 
 bool Value::isBuiltinFunction() const { return isNativeFunction(); }
 
@@ -351,6 +370,8 @@ bool Value::isBoundMethod() const { return value_type_ == ValueType::Interpreter
 bool Value::isGcString() const { return value_type_ == ValueType::GcString; }
 
 bool Value::isGcArray() const { return value_type_ == ValueType::GcArray; }
+
+bool Value::isGcObject() const { return value_type_ == ValueType::GcObject; }
 
 bool Value::equals(const Value& other) const {
   if (isString() && other.isString()) {
@@ -379,6 +400,8 @@ bool Value::equals(const Value& other) const {
       return gc_array_ == other.gc_array_;
     case ValueType::Object:
       return object_ == other.object_;
+    case ValueType::GcObject:
+      return gc_object_ == other.gc_object_;
     case ValueType::Function:
       return function_.declaration == other.function_.declaration &&
              function_.closure == other.function_.closure;
