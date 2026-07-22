@@ -931,28 +931,12 @@ void VM::markValue(const Value& value) {
   }
 
   if (value.isGcArray()) {
-    ObjArray* array = value.asGcArray();
-    if (array->marked) {
-      return;
-    }
-
-    markObject(array);
-    for (const Value& element : array->elements) {
-      markValue(element);
-    }
+    markObject(value.asGcArray());
     return;
   }
 
   if (value.isGcObject()) {
-    ObjObject* object = value.asGcObject();
-    if (object->marked) {
-      return;
-    }
-
-    markObject(object);
-    for (const auto& property : object->properties) {
-      markValue(property.second);
-    }
+    markObject(value.asGcObject());
     return;
   }
 
@@ -988,6 +972,36 @@ void VM::markObject(Obj* object) {
   }
 
   object->marked = true;
+  markObjectChildren(object);
+}
+
+void VM::markObjectChildren(Obj* object) {
+  switch (object->type) {
+    case ObjType::String:
+      break;
+    case ObjType::Array: {
+      auto* array = static_cast<ObjArray*>(object);
+      for (const Value& element : array->elements) {
+        markValue(element);
+      }
+      break;
+    }
+    case ObjType::Object: {
+      auto* objectValue = static_cast<ObjObject*>(object);
+      for (const auto& property : objectValue->properties) {
+        markValue(property.second);
+      }
+      break;
+    }
+    case ObjType::Function:
+    case ObjType::Closure:
+    case ObjType::Upvalue:
+    case ObjType::Class:
+    case ObjType::Instance:
+    case ObjType::BoundMethod:
+    case ObjType::NativeFunction:
+      break;
+  }
 }
 
 void VM::sweep() {

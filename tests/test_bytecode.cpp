@@ -346,6 +346,23 @@ void testBytecodeAutoGcKeepsObjectPropertiesDuringAllocation() {
   EXPECT(vm.objectCount() == 17);
 }
 
+void testBytecodeGcMarksNestedObjectGraph() {
+  minijs::Parser parser("let value = { names: [\"Tom\"] }; value;");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compileProgram(program);
+
+  minijs::VM vm;
+  EXPECT(vm.run(chunk).isObject());
+  EXPECT(vm.objectCount() == 3);
+
+  vm.collectGarbage();
+  EXPECT(vm.objectCount() == 3);
+}
+
 void testCompileStringConcatenation() {
   EXPECT(runBytecode("\"hello \" + \"world\";").toString() == "hello world");
   EXPECT(runBytecode("\"age: \" + 18;").toString() == "age: 18");
@@ -2357,6 +2374,7 @@ void runBytecodeTests() {
   testBytecodeGcKeepsStringInGcObject();
   testBytecodeGcCollectsUnreachableObjectAndString();
   testBytecodeAutoGcKeepsObjectPropertiesDuringAllocation();
+  testBytecodeGcMarksNestedObjectGraph();
   testCompileStringConcatenation();
   testCompileComparisonExpressions();
   testCompileLogicalNot();

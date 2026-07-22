@@ -58,6 +58,7 @@ class VM {
   void markRoots();
   void markValue(const Value& value);
   void markObject(Obj* object);
+  void markObjectChildren(Obj* object);
   void sweep();
 
   // 操作数栈，同时承载当前调用帧的参数和局部变量槽位。
