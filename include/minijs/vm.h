@@ -59,6 +59,11 @@ class VM {
   void markValue(const Value& value);
   void markObject(Obj* object);
   void markObjectChildren(Obj* object);
+  void markBytecodeClosure(const std::shared_ptr<BytecodeClosure>& closure);
+  void markBytecodeClass(const std::shared_ptr<BytecodeClass>& klass);
+  void markBytecodeInstance(const std::shared_ptr<BytecodeInstance>& instance);
+  void markBytecodeBoundMethod(const std::shared_ptr<BytecodeBoundMethod>& method);
+  void markUpvalue(const std::shared_ptr<Upvalue>& upvalue);
   void sweep();
 
   // 操作数栈，同时承载当前调用帧的参数和局部变量槽位。

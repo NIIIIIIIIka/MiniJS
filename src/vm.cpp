@@ -906,11 +906,7 @@ void VM::markRoots() {
   }
 
   for (const auto& upvalue : openUpvalues_) {
-    if (upvalue->isClosed) {
-      markValue(upvalue->closed);
-    } else if (upvalue->stackIndex < stack_.size()) {
-      markValue(stack_[upvalue->stackIndex]);
-    }
+    markUpvalue(upvalue);
   }
 
 }
@@ -954,15 +950,23 @@ void VM::markValue(const Value& value) {
     return;
   }
 
+  if (value.isBytecodeClosure()) {
+    markBytecodeClosure(value.asBytecodeClosure());
+    return;
+  }
+
+  if (value.isBytecodeClass()) {
+    markBytecodeClass(value.asBytecodeClass());
+    return;
+  }
+
   if (value.isBytecodeInstance()) {
-    for (const auto& field : value.asBytecodeInstance()->fields) {
-      markValue(field.second);
-    }
+    markBytecodeInstance(value.asBytecodeInstance());
     return;
   }
 
   if (value.isBytecodeBoundMethod()) {
-    markValue(Value(value.asBytecodeBoundMethod()->receiver));
+    markBytecodeBoundMethod(value.asBytecodeBoundMethod());
   }
 }
 
@@ -1001,6 +1005,65 @@ void VM::markObjectChildren(Obj* object) {
     case ObjType::BoundMethod:
     case ObjType::NativeFunction:
       break;
+  }
+}
+
+void VM::markBytecodeClosure(const std::shared_ptr<BytecodeClosure>& closure) {
+  if (closure == nullptr) {
+    return;
+  }
+
+  for (const auto& upvalue : closure->upvalues) {
+    markUpvalue(upvalue);
+  }
+}
+
+void VM::markBytecodeClass(const std::shared_ptr<BytecodeClass>& klass) {
+  if (klass == nullptr) {
+    return;
+  }
+
+  markBytecodeClass(klass->superclass);
+
+  for (const auto& method : klass->methods) {
+    markBytecodeClosure(method.second);
+  }
+
+  for (const auto& method : klass->staticMethods) {
+    markBytecodeClosure(method.second);
+  }
+}
+
+void VM::markBytecodeInstance(const std::shared_ptr<BytecodeInstance>& instance) {
+  if (instance == nullptr) {
+    return;
+  }
+
+  markBytecodeClass(instance->klass);
+
+  for (const auto& field : instance->fields) {
+    markValue(field.second);
+  }
+}
+
+void VM::markBytecodeBoundMethod(const std::shared_ptr<BytecodeBoundMethod>& method) {
+  if (method == nullptr) {
+    return;
+  }
+
+  markBytecodeInstance(method->receiver);
+  markBytecodeClosure(method->method);
+}
+
+void VM::markUpvalue(const std::shared_ptr<Upvalue>& upvalue) {
+  if (upvalue == nullptr) {
+    return;
+  }
+
+  if (upvalue->isClosed) {
+    markValue(upvalue->closed);
+  } else if (upvalue->stackIndex < stack_.size()) {
+    markValue(stack_[upvalue->stackIndex]);
   }
 }
 

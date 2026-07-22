@@ -363,6 +363,73 @@ void testBytecodeGcMarksNestedObjectGraph() {
   EXPECT(vm.objectCount() == 3);
 }
 
+void testBytecodeGcMarksClosedUpvalueValue() {
+  minijs::Parser parser("function make() {"
+                        "  let name = \"Tom\";"
+                        "  function get() { return name; }"
+                        "  return get;"
+                        "}"
+                        "let get = make();"
+                        "get();");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compileProgram(program);
+
+  minijs::VM vm;
+  EXPECT(vm.run(chunk).toString() == "Tom");
+  EXPECT(vm.objectCount() == 1);
+
+  vm.collectGarbage();
+  EXPECT(vm.objectCount() == 1);
+}
+
+void testBytecodeGcMarksClassMethodClosureUpvalues() {
+  minijs::Parser parser("function makeBox() {"
+                        "  let prefix = \"hi\";"
+                        "  class Box { get() { return prefix; } }"
+                        "  return Box;"
+                        "}"
+                        "let Box = makeBox();"
+                        "let b = Box();"
+                        "b.get();");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compileProgram(program);
+
+  minijs::VM vm;
+  EXPECT(vm.run(chunk).toString() == "hi");
+  EXPECT(vm.objectCount() == 1);
+
+  vm.collectGarbage();
+  EXPECT(vm.objectCount() == 1);
+}
+
+void testBytecodeGcMarksInstanceFieldObjectGraph() {
+  minijs::Parser parser("class Box {}"
+                        "let b = Box();"
+                        "b.value = { names: [\"Tom\"] };"
+                        "b;");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compileProgram(program);
+
+  minijs::VM vm;
+  EXPECT(vm.run(chunk).isBytecodeInstance());
+  EXPECT(vm.objectCount() == 3);
+
+  vm.collectGarbage();
+  EXPECT(vm.objectCount() == 3);
+}
+
 void testCompileStringConcatenation() {
   EXPECT(runBytecode("\"hello \" + \"world\";").toString() == "hello world");
   EXPECT(runBytecode("\"age: \" + 18;").toString() == "age: 18");
@@ -2375,6 +2442,9 @@ void runBytecodeTests() {
   testBytecodeGcCollectsUnreachableObjectAndString();
   testBytecodeAutoGcKeepsObjectPropertiesDuringAllocation();
   testBytecodeGcMarksNestedObjectGraph();
+  testBytecodeGcMarksClosedUpvalueValue();
+  testBytecodeGcMarksClassMethodClosureUpvalues();
+  testBytecodeGcMarksInstanceFieldObjectGraph();
   testCompileStringConcatenation();
   testCompileComparisonExpressions();
   testCompileLogicalNot();
