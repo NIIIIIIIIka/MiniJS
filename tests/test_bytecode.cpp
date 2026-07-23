@@ -404,10 +404,89 @@ void testBytecodeGcMarksClassMethodClosureUpvalues() {
 
   minijs::VM vm;
   EXPECT(vm.run(chunk).toString() == "hi");
+  EXPECT(vm.objectCount() == 2);
+
+  vm.collectGarbage();
+  EXPECT(vm.objectCount() == 2);
+}
+
+void testBytecodeClassInstanceUsesGcObject() {
+  minijs::Parser parser("class Box {} Box();");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compileProgram(program);
+
+  minijs::VM vm;
+  EXPECT(vm.run(chunk).isBytecodeInstance());
   EXPECT(vm.objectCount() == 1);
 
   vm.collectGarbage();
-  EXPECT(vm.objectCount() == 1);
+  EXPECT(vm.objectCount() == 0);
+}
+
+void testBytecodeGcKeepsStringInInstanceField() {
+  minijs::Parser parser("class Box {}"
+                        "let b = Box();"
+                        "b.name = \"Tom\";"
+                        "b;");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compileProgram(program);
+
+  minijs::VM vm;
+  EXPECT(vm.run(chunk).isBytecodeInstance());
+  EXPECT(vm.objectCount() == 2);
+
+  vm.collectGarbage();
+  EXPECT(vm.objectCount() == 2);
+}
+
+void testBytecodeGcCollectsUnreachableInstanceAndField() {
+  minijs::Parser parser("class Box {}"
+                        "let b = Box();"
+                        "b.name = \"Tom\";"
+                        "b = undefined;"
+                        "b;");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compileProgram(program);
+
+  minijs::VM vm;
+  EXPECT(vm.run(chunk).isUndefined());
+  EXPECT(vm.objectCount() == 2);
+
+  vm.collectGarbage();
+  EXPECT(vm.objectCount() == 0);
+}
+
+void testBytecodeGcBoundMethodKeepsReceiverInstance() {
+  minijs::Parser parser("class Box { get() { return this.name; } }"
+                        "let b = Box();"
+                        "b.name = \"Tom\";"
+                        "let get = b.get;"
+                        "get();");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compileProgram(program);
+
+  minijs::VM vm;
+  EXPECT(vm.run(chunk).toString() == "Tom");
+  EXPECT(vm.objectCount() == 2);
+
+  vm.collectGarbage();
+  EXPECT(vm.objectCount() == 2);
 }
 
 void testBytecodeGcMarksInstanceFieldObjectGraph() {
@@ -424,10 +503,10 @@ void testBytecodeGcMarksInstanceFieldObjectGraph() {
 
   minijs::VM vm;
   EXPECT(vm.run(chunk).isBytecodeInstance());
-  EXPECT(vm.objectCount() == 3);
+  EXPECT(vm.objectCount() == 4);
 
   vm.collectGarbage();
-  EXPECT(vm.objectCount() == 3);
+  EXPECT(vm.objectCount() == 4);
 }
 
 void testCompileStringConcatenation() {
@@ -2444,6 +2523,10 @@ void runBytecodeTests() {
   testBytecodeGcMarksNestedObjectGraph();
   testBytecodeGcMarksClosedUpvalueValue();
   testBytecodeGcMarksClassMethodClosureUpvalues();
+  testBytecodeClassInstanceUsesGcObject();
+  testBytecodeGcKeepsStringInInstanceField();
+  testBytecodeGcCollectsUnreachableInstanceAndField();
+  testBytecodeGcBoundMethodKeepsReceiverInstance();
   testBytecodeGcMarksInstanceFieldObjectGraph();
   testCompileStringConcatenation();
   testCompileComparisonExpressions();

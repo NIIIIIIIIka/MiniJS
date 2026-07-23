@@ -11,6 +11,7 @@ namespace minijs {
 struct ObjString;
 struct ObjArray;
 struct ObjObject;
+struct ObjInstance;
 struct BytecodeFunction;
 struct BytecodeClosure;
 struct BytecodeClass;
@@ -61,6 +62,7 @@ enum class ValueType {
   GcString,
   GcArray,
   GcObject,
+  GcInstance,
 };
 
 // MiniJS 的动态运行时值。
@@ -100,6 +102,9 @@ class Value {
 
   // 创建 VM 管理的 GC 对象值。
   explicit Value(ObjObject* object);
+
+  // 创建 VM 管理的字节码实例值。
+  explicit Value(ObjInstance* instance);
 
   // 创建字节码函数值。
   explicit Value(std::shared_ptr<BytecodeFunction> function);
@@ -142,6 +147,9 @@ class Value {
 
   // 返回 GC 对象；当前值不是 GC 对象时抛出运行时错误。
   ObjObject* asGcObject() const;
+
+  // 返回 GC 字节码实例；当前值不是 GC 字节码实例时抛出运行时错误。
+  ObjInstance* asGcInstance() const;
 
   // 返回函数载荷；调用方应保证当前值是函数。
   const FunctionValue& asFunction() const;
@@ -257,6 +265,9 @@ class Value {
   // 返回当前值是否为 VM 管理的 GC 对象。
   bool isGcObject() const;
 
+  // 返回当前值是否为 VM 管理的字节码实例。
+  bool isGcInstance() const;
+
   // 比较两个运行时值是否相等；对象、数组和函数按引用身份比较。
   bool equals(const Value& other) const;
 
@@ -283,6 +294,7 @@ class Value {
   ObjString* gc_string_ = nullptr;
   ObjArray* gc_array_ = nullptr;
   ObjObject* gc_object_ = nullptr;
+  ObjInstance* gc_instance_ = nullptr;
 };
 
 // 字节码 VM 使用的类运行时载荷，保存类名和方法表。
@@ -301,7 +313,7 @@ struct BytecodeInstance {
 
 // 字节码 VM 使用的绑定方法载荷，保存 receiver 和方法闭包。
 struct BytecodeBoundMethod {
-  std::shared_ptr<BytecodeInstance> receiver;
+  Value receiver;
   std::shared_ptr<BytecodeClosure> method;
 };
 

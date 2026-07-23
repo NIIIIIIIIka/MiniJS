@@ -48,6 +48,9 @@ Value::Value(ObjArray* array) : value_type_(ValueType::GcArray), gc_array_(array
 
 Value::Value(ObjObject* object) : value_type_(ValueType::GcObject), gc_object_(object) {}
 
+Value::Value(ObjInstance* instance)
+    : value_type_(ValueType::GcInstance), gc_instance_(instance) {}
+
 Value::Value(std::shared_ptr<BytecodeFunction> function)
     : value_type_(ValueType::BytecodeFunction), bytecode_function_(std::move(function)) {}
 
@@ -110,6 +113,13 @@ ObjObject* Value::asGcObject() const {
     throw RuntimeError("value is not a GC object");
   }
   return gc_object_;
+}
+
+ObjInstance* Value::asGcInstance() const {
+  if (!isGcInstance()) {
+    throw RuntimeError("value is not a GC instance");
+  }
+  return gc_instance_;
 }
 
 const FunctionValue& Value::asFunction() const {
@@ -249,6 +259,8 @@ std::string Value::toString() const {
       return "<class " + bytecode_class_->name + ">";
     case ValueType::BytecodeInstance:
       return "<" + bytecode_instance_->klass->name + " instance>";
+    case ValueType::GcInstance:
+      return "<" + gc_instance_->klass->name + " instance>";
     case ValueType::BytecodeBoundMethod:
       return "<bound method " + bytecode_bound_method_->method->function->name + ">";
     case ValueType::InterpreterClass:
@@ -305,6 +317,7 @@ bool Value::isTruthy() const {
     case ValueType::BytecodeClosure:
     case ValueType::BytecodeClass:
     case ValueType::BytecodeInstance:
+    case ValueType::GcInstance:
     case ValueType::BytecodeBoundMethod:
     case ValueType::InterpreterClass:
     case ValueType::InterpreterInstance:
@@ -373,6 +386,8 @@ bool Value::isGcArray() const { return value_type_ == ValueType::GcArray; }
 
 bool Value::isGcObject() const { return value_type_ == ValueType::GcObject; }
 
+bool Value::isGcInstance() const { return value_type_ == ValueType::GcInstance; }
+
 bool Value::equals(const Value& other) const {
   if (isString() && other.isString()) {
     return asString() == other.asString();
@@ -413,6 +428,8 @@ bool Value::equals(const Value& other) const {
       return bytecode_class_ == other.bytecode_class_;
     case ValueType::BytecodeInstance:
       return bytecode_instance_ == other.bytecode_instance_;
+    case ValueType::GcInstance:
+      return gc_instance_ == other.gc_instance_;
     case ValueType::BytecodeBoundMethod:
       return bytecode_bound_method_ == other.bytecode_bound_method_;
     case ValueType::InterpreterClass:

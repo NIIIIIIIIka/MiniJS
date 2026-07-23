@@ -10,4 +10,7 @@ ObjArray::ObjArray(std::vector<Value> elements)
 ObjObject::ObjObject(std::unordered_map<std::string, Value> properties)
     : Obj(ObjType::Object), properties(std::move(properties)) {}
 
+ObjInstance::ObjInstance(std::shared_ptr<BytecodeClass> klass)
+    : Obj(ObjType::Instance), klass(std::move(klass)) {}
+
 }  // namespace minijs
