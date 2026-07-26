@@ -49,7 +49,7 @@ void expectArity(std::size_t actual, std::size_t expected, const std::string& na
   }
 }
 
-std::shared_ptr<BytecodeClosure> findMethod(const std::shared_ptr<BytecodeClass>& klass,
+std::shared_ptr<BytecodeClosure> findMethod(const ObjClass* klass,
                                             const std::string& name) {
   for (auto current = klass; current != nullptr; current = current->superclass) {
     const auto method = current->methods.find(name);
@@ -60,7 +60,7 @@ std::shared_ptr<BytecodeClosure> findMethod(const std::shared_ptr<BytecodeClass>
   return nullptr;
 }
 
-std::shared_ptr<BytecodeClosure> findStaticMethod(const std::shared_ptr<BytecodeClass>& klass,
+std::shared_ptr<BytecodeClosure> findStaticMethod(const ObjClass* klass,
                                                   const std::string& name) {
   for (auto current = klass; current != nullptr; current = current->superclass) {
     const auto method = current->staticMethods.find(name);
@@ -71,15 +71,28 @@ std::shared_ptr<BytecodeClosure> findStaticMethod(const std::shared_ptr<Bytecode
   return nullptr;
 }
 
+std::shared_ptr<BytecodeClass> copyOutClass(const ObjClass* klass) {
+  if (klass == nullptr) {
+    return nullptr;
+  }
+
+  auto copy = std::make_shared<BytecodeClass>();
+  copy->name = klass->name;
+  copy->superclass = copyOutClass(klass->superclass);
+  copy->methods = klass->methods;
+  copy->staticMethods = klass->staticMethods;
+  return copy;
+}
+
 bool isBytecodeInstanceValue(const Value& value) {
   return value.isBytecodeInstance() || value.isGcInstance();
 }
 
-std::shared_ptr<BytecodeClass> bytecodeInstanceClass(const Value& value) {
+ObjClass* bytecodeInstanceClass(const Value& value) {
   if (value.isGcInstance()) {
     return value.asGcInstance()->klass;
   }
-  return value.asBytecodeInstance()->klass;
+  return nullptr;
 }
 
 const std::unordered_map<std::string, Value>& bytecodeInstanceFields(const Value& value) {
@@ -146,7 +159,7 @@ VM::VM() {
     if (value.isObject()) {
       return Value(std::string("object"));
     }
-    if (value.isBytecodeClass()) {
+    if (value.isBytecodeClass() || value.isGcClass()) {
       return Value(std::string("class"));
     }
     if (isBytecodeInstanceValue(value)) {
@@ -462,8 +475,8 @@ Value VM::run(const Chunk& chunk) {
           break;
         }
 
-        if (callee.isBytecodeClass()) {
-          auto klass = callee.asBytecodeClass();
+        if (callee.isGcClass()) {
+          auto klass = callee.asGcClass();
           auto init = findMethod(klass, "init");
           if (init == nullptr && argCount != 0) {
             throw RuntimeError("class " + klass->name + " expects 0 arguments");
@@ -518,9 +531,7 @@ Value VM::run(const Chunk& chunk) {
       }
       case Opcode::Class: {
         const std::uint8_t nameIndex = chunk.readByte(frame.ip++);
-        auto klass = std::make_shared<BytecodeClass>();
-        klass->name = chunk.constant(nameIndex).asString();
-        push(Value(klass));
+        push(Value(allocateObject<ObjClass>(chunk.constant(nameIndex).asString())));
         break;
       }
       case Opcode::Method: {
@@ -528,7 +539,7 @@ Value VM::run(const Chunk& chunk) {
         const std::string& name = chunk.constant(nameIndex).asString();
         Value method = pop();
         Value klass = peek();
-        klass.asBytecodeClass()->methods[name] = method.asBytecodeClosure();
+        klass.asGcClass()->methods[name] = method.asBytecodeClosure();
         break;
       }
       case Opcode::StaticMethod: {
@@ -536,20 +547,20 @@ Value VM::run(const Chunk& chunk) {
         const std::string& name = chunk.constant(nameIndex).asString();
         Value method = pop();
         Value klass = peek();
-        klass.asBytecodeClass()->staticMethods[name] = method.asBytecodeClosure();
+        klass.asGcClass()->staticMethods[name] = method.asBytecodeClosure();
         break;
       }
       case Opcode::Inherit: {
         Value superclass = pop();
         Value subclass = peek();
-        if (!superclass.isBytecodeClass()) {
+        if (!superclass.isGcClass()) {
           throw RuntimeError("superclass must be a class");
         }
-        if (!subclass.isBytecodeClass()) {
+        if (!subclass.isGcClass()) {
           throw RuntimeError("subclass must be a class");
         }
 
-        subclass.asBytecodeClass()->superclass = superclass.asBytecodeClass();
+        subclass.asGcClass()->superclass = superclass.asGcClass();
         break;
       }
       case Opcode::Closure: {
@@ -617,8 +628,8 @@ Value VM::run(const Chunk& chunk) {
           break;
         }
 
-        if (receiver.isBytecodeClass()) {
-          auto method = findStaticMethod(receiver.asBytecodeClass(), name);
+        if (receiver.isGcClass()) {
+          auto method = findStaticMethod(receiver.asGcClass(), name);
           if (method == nullptr) {
             throw RuntimeError("value has no method: " + name);
           }
@@ -676,14 +687,14 @@ Value VM::run(const Chunk& chunk) {
         const std::size_t superclassIndex = receiverIndex - 1;
         Value superclass = stack_[superclassIndex];
         Value receiver = stack_[receiverIndex];
-        if (!superclass.isBytecodeClass()) {
+        if (!superclass.isGcClass()) {
           throw RuntimeError("superclass must be a class");
         }
         if (!isBytecodeInstanceValue(receiver)) {
           throw RuntimeError("this must be an instance");
         }
 
-        auto method = findMethod(superclass.asBytecodeClass(), name);
+        auto method = findMethod(superclass.asGcClass(), name);
         if (method == nullptr) {
           throw RuntimeError("superclass has no method: " + name);
         }
@@ -788,8 +799,8 @@ Value VM::run(const Chunk& chunk) {
           break;
         }
 
-        if (object.isBytecodeClass()) {
-          auto method = findStaticMethod(object.asBytecodeClass(), name);
+        if (object.isGcClass()) {
+          auto method = findStaticMethod(object.asGcClass(), name);
           if (method != nullptr) {
             push(Value(method));
             break;
@@ -862,11 +873,15 @@ Value VM::copyOutValue(const Value& value) const {
 
   if (value.isGcInstance()) {
     auto instance = std::make_shared<BytecodeInstance>();
-    instance->klass = value.asGcInstance()->klass;
+    instance->klass = copyOutClass(value.asGcInstance()->klass);
     for (const auto& field : value.asGcInstance()->fields) {
       instance->fields[field.first] = copyOutValue(field.second);
     }
     return Value(instance);
+  }
+
+  if (value.isGcClass()) {
+    return Value(copyOutClass(value.asGcClass()));
   }
 
   if (value.isGcBoundMethod()) {
@@ -996,6 +1011,11 @@ void VM::markValue(const Value& value) {
     return;
   }
 
+  if (value.isGcClass()) {
+    markObject(value.asGcClass());
+    return;
+  }
+
   if (value.isArray()) {
     for (const Value& element : value.asArray()) {
       markValue(element);
@@ -1060,10 +1080,21 @@ void VM::markObjectChildren(Obj* object) {
     case ObjType::Function:
     case ObjType::Closure:
     case ObjType::Upvalue:
-    case ObjType::Class:
+      break;
+    case ObjType::Class: {
+      auto* klass = static_cast<ObjClass*>(object);
+      markObject(klass->superclass);
+      for (const auto& method : klass->methods) {
+        markBytecodeClosure(method.second);
+      }
+      for (const auto& method : klass->staticMethods) {
+        markBytecodeClosure(method.second);
+      }
+      break;
+    }
     case ObjType::Instance: {
       auto* instance = static_cast<ObjInstance*>(object);
-      markBytecodeClass(instance->klass);
+      markObject(instance->klass);
       for (const auto& field : instance->fields) {
         markValue(field.second);
       }

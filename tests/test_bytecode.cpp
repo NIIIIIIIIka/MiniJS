@@ -404,10 +404,44 @@ void testBytecodeGcMarksClassMethodClosureUpvalues() {
 
   minijs::VM vm;
   EXPECT(vm.run(chunk).toString() == "hi");
-  EXPECT(vm.objectCount() == 2);
+  EXPECT(vm.objectCount() == 3);
 
   vm.collectGarbage();
-  EXPECT(vm.objectCount() == 2);
+  EXPECT(vm.objectCount() == 3);
+}
+
+void testBytecodeClassUsesGcObject() {
+  minijs::Parser parser("class Box {} Box;");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compileProgram(program);
+
+  minijs::VM vm;
+  EXPECT(vm.run(chunk).isBytecodeClass());
+  EXPECT(vm.objectCount() == 1);
+
+  vm.collectGarbage();
+  EXPECT(vm.objectCount() == 1);
+}
+
+void testBytecodeGcCollectsUnreachableClass() {
+  minijs::Parser parser("{ class Box {} } undefined;");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compileProgram(program);
+
+  minijs::VM vm;
+  EXPECT(vm.run(chunk).isUndefined());
+  EXPECT(vm.objectCount() == 1);
+
+  vm.collectGarbage();
+  EXPECT(vm.objectCount() == 0);
 }
 
 void testBytecodeClassInstanceUsesGcObject() {
@@ -421,10 +455,10 @@ void testBytecodeClassInstanceUsesGcObject() {
 
   minijs::VM vm;
   EXPECT(vm.run(chunk).isBytecodeInstance());
-  EXPECT(vm.objectCount() == 1);
+  EXPECT(vm.objectCount() == 2);
 
   vm.collectGarbage();
-  EXPECT(vm.objectCount() == 0);
+  EXPECT(vm.objectCount() == 1);
 }
 
 void testBytecodeGcKeepsStringInInstanceField() {
@@ -441,10 +475,10 @@ void testBytecodeGcKeepsStringInInstanceField() {
 
   minijs::VM vm;
   EXPECT(vm.run(chunk).isBytecodeInstance());
-  EXPECT(vm.objectCount() == 2);
+  EXPECT(vm.objectCount() == 3);
 
   vm.collectGarbage();
-  EXPECT(vm.objectCount() == 2);
+  EXPECT(vm.objectCount() == 3);
 }
 
 void testBytecodeGcCollectsUnreachableInstanceAndField() {
@@ -462,10 +496,10 @@ void testBytecodeGcCollectsUnreachableInstanceAndField() {
 
   minijs::VM vm;
   EXPECT(vm.run(chunk).isUndefined());
-  EXPECT(vm.objectCount() == 2);
+  EXPECT(vm.objectCount() == 3);
 
   vm.collectGarbage();
-  EXPECT(vm.objectCount() == 0);
+  EXPECT(vm.objectCount() == 1);
 }
 
 void testBytecodeGcBoundMethodKeepsReceiverInstance() {
@@ -483,10 +517,10 @@ void testBytecodeGcBoundMethodKeepsReceiverInstance() {
 
   minijs::VM vm;
   EXPECT(vm.run(chunk).toString() == "Tom");
-  EXPECT(vm.objectCount() == 3);
+  EXPECT(vm.objectCount() == 4);
 
   vm.collectGarbage();
-  EXPECT(vm.objectCount() == 3);
+  EXPECT(vm.objectCount() == 4);
 }
 
 void testBytecodeGcBoundMethodUsesGcObject() {
@@ -503,10 +537,10 @@ void testBytecodeGcBoundMethodUsesGcObject() {
 
   minijs::VM vm;
   EXPECT(vm.run(chunk).isBytecodeBoundMethod());
-  EXPECT(vm.objectCount() == 3);
+  EXPECT(vm.objectCount() == 4);
 
   vm.collectGarbage();
-  EXPECT(vm.objectCount() == 2);
+  EXPECT(vm.objectCount() == 3);
 }
 
 void testBytecodeGcBoundMethodKeepsReceiverAfterOriginalVariableCleared() {
@@ -525,10 +559,10 @@ void testBytecodeGcBoundMethodKeepsReceiverAfterOriginalVariableCleared() {
 
   minijs::VM vm;
   EXPECT(vm.run(chunk).toString() == "Tom");
-  EXPECT(vm.objectCount() == 3);
+  EXPECT(vm.objectCount() == 4);
 
   vm.collectGarbage();
-  EXPECT(vm.objectCount() == 3);
+  EXPECT(vm.objectCount() == 4);
 }
 
 void testBytecodeGcMarksInstanceFieldObjectGraph() {
@@ -545,10 +579,10 @@ void testBytecodeGcMarksInstanceFieldObjectGraph() {
 
   minijs::VM vm;
   EXPECT(vm.run(chunk).isBytecodeInstance());
-  EXPECT(vm.objectCount() == 4);
+  EXPECT(vm.objectCount() == 5);
 
   vm.collectGarbage();
-  EXPECT(vm.objectCount() == 4);
+  EXPECT(vm.objectCount() == 5);
 }
 
 void testCompileStringConcatenation() {
@@ -2565,6 +2599,8 @@ void runBytecodeTests() {
   testBytecodeGcMarksNestedObjectGraph();
   testBytecodeGcMarksClosedUpvalueValue();
   testBytecodeGcMarksClassMethodClosureUpvalues();
+  testBytecodeClassUsesGcObject();
+  testBytecodeGcCollectsUnreachableClass();
   testBytecodeClassInstanceUsesGcObject();
   testBytecodeGcKeepsStringInInstanceField();
   testBytecodeGcCollectsUnreachableInstanceAndField();

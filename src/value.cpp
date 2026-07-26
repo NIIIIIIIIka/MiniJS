@@ -54,6 +54,8 @@ Value::Value(ObjInstance* instance)
 Value::Value(ObjBoundMethod* method)
     : value_type_(ValueType::GcBoundMethod), gc_bound_method_(method) {}
 
+Value::Value(ObjClass* klass) : value_type_(ValueType::GcClass), gc_class_(klass) {}
+
 Value::Value(std::shared_ptr<BytecodeFunction> function)
     : value_type_(ValueType::BytecodeFunction), bytecode_function_(std::move(function)) {}
 
@@ -130,6 +132,13 @@ ObjBoundMethod* Value::asGcBoundMethod() const {
     throw RuntimeError("value is not a GC bound method");
   }
   return gc_bound_method_;
+}
+
+ObjClass* Value::asGcClass() const {
+  if (!isGcClass()) {
+    throw RuntimeError("value is not a GC class");
+  }
+  return gc_class_;
 }
 
 const FunctionValue& Value::asFunction() const {
@@ -267,6 +276,8 @@ std::string Value::toString() const {
       return "<function " + bytecode_closure_->function->name + ">";
     case ValueType::BytecodeClass:
       return "<class " + bytecode_class_->name + ">";
+    case ValueType::GcClass:
+      return "<class " + gc_class_->name + ">";
     case ValueType::BytecodeInstance:
       return "<" + bytecode_instance_->klass->name + " instance>";
     case ValueType::GcInstance:
@@ -328,6 +339,7 @@ bool Value::isTruthy() const {
     case ValueType::BytecodeFunction:
     case ValueType::BytecodeClosure:
     case ValueType::BytecodeClass:
+    case ValueType::GcClass:
     case ValueType::BytecodeInstance:
     case ValueType::GcInstance:
     case ValueType::BytecodeBoundMethod:
@@ -403,6 +415,8 @@ bool Value::isGcInstance() const { return value_type_ == ValueType::GcInstance; 
 
 bool Value::isGcBoundMethod() const { return value_type_ == ValueType::GcBoundMethod; }
 
+bool Value::isGcClass() const { return value_type_ == ValueType::GcClass; }
+
 bool Value::equals(const Value& other) const {
   if (isString() && other.isString()) {
     return asString() == other.asString();
@@ -441,6 +455,8 @@ bool Value::equals(const Value& other) const {
       return bytecode_closure_ == other.bytecode_closure_;
     case ValueType::BytecodeClass:
       return bytecode_class_ == other.bytecode_class_;
+    case ValueType::GcClass:
+      return gc_class_ == other.gc_class_;
     case ValueType::BytecodeInstance:
       return bytecode_instance_ == other.bytecode_instance_;
     case ValueType::GcInstance:
@@ -461,5 +477,4 @@ bool Value::equals(const Value& other) const {
 
   return false;
 }
-
 }  // namespace minijs

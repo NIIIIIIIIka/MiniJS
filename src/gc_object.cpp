@@ -10,10 +10,10 @@ ObjArray::ObjArray(std::vector<Value> elements)
 ObjObject::ObjObject(std::unordered_map<std::string, Value> properties)
     : Obj(ObjType::Object), properties(std::move(properties)) {}
 
-ObjInstance::ObjInstance(std::shared_ptr<BytecodeClass> klass)
-    : Obj(ObjType::Instance), klass(std::move(klass)) {}
+ObjInstance::ObjInstance(ObjClass* klass) : Obj(ObjType::Instance), klass(klass) {}
 
 ObjBoundMethod::ObjBoundMethod(Value receiver, std::shared_ptr<BytecodeClosure> method)
     : Obj(ObjType::BoundMethod), receiver(std::move(receiver)), method(std::move(method)) {}
 
+ObjClass::ObjClass(std::string name) : Obj(ObjType::Class), name(std::move(name)) {}
 }  // namespace minijs

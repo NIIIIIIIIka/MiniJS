@@ -10,6 +10,8 @@
 
 namespace minijs {
 
+struct ObjClass;
+
 // VM GC 管理的数组对象，元素继续保存为动态 Value。
 struct ObjArray final : public Obj {
   explicit ObjArray(std::vector<Value> elements);
@@ -26,9 +28,9 @@ struct ObjObject final : public Obj {
 
 // VM GC 管理的字节码实例，字段保存在实例自身。
 struct ObjInstance final : public Obj {
-  explicit ObjInstance(std::shared_ptr<BytecodeClass> klass);
+  explicit ObjInstance(ObjClass* klass);
 
-  std::shared_ptr<BytecodeClass> klass;
+  ObjClass* klass = nullptr;
   std::unordered_map<std::string, Value> fields;
 };
 
@@ -40,4 +42,13 @@ struct ObjBoundMethod final : public Obj {
   std::shared_ptr<BytecodeClosure> method;
 };
 
+// VM GC 管理的字节码类对象，保存类名、父类和方法表。
+struct ObjClass final : public Obj {
+  explicit ObjClass(std::string name);
+
+  std::string name;
+  ObjClass* superclass = nullptr;
+  std::unordered_map<std::string, std::shared_ptr<BytecodeClosure>> methods;
+  std::unordered_map<std::string, std::shared_ptr<BytecodeClosure>> staticMethods;
+};
 }  // namespace minijs
