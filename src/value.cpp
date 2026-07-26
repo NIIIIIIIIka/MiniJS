@@ -56,6 +56,9 @@ Value::Value(ObjBoundMethod* method)
 
 Value::Value(ObjClass* klass) : value_type_(ValueType::GcClass), gc_class_(klass) {}
 
+Value::Value(ObjClosure* closure)
+    : value_type_(ValueType::GcClosure), gc_closure_(closure) {}
+
 Value::Value(std::shared_ptr<BytecodeFunction> function)
     : value_type_(ValueType::BytecodeFunction), bytecode_function_(std::move(function)) {}
 
@@ -139,6 +142,13 @@ ObjClass* Value::asGcClass() const {
     throw RuntimeError("value is not a GC class");
   }
   return gc_class_;
+}
+
+ObjClosure* Value::asGcClosure() const {
+  if (!isGcClosure()) {
+    throw RuntimeError("value is not a GC closure");
+  }
+  return gc_closure_;
 }
 
 const FunctionValue& Value::asFunction() const {
@@ -274,6 +284,8 @@ std::string Value::toString() const {
       return "<function " + bytecode_function_->name + ">";
     case ValueType::BytecodeClosure:
       return "<function " + bytecode_closure_->function->name + ">";
+    case ValueType::GcClosure:
+      return "<function " + gc_closure_->function->name + ">";
     case ValueType::BytecodeClass:
       return "<class " + bytecode_class_->name + ">";
     case ValueType::GcClass:
@@ -338,6 +350,7 @@ bool Value::isTruthy() const {
     case ValueType::GcObject:
     case ValueType::BytecodeFunction:
     case ValueType::BytecodeClosure:
+    case ValueType::GcClosure:
     case ValueType::BytecodeClass:
     case ValueType::GcClass:
     case ValueType::BytecodeInstance:
@@ -417,6 +430,8 @@ bool Value::isGcBoundMethod() const { return value_type_ == ValueType::GcBoundMe
 
 bool Value::isGcClass() const { return value_type_ == ValueType::GcClass; }
 
+bool Value::isGcClosure() const { return value_type_ == ValueType::GcClosure; }
+
 bool Value::equals(const Value& other) const {
   if (isString() && other.isString()) {
     return asString() == other.asString();
@@ -453,6 +468,8 @@ bool Value::equals(const Value& other) const {
       return bytecode_function_ == other.bytecode_function_;
     case ValueType::BytecodeClosure:
       return bytecode_closure_ == other.bytecode_closure_;
+    case ValueType::GcClosure:
+      return gc_closure_ == other.gc_closure_;
     case ValueType::BytecodeClass:
       return bytecode_class_ == other.bytecode_class_;
     case ValueType::GcClass:

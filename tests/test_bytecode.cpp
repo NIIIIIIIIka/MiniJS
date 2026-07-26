@@ -380,10 +380,44 @@ void testBytecodeGcMarksClosedUpvalueValue() {
 
   minijs::VM vm;
   EXPECT(vm.run(chunk).toString() == "Tom");
+  EXPECT(vm.objectCount() == 3);
+
+  vm.collectGarbage();
+  EXPECT(vm.objectCount() == 3);
+}
+
+void testBytecodeClosureUsesGcObject() {
+  minijs::Parser parser("function get() { return \"Tom\"; } get;");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compileProgram(program);
+
+  minijs::VM vm;
+  EXPECT(vm.run(chunk).isBytecodeClosure());
   EXPECT(vm.objectCount() == 1);
 
   vm.collectGarbage();
   EXPECT(vm.objectCount() == 1);
+}
+
+void testBytecodeGcCollectsUnreachableClosure() {
+  minijs::Parser parser("{ function get() { return \"Tom\"; } } undefined;");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compileProgram(program);
+
+  minijs::VM vm;
+  EXPECT(vm.run(chunk).isUndefined());
+  EXPECT(vm.objectCount() == 1);
+
+  vm.collectGarbage();
+  EXPECT(vm.objectCount() == 0);
 }
 
 void testBytecodeGcMarksClassMethodClosureUpvalues() {
@@ -404,10 +438,10 @@ void testBytecodeGcMarksClassMethodClosureUpvalues() {
 
   minijs::VM vm;
   EXPECT(vm.run(chunk).toString() == "hi");
-  EXPECT(vm.objectCount() == 3);
+  EXPECT(vm.objectCount() == 5);
 
   vm.collectGarbage();
-  EXPECT(vm.objectCount() == 3);
+  EXPECT(vm.objectCount() == 5);
 }
 
 void testBytecodeClassUsesGcObject() {
@@ -517,10 +551,10 @@ void testBytecodeGcBoundMethodKeepsReceiverInstance() {
 
   minijs::VM vm;
   EXPECT(vm.run(chunk).toString() == "Tom");
-  EXPECT(vm.objectCount() == 4);
+  EXPECT(vm.objectCount() == 5);
 
   vm.collectGarbage();
-  EXPECT(vm.objectCount() == 4);
+  EXPECT(vm.objectCount() == 5);
 }
 
 void testBytecodeGcBoundMethodUsesGcObject() {
@@ -537,10 +571,10 @@ void testBytecodeGcBoundMethodUsesGcObject() {
 
   minijs::VM vm;
   EXPECT(vm.run(chunk).isBytecodeBoundMethod());
-  EXPECT(vm.objectCount() == 4);
+  EXPECT(vm.objectCount() == 5);
 
   vm.collectGarbage();
-  EXPECT(vm.objectCount() == 3);
+  EXPECT(vm.objectCount() == 4);
 }
 
 void testBytecodeGcBoundMethodKeepsReceiverAfterOriginalVariableCleared() {
@@ -559,10 +593,10 @@ void testBytecodeGcBoundMethodKeepsReceiverAfterOriginalVariableCleared() {
 
   minijs::VM vm;
   EXPECT(vm.run(chunk).toString() == "Tom");
-  EXPECT(vm.objectCount() == 4);
+  EXPECT(vm.objectCount() == 5);
 
   vm.collectGarbage();
-  EXPECT(vm.objectCount() == 4);
+  EXPECT(vm.objectCount() == 5);
 }
 
 void testBytecodeGcMarksInstanceFieldObjectGraph() {
@@ -2598,6 +2632,8 @@ void runBytecodeTests() {
   testBytecodeAutoGcKeepsObjectPropertiesDuringAllocation();
   testBytecodeGcMarksNestedObjectGraph();
   testBytecodeGcMarksClosedUpvalueValue();
+  testBytecodeClosureUsesGcObject();
+  testBytecodeGcCollectsUnreachableClosure();
   testBytecodeGcMarksClassMethodClosureUpvalues();
   testBytecodeClassUsesGcObject();
   testBytecodeGcCollectsUnreachableClass();

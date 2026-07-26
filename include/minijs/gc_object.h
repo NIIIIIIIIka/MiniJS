@@ -11,6 +11,8 @@
 namespace minijs {
 
 struct ObjClass;
+struct ObjClosure;
+struct Upvalue;
 
 // VM GC 管理的数组对象，元素继续保存为动态 Value。
 struct ObjArray final : public Obj {
@@ -36,10 +38,18 @@ struct ObjInstance final : public Obj {
 
 // VM GC 管理的字节码绑定方法，保存调用接收者和方法闭包。
 struct ObjBoundMethod final : public Obj {
-  ObjBoundMethod(Value receiver, std::shared_ptr<BytecodeClosure> method);
+  ObjBoundMethod(Value receiver, ObjClosure* method);
 
   Value receiver;
-  std::shared_ptr<BytecodeClosure> method;
+  ObjClosure* method = nullptr;
+};
+
+// VM GC 管理的字节码闭包，保存函数模板和捕获到的 upvalue。
+struct ObjClosure final : public Obj {
+  explicit ObjClosure(std::shared_ptr<BytecodeFunction> function);
+
+  std::shared_ptr<BytecodeFunction> function;
+  std::vector<std::shared_ptr<Upvalue>> upvalues;
 };
 
 // VM GC 管理的字节码类对象，保存类名、父类和方法表。
@@ -48,7 +58,8 @@ struct ObjClass final : public Obj {
 
   std::string name;
   ObjClass* superclass = nullptr;
-  std::unordered_map<std::string, std::shared_ptr<BytecodeClosure>> methods;
-  std::unordered_map<std::string, std::shared_ptr<BytecodeClosure>> staticMethods;
+  std::unordered_map<std::string, ObjClosure*> methods;
+  std::unordered_map<std::string, ObjClosure*> staticMethods;
 };
+
 }  // namespace minijs

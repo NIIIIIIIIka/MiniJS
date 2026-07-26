@@ -49,8 +49,7 @@ void expectArity(std::size_t actual, std::size_t expected, const std::string& na
   }
 }
 
-std::shared_ptr<BytecodeClosure> findMethod(const ObjClass* klass,
-                                            const std::string& name) {
+ObjClosure* findMethod(const ObjClass* klass, const std::string& name) {
   for (auto current = klass; current != nullptr; current = current->superclass) {
     const auto method = current->methods.find(name);
     if (method != current->methods.end()) {
@@ -60,8 +59,7 @@ std::shared_ptr<BytecodeClosure> findMethod(const ObjClass* klass,
   return nullptr;
 }
 
-std::shared_ptr<BytecodeClosure> findStaticMethod(const ObjClass* klass,
-                                                  const std::string& name) {
+ObjClosure* findStaticMethod(const ObjClass* klass, const std::string& name) {
   for (auto current = klass; current != nullptr; current = current->superclass) {
     const auto method = current->staticMethods.find(name);
     if (method != current->staticMethods.end()) {
@@ -69,6 +67,17 @@ std::shared_ptr<BytecodeClosure> findStaticMethod(const ObjClass* klass,
     }
   }
   return nullptr;
+}
+
+std::shared_ptr<BytecodeClosure> copyOutClosure(const ObjClosure* closure) {
+  if (closure == nullptr) {
+    return nullptr;
+  }
+
+  auto copy = std::make_shared<BytecodeClosure>();
+  copy->function = closure->function;
+  copy->upvalues = closure->upvalues;
+  return copy;
 }
 
 std::shared_ptr<BytecodeClass> copyOutClass(const ObjClass* klass) {
@@ -79,8 +88,12 @@ std::shared_ptr<BytecodeClass> copyOutClass(const ObjClass* klass) {
   auto copy = std::make_shared<BytecodeClass>();
   copy->name = klass->name;
   copy->superclass = copyOutClass(klass->superclass);
-  copy->methods = klass->methods;
-  copy->staticMethods = klass->staticMethods;
+  for (const auto& method : klass->methods) {
+    copy->methods[method.first] = copyOutClosure(method.second);
+  }
+  for (const auto& method : klass->staticMethods) {
+    copy->staticMethods[method.first] = copyOutClosure(method.second);
+  }
   return copy;
 }
 
@@ -165,7 +178,8 @@ VM::VM() {
     if (isBytecodeInstanceValue(value)) {
       return Value(std::string("instance"));
     }
-    if (value.isBytecodeFunction() || value.isBytecodeClosure() || value.isFunction()) {
+    if (value.isBytecodeFunction() || value.isBytecodeClosure() || value.isGcClosure() ||
+        value.isFunction()) {
       return Value(std::string("function"));
     }
     if (value.isNativeFunction()) {
@@ -285,10 +299,9 @@ Value VM::run(const Chunk& chunk) {
   auto script = std::make_shared<BytecodeFunction>();
   script->name = "<script>";
   script->chunk = chunk;
-  auto scriptClosure = std::make_shared<BytecodeClosure>();
-  scriptClosure->function = script;
+  ObjClosure scriptClosure(script);
 
-  frames_.push_back(CallFrame{scriptClosure, 0, 0, 0});
+  frames_.push_back(CallFrame{&scriptClosure, 0, 0, 0});
 
   while (true) {
     CallFrame& frame = frames_.back();
@@ -496,7 +509,7 @@ Value VM::run(const Chunk& chunk) {
 
         if (callee.isBytecodeBoundMethod() || callee.isGcBoundMethod()) {
           Value receiver;
-          std::shared_ptr<BytecodeClosure> method;
+          ObjClosure* method = nullptr;
           if (callee.isGcBoundMethod()) {
             auto* boundMethod = callee.asGcBoundMethod();
             receiver = boundMethod->receiver;
@@ -504,7 +517,8 @@ Value VM::run(const Chunk& chunk) {
           } else {
             auto boundMethod = callee.asBytecodeBoundMethod();
             receiver = boundMethod->receiver;
-            method = boundMethod->method;
+            method = allocateObject<ObjClosure>(boundMethod->method->function);
+            method->upvalues = boundMethod->method->upvalues;
           }
 
           stack_[calleeIndex] = receiver;
@@ -512,13 +526,12 @@ Value VM::run(const Chunk& chunk) {
           break;
         }
 
-        if (callee.isBytecodeFunction() || callee.isBytecodeClosure()) {
-          std::shared_ptr<BytecodeClosure> closure;
-          if (callee.isBytecodeClosure()) {
-            closure = callee.asBytecodeClosure();
+        if (callee.isBytecodeFunction() || callee.isGcClosure()) {
+          ObjClosure* closure = nullptr;
+          if (callee.isGcClosure()) {
+            closure = callee.asGcClosure();
           } else {
-            closure = std::make_shared<BytecodeClosure>();
-            closure->function = callee.asBytecodeFunction();
+            closure = allocateObject<ObjClosure>(callee.asBytecodeFunction());
           }
 
           // callee 位于参数前一个槽位；新函数帧从第一个参数开始。
@@ -539,7 +552,7 @@ Value VM::run(const Chunk& chunk) {
         const std::string& name = chunk.constant(nameIndex).asString();
         Value method = pop();
         Value klass = peek();
-        klass.asGcClass()->methods[name] = method.asBytecodeClosure();
+        klass.asGcClass()->methods[name] = method.asGcClosure();
         break;
       }
       case Opcode::StaticMethod: {
@@ -547,7 +560,7 @@ Value VM::run(const Chunk& chunk) {
         const std::string& name = chunk.constant(nameIndex).asString();
         Value method = pop();
         Value klass = peek();
-        klass.asGcClass()->staticMethods[name] = method.asBytecodeClosure();
+        klass.asGcClass()->staticMethods[name] = method.asGcClosure();
         break;
       }
       case Opcode::Inherit: {
@@ -566,8 +579,8 @@ Value VM::run(const Chunk& chunk) {
       case Opcode::Closure: {
         const std::uint8_t functionIndex = chunk.readByte(frame.ip++);
         auto function = chunk.constant(functionIndex).asBytecodeFunction();
-        auto closure = std::make_shared<BytecodeClosure>();
-        closure->function = function;
+        auto* closure = allocateObject<ObjClosure>(function);
+        push(Value(closure));
         closure->upvalues.reserve(function->upvalues.size());
 
         for (const UpvalueDescriptor& descriptor : function->upvalues) {
@@ -584,7 +597,6 @@ Value VM::run(const Chunk& chunk) {
           }
         }
 
-        push(Value(closure));
         break;
       }
       case Opcode::GetUpvalue: {
@@ -884,10 +896,14 @@ Value VM::copyOutValue(const Value& value) const {
     return Value(copyOutClass(value.asGcClass()));
   }
 
+  if (value.isGcClosure()) {
+    return Value(copyOutClosure(value.asGcClosure()));
+  }
+
   if (value.isGcBoundMethod()) {
     auto method = std::make_shared<BytecodeBoundMethod>();
     method->receiver = copyOutValue(value.asGcBoundMethod()->receiver);
-    method->method = value.asGcBoundMethod()->method;
+    method->method = copyOutClosure(value.asGcBoundMethod()->method);
     return Value(method);
   }
 
@@ -913,9 +929,9 @@ const Value& VM::peek() const {
   return stack_.back();
 }
 
-void VM::callBytecodeClosure(std::shared_ptr<BytecodeClosure> closure, std::size_t argCount,
-                             std::size_t returnSlot, std::size_t slotStart,
-                             const std::string& label, bool returnsReceiver) {
+void VM::callBytecodeClosure(ObjClosure* closure, std::size_t argCount, std::size_t returnSlot,
+                             std::size_t slotStart, const std::string& label,
+                             bool returnsReceiver) {
   auto function = closure->function;
   if (argCount != function->params.size()) {
     throw RuntimeError(label + " " + function->name + " expects " +
@@ -974,6 +990,10 @@ void VM::markRoots() {
     markUpvalue(upvalue);
   }
 
+  for (const CallFrame& frame : frames_) {
+    markClosure(frame.closure);
+  }
+
 }
 
 void VM::collectGarbageIfNeeded() {
@@ -1016,6 +1036,11 @@ void VM::markValue(const Value& value) {
     return;
   }
 
+  if (value.isGcClosure()) {
+    markObject(value.asGcClosure());
+    return;
+  }
+
   if (value.isArray()) {
     for (const Value& element : value.asArray()) {
       markValue(element);
@@ -1031,7 +1056,9 @@ void VM::markValue(const Value& value) {
   }
 
   if (value.isBytecodeClosure()) {
-    markBytecodeClosure(value.asBytecodeClosure());
+    for (const auto& upvalue : value.asBytecodeClosure()->upvalues) {
+      markUpvalue(upvalue);
+    }
     return;
   }
 
@@ -1078,17 +1105,23 @@ void VM::markObjectChildren(Obj* object) {
       break;
     }
     case ObjType::Function:
-    case ObjType::Closure:
     case ObjType::Upvalue:
       break;
+    case ObjType::Closure: {
+      auto* closure = static_cast<ObjClosure*>(object);
+      for (const auto& upvalue : closure->upvalues) {
+        markUpvalue(upvalue);
+      }
+      break;
+    }
     case ObjType::Class: {
       auto* klass = static_cast<ObjClass*>(object);
       markObject(klass->superclass);
       for (const auto& method : klass->methods) {
-        markBytecodeClosure(method.second);
+        markClosure(method.second);
       }
       for (const auto& method : klass->staticMethods) {
-        markBytecodeClosure(method.second);
+        markClosure(method.second);
       }
       break;
     }
@@ -1103,7 +1136,7 @@ void VM::markObjectChildren(Obj* object) {
     case ObjType::BoundMethod: {
       auto* method = static_cast<ObjBoundMethod*>(object);
       markValue(method->receiver);
-      markBytecodeClosure(method->method);
+      markClosure(method->method);
       break;
     }
     case ObjType::NativeFunction:
@@ -1111,14 +1144,12 @@ void VM::markObjectChildren(Obj* object) {
   }
 }
 
-void VM::markBytecodeClosure(const std::shared_ptr<BytecodeClosure>& closure) {
+void VM::markClosure(ObjClosure* closure) {
   if (closure == nullptr) {
     return;
   }
 
-  for (const auto& upvalue : closure->upvalues) {
-    markUpvalue(upvalue);
-  }
+  markObject(closure);
 }
 
 void VM::markBytecodeClass(const std::shared_ptr<BytecodeClass>& klass) {
@@ -1129,11 +1160,15 @@ void VM::markBytecodeClass(const std::shared_ptr<BytecodeClass>& klass) {
   markBytecodeClass(klass->superclass);
 
   for (const auto& method : klass->methods) {
-    markBytecodeClosure(method.second);
+    for (const auto& upvalue : method.second->upvalues) {
+      markUpvalue(upvalue);
+    }
   }
 
   for (const auto& method : klass->staticMethods) {
-    markBytecodeClosure(method.second);
+    for (const auto& upvalue : method.second->upvalues) {
+      markUpvalue(upvalue);
+    }
   }
 }
 
@@ -1155,7 +1190,9 @@ void VM::markBytecodeBoundMethod(const std::shared_ptr<BytecodeBoundMethod>& met
   }
 
   markValue(method->receiver);
-  markBytecodeClosure(method->method);
+  for (const auto& upvalue : method->method->upvalues) {
+    markUpvalue(upvalue);
+  }
 }
 
 void VM::markUpvalue(const std::shared_ptr<Upvalue>& upvalue) {

@@ -17,9 +17,11 @@
 
 namespace minijs {
 
+struct ObjClosure;
+
 // 一次字节码函数调用的执行状态。
 struct CallFrame {
-  std::shared_ptr<BytecodeClosure> closure;
+  ObjClosure* closure = nullptr;
   std::size_t ip;
   // 函数返回值要写回的栈槽；普通调用是 callee 槽，方法调用是 receiver/this 槽。
   std::size_t returnSlot;
@@ -49,8 +51,8 @@ class VM {
   void push(Value value);
   Value pop();
   const Value& peek() const;
-  void callBytecodeClosure(std::shared_ptr<BytecodeClosure> closure, std::size_t argCount,
-                           std::size_t returnSlot, std::size_t slotStart, const std::string& label,
+  void callBytecodeClosure(ObjClosure* closure, std::size_t argCount, std::size_t returnSlot,
+                           std::size_t slotStart, const std::string& label,
                            bool returnsReceiver = false);
   std::shared_ptr<Upvalue> captureUpvalue(std::size_t stackIndex);
   void closeUpvalues(std::size_t firstStackIndex);
@@ -59,7 +61,7 @@ class VM {
   void markValue(const Value& value);
   void markObject(Obj* object);
   void markObjectChildren(Obj* object);
-  void markBytecodeClosure(const std::shared_ptr<BytecodeClosure>& closure);
+  void markClosure(ObjClosure* closure);
   void markBytecodeClass(const std::shared_ptr<BytecodeClass>& klass);
   void markBytecodeInstance(const std::shared_ptr<BytecodeInstance>& instance);
   void markBytecodeBoundMethod(const std::shared_ptr<BytecodeBoundMethod>& method);
