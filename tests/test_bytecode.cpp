@@ -483,10 +483,52 @@ void testBytecodeGcBoundMethodKeepsReceiverInstance() {
 
   minijs::VM vm;
   EXPECT(vm.run(chunk).toString() == "Tom");
-  EXPECT(vm.objectCount() == 2);
+  EXPECT(vm.objectCount() == 3);
+
+  vm.collectGarbage();
+  EXPECT(vm.objectCount() == 3);
+}
+
+void testBytecodeGcBoundMethodUsesGcObject() {
+  minijs::Parser parser("class Box { get() { return this.name; } }"
+                        "let b = Box();"
+                        "b.name = \"Tom\";"
+                        "b.get;");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compileProgram(program);
+
+  minijs::VM vm;
+  EXPECT(vm.run(chunk).isBytecodeBoundMethod());
+  EXPECT(vm.objectCount() == 3);
 
   vm.collectGarbage();
   EXPECT(vm.objectCount() == 2);
+}
+
+void testBytecodeGcBoundMethodKeepsReceiverAfterOriginalVariableCleared() {
+  minijs::Parser parser("class Box { get() { return this.name; } }"
+                        "let b = Box();"
+                        "b.name = \"Tom\";"
+                        "let get = b.get;"
+                        "b = undefined;"
+                        "get();");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compileProgram(program);
+
+  minijs::VM vm;
+  EXPECT(vm.run(chunk).toString() == "Tom");
+  EXPECT(vm.objectCount() == 3);
+
+  vm.collectGarbage();
+  EXPECT(vm.objectCount() == 3);
 }
 
 void testBytecodeGcMarksInstanceFieldObjectGraph() {
@@ -2527,6 +2569,8 @@ void runBytecodeTests() {
   testBytecodeGcKeepsStringInInstanceField();
   testBytecodeGcCollectsUnreachableInstanceAndField();
   testBytecodeGcBoundMethodKeepsReceiverInstance();
+  testBytecodeGcBoundMethodUsesGcObject();
+  testBytecodeGcBoundMethodKeepsReceiverAfterOriginalVariableCleared();
   testBytecodeGcMarksInstanceFieldObjectGraph();
   testCompileStringConcatenation();
   testCompileComparisonExpressions();

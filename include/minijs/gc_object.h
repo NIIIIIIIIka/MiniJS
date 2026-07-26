@@ -32,4 +32,12 @@ struct ObjInstance final : public Obj {
   std::unordered_map<std::string, Value> fields;
 };
 
+// VM GC 管理的字节码绑定方法，保存调用接收者和方法闭包。
+struct ObjBoundMethod final : public Obj {
+  ObjBoundMethod(Value receiver, std::shared_ptr<BytecodeClosure> method);
+
+  Value receiver;
+  std::shared_ptr<BytecodeClosure> method;
+};
+
 }  // namespace minijs

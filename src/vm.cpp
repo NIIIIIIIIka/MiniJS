@@ -481,10 +481,21 @@ Value VM::run(const Chunk& chunk) {
           break;
         }
 
-        if (callee.isBytecodeBoundMethod()) {
-          auto boundMethod = callee.asBytecodeBoundMethod();
-          stack_[calleeIndex] = Value(boundMethod->receiver);
-          callBytecodeClosure(boundMethod->method, argCount, calleeIndex, calleeIndex, "method");
+        if (callee.isBytecodeBoundMethod() || callee.isGcBoundMethod()) {
+          Value receiver;
+          std::shared_ptr<BytecodeClosure> method;
+          if (callee.isGcBoundMethod()) {
+            auto* boundMethod = callee.asGcBoundMethod();
+            receiver = boundMethod->receiver;
+            method = boundMethod->method;
+          } else {
+            auto boundMethod = callee.asBytecodeBoundMethod();
+            receiver = boundMethod->receiver;
+            method = boundMethod->method;
+          }
+
+          stack_[calleeIndex] = receiver;
+          callBytecodeClosure(method, argCount, calleeIndex, calleeIndex, "method");
           break;
         }
 
@@ -766,9 +777,9 @@ Value VM::run(const Chunk& chunk) {
 
           auto method = findMethod(bytecodeInstanceClass(object), name);
           if (method != nullptr) {
-            auto boundMethod = std::make_shared<BytecodeBoundMethod>();
-            boundMethod->receiver = object;
-            boundMethod->method = method;
+            push(object);
+            auto* boundMethod = allocateObject<ObjBoundMethod>(object, method);
+            pop();
             push(Value(boundMethod));
             break;
           }
@@ -856,6 +867,13 @@ Value VM::copyOutValue(const Value& value) const {
       instance->fields[field.first] = copyOutValue(field.second);
     }
     return Value(instance);
+  }
+
+  if (value.isGcBoundMethod()) {
+    auto method = std::make_shared<BytecodeBoundMethod>();
+    method->receiver = copyOutValue(value.asGcBoundMethod()->receiver);
+    method->method = value.asGcBoundMethod()->method;
+    return Value(method);
   }
 
   return value;
@@ -973,6 +991,11 @@ void VM::markValue(const Value& value) {
     return;
   }
 
+  if (value.isGcBoundMethod()) {
+    markObject(value.asGcBoundMethod());
+    return;
+  }
+
   if (value.isArray()) {
     for (const Value& element : value.asArray()) {
       markValue(element);
@@ -1046,7 +1069,12 @@ void VM::markObjectChildren(Obj* object) {
       }
       break;
     }
-    case ObjType::BoundMethod:
+    case ObjType::BoundMethod: {
+      auto* method = static_cast<ObjBoundMethod*>(object);
+      markValue(method->receiver);
+      markBytecodeClosure(method->method);
+      break;
+    }
     case ObjType::NativeFunction:
       break;
   }

@@ -51,6 +51,9 @@ Value::Value(ObjObject* object) : value_type_(ValueType::GcObject), gc_object_(o
 Value::Value(ObjInstance* instance)
     : value_type_(ValueType::GcInstance), gc_instance_(instance) {}
 
+Value::Value(ObjBoundMethod* method)
+    : value_type_(ValueType::GcBoundMethod), gc_bound_method_(method) {}
+
 Value::Value(std::shared_ptr<BytecodeFunction> function)
     : value_type_(ValueType::BytecodeFunction), bytecode_function_(std::move(function)) {}
 
@@ -120,6 +123,13 @@ ObjInstance* Value::asGcInstance() const {
     throw RuntimeError("value is not a GC instance");
   }
   return gc_instance_;
+}
+
+ObjBoundMethod* Value::asGcBoundMethod() const {
+  if (!isGcBoundMethod()) {
+    throw RuntimeError("value is not a GC bound method");
+  }
+  return gc_bound_method_;
 }
 
 const FunctionValue& Value::asFunction() const {
@@ -263,6 +273,8 @@ std::string Value::toString() const {
       return "<" + gc_instance_->klass->name + " instance>";
     case ValueType::BytecodeBoundMethod:
       return "<bound method " + bytecode_bound_method_->method->function->name + ">";
+    case ValueType::GcBoundMethod:
+      return "<bound method " + gc_bound_method_->method->function->name + ">";
     case ValueType::InterpreterClass:
       return "<class " + class_->name + ">";
     case ValueType::InterpreterInstance:
@@ -319,6 +331,7 @@ bool Value::isTruthy() const {
     case ValueType::BytecodeInstance:
     case ValueType::GcInstance:
     case ValueType::BytecodeBoundMethod:
+    case ValueType::GcBoundMethod:
     case ValueType::InterpreterClass:
     case ValueType::InterpreterInstance:
     case ValueType::InterpreterBoundMethod:
@@ -388,6 +401,8 @@ bool Value::isGcObject() const { return value_type_ == ValueType::GcObject; }
 
 bool Value::isGcInstance() const { return value_type_ == ValueType::GcInstance; }
 
+bool Value::isGcBoundMethod() const { return value_type_ == ValueType::GcBoundMethod; }
+
 bool Value::equals(const Value& other) const {
   if (isString() && other.isString()) {
     return asString() == other.asString();
@@ -432,6 +447,8 @@ bool Value::equals(const Value& other) const {
       return gc_instance_ == other.gc_instance_;
     case ValueType::BytecodeBoundMethod:
       return bytecode_bound_method_ == other.bytecode_bound_method_;
+    case ValueType::GcBoundMethod:
+      return gc_bound_method_ == other.gc_bound_method_;
     case ValueType::InterpreterClass:
       return class_ == other.class_;
     case ValueType::InterpreterInstance:
