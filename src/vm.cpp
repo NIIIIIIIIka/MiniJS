@@ -1077,7 +1077,6 @@ void VM::collectGarbageIfNeeded() {
   }
 
   collectGarbage();
-  nextGcObjectCount_ = std::max<std::size_t>(heapObjectCount_ * 2, 8);
 }
 
 void VM::markValue(const Value& value) {
@@ -1337,6 +1336,7 @@ void VM::sweep() {
 void VM::collectGarbage() {
   markRoots();
   sweep();
+  nextGcObjectCount_ = std::max<std::size_t>(heapObjectCount_ * 2, 8);
 }
 
 }  // namespace minijs
