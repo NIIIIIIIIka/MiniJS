@@ -241,6 +241,17 @@ VM::~VM() {
   objectCount_ = 0;
 }
 
+VM::TemporaryRootScope::TemporaryRootScope(VM& vm)
+    : vm_(vm), rootStart_(vm.temporaryRoots_.size()) {}
+
+VM::TemporaryRootScope::~TemporaryRootScope() {
+  vm_.temporaryRoots_.resize(rootStart_);
+}
+
+void VM::TemporaryRootScope::add(Obj* object) {
+  vm_.temporaryRoots_.push_back(object);
+}
+
 void VM::defineBuiltin(std::string name, std::size_t arity, NativeFn function) {
   auto* native = allocateObject<ObjNativeFunction>(std::move(name), arity, std::move(function));
   ++permanentObjectCount_;
@@ -255,26 +266,24 @@ Value VM::makeGcString(std::string string) {
 Value VM::makeGcStringArray(std::vector<std::string> strings) {
   std::vector<Value> values;
   values.reserve(strings.size());
-  const std::size_t rootStart = temporaryRoots_.size();
+  TemporaryRootScope roots(*this);
 
   for (std::string& string : strings) {
     auto* object = allocateObject<ObjString>(std::move(string));
-    temporaryRoots_.push_back(object);
+    roots.add(object);
     values.push_back(Value(object));
   }
 
   auto* array = allocateObject<ObjArray>(std::move(values));
-  temporaryRoots_.resize(rootStart);
   return Value(array);
 }
 
 ObjClosure* VM::makeGcClosure(const BytecodeFunction& function) {
+  TemporaryRootScope roots(*this);
   auto* gcFunction = allocateObject<ObjFunction>(function);
-  temporaryRoots_.push_back(gcFunction);
+  roots.add(gcFunction);
 
-  auto* closure = allocateObject<ObjClosure>(gcFunction);
-  temporaryRoots_.pop_back();
-  return closure;
+  return allocateObject<ObjClosure>(gcFunction);
 }
 
 Value VM::run(const Chunk& chunk) {

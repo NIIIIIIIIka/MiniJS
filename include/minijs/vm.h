@@ -48,6 +48,18 @@ class VM {
   void collectGarbage();
 
  private:
+  class TemporaryRootScope {
+   public:
+    explicit TemporaryRootScope(VM& vm);
+    ~TemporaryRootScope();
+
+    void add(Obj* object);
+
+   private:
+    VM& vm_;
+    std::size_t rootStart_ = 0;
+  };
+
   void defineBuiltin(std::string name, std::size_t arity, NativeFn function);
   Value copyOutValue(const Value& value) const;
   std::shared_ptr<BytecodeClass> copyOutClass(const ObjClass* klass) const;
