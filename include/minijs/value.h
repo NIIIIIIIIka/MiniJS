@@ -15,6 +15,7 @@ struct ObjInstance;
 struct ObjBoundMethod;
 struct ObjClass;
 struct ObjClosure;
+struct ObjNativeFunction;
 struct BytecodeFunction;
 struct BytecodeClosure;
 struct BytecodeClass;
@@ -91,6 +92,9 @@ class Value {
 
   // 创建 C++ 实现的原生函数值。
   explicit Value(std::shared_ptr<NativeFunction> function);
+
+  // 创建 VM 管理的原生函数值。
+  explicit Value(ObjNativeFunction* function);
 
   // 创建数组值，数组使用共享指针模拟对象引用语义。
   explicit Value(std::vector<Value> elements);
@@ -196,6 +200,9 @@ class Value {
   // 返回原生函数载荷；当前值不是原生函数时抛出运行时错误。
   const std::shared_ptr<NativeFunction>& asNativeFunction() const;
 
+  // 返回 VM 管理的原生函数对象；当前值不是 GC 原生函数时抛出运行时错误。
+  ObjNativeFunction* asGcNativeFunction() const;
+
   // 返回字节码函数载荷；当前值不是字节码函数时抛出运行时错误。
   const std::shared_ptr<BytecodeFunction>& asBytecodeFunction() const;
 
@@ -255,6 +262,9 @@ class Value {
 
   // 返回当前值是否为原生函数。
   bool isNativeFunction() const;
+
+  // 返回当前值是否为 VM 管理的原生函数。
+  bool isGcNativeFunction() const;
 
   // 返回当前值是否为字节码函数。
   bool isBytecodeFunction() const;
@@ -331,6 +341,7 @@ class Value {
   ObjBoundMethod* gc_bound_method_ = nullptr;
   ObjClass* gc_class_ = nullptr;
   ObjClosure* gc_closure_ = nullptr;
+  ObjNativeFunction* gc_native_function_ = nullptr;
 };
 
 // 字节码 VM 使用的类运行时载荷，保存类名和方法表。

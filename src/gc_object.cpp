@@ -15,11 +15,19 @@ ObjInstance::ObjInstance(ObjClass* klass) : Obj(ObjType::Instance), klass(klass)
 ObjBoundMethod::ObjBoundMethod(Value receiver, ObjClosure* method)
     : Obj(ObjType::BoundMethod), receiver(std::move(receiver)), method(std::move(method)) {}
 
-ObjClosure::ObjClosure(std::shared_ptr<BytecodeFunction> function)
-    : Obj(ObjType::Closure), function(std::move(function)) {}
+ObjClosure::ObjClosure(ObjFunction* function) : Obj(ObjType::Closure), function(function) {}
 
 ObjClass::ObjClass(std::string name) : Obj(ObjType::Class), name(std::move(name)) {}
 
 ObjUpvalue::ObjUpvalue(std::size_t stackIndex)
     : Obj(ObjType::Upvalue), stackIndex(stackIndex) {}
+
+ObjFunction::ObjFunction(BytecodeFunction function)
+    : Obj(ObjType::Function), function(std::move(function)) {}
+
+ObjNativeFunction::ObjNativeFunction(std::string name, std::size_t arity, NativeFn function)
+    : Obj(ObjType::NativeFunction),
+      name(std::move(name)),
+      arity(arity),
+      function(std::move(function)) {}
 }  // namespace minijs

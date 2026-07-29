@@ -32,6 +32,9 @@ Value::Value(BuiltinFunction builtin)
 Value::Value(std::shared_ptr<NativeFunction> function)
     : value_type_(ValueType::NativeFunction), native_function_(std::move(function)) {}
 
+Value::Value(ObjNativeFunction* function)
+    : value_type_(ValueType::NativeFunction), gc_native_function_(function) {}
+
 Value::Value(std::vector<Value> elements)
     : value_type_(ValueType::Array),
       array_(std::make_shared<std::vector<Value>>(std::move(elements))) {}
@@ -201,10 +204,17 @@ std::unordered_map<std::string, Value>& Value::asObject() {
 const BuiltinFunction& Value::asBuiltinFunction() const { return asNativeFunction()->function; }
 
 const std::shared_ptr<NativeFunction>& Value::asNativeFunction() const {
-  if (!isNativeFunction()) {
+  if (!isNativeFunction() || native_function_ == nullptr) {
     throw RuntimeError("value is not a native function");
   }
   return native_function_;
+}
+
+ObjNativeFunction* Value::asGcNativeFunction() const {
+  if (!isGcNativeFunction()) {
+    throw RuntimeError("value is not a GC native function");
+  }
+  return gc_native_function_;
 }
 
 const std::shared_ptr<BytecodeFunction>& Value::asBytecodeFunction() const {
@@ -279,13 +289,15 @@ std::string Value::toString() const {
     case ValueType::Function:
       return "<function>";
     case ValueType::NativeFunction:
-      return "<native function " + native_function_->name + ">";
+      return "<native function " +
+             (gc_native_function_ != nullptr ? gc_native_function_->name : native_function_->name) +
+             ">";
     case ValueType::BytecodeFunction:
       return "<function " + bytecode_function_->name + ">";
     case ValueType::BytecodeClosure:
       return "<function " + bytecode_closure_->function->name + ">";
     case ValueType::GcClosure:
-      return "<function " + gc_closure_->function->name + ">";
+      return "<function " + gc_closure_->function->function.name + ">";
     case ValueType::BytecodeClass:
       return "<class " + bytecode_class_->name + ">";
     case ValueType::GcClass:
@@ -297,7 +309,7 @@ std::string Value::toString() const {
     case ValueType::BytecodeBoundMethod:
       return "<bound method " + bytecode_bound_method_->method->function->name + ">";
     case ValueType::GcBoundMethod:
-      return "<bound method " + gc_bound_method_->method->function->name + ">";
+      return "<bound method " + gc_bound_method_->method->function->function.name + ">";
     case ValueType::InterpreterClass:
       return "<class " + class_->name + ">";
     case ValueType::InterpreterInstance:
@@ -400,6 +412,10 @@ bool Value::isBuiltinFunction() const { return isNativeFunction(); }
 
 bool Value::isNativeFunction() const { return value_type_ == ValueType::NativeFunction; }
 
+bool Value::isGcNativeFunction() const {
+  return value_type_ == ValueType::NativeFunction && gc_native_function_ != nullptr;
+}
+
 bool Value::isBytecodeFunction() const { return value_type_ == ValueType::BytecodeFunction; }
 
 bool Value::isBytecodeClosure() const { return value_type_ == ValueType::BytecodeClosure; }
@@ -489,7 +505,8 @@ bool Value::equals(const Value& other) const {
     case ValueType::InterpreterBoundMethod:
       return bound_method_ == other.bound_method_;
     case ValueType::NativeFunction:
-      return native_function_ == other.native_function_;
+      return native_function_ == other.native_function_ &&
+             gc_native_function_ == other.gc_native_function_;
   }
 
   return false;

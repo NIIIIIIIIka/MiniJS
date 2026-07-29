@@ -380,10 +380,10 @@ void testBytecodeGcMarksClosedUpvalueValue() {
 
   minijs::VM vm;
   EXPECT(vm.run(chunk).toString() == "Tom");
-  EXPECT(vm.objectCount() == 4);
+  EXPECT(vm.objectCount() == 6);
 
   vm.collectGarbage();
-  EXPECT(vm.objectCount() == 4);
+  EXPECT(vm.objectCount() == 6);
 }
 
 void testBytecodeClosureUsesGcObject() {
@@ -397,10 +397,10 @@ void testBytecodeClosureUsesGcObject() {
 
   minijs::VM vm;
   EXPECT(vm.run(chunk).isBytecodeClosure());
-  EXPECT(vm.objectCount() == 1);
+  EXPECT(vm.objectCount() == 2);
 
   vm.collectGarbage();
-  EXPECT(vm.objectCount() == 1);
+  EXPECT(vm.objectCount() == 2);
 }
 
 void testBytecodeGcCollectsUnreachableClosure() {
@@ -414,7 +414,7 @@ void testBytecodeGcCollectsUnreachableClosure() {
 
   minijs::VM vm;
   EXPECT(vm.run(chunk).isUndefined());
-  EXPECT(vm.objectCount() == 1);
+  EXPECT(vm.objectCount() == 2);
 
   vm.collectGarbage();
   EXPECT(vm.objectCount() == 0);
@@ -437,10 +437,10 @@ void testBytecodeUpvalueUsesGcObject() {
 
   minijs::VM vm;
   EXPECT(vm.run(chunk).isBytecodeClosure());
-  EXPECT(vm.objectCount() == 4);
+  EXPECT(vm.objectCount() == 6);
 
   vm.collectGarbage();
-  EXPECT(vm.objectCount() == 4);
+  EXPECT(vm.objectCount() == 6);
 }
 
 void testBytecodeGcCollectsUnreachableUpvalue() {
@@ -462,7 +462,7 @@ void testBytecodeGcCollectsUnreachableUpvalue() {
 
   minijs::VM vm;
   EXPECT(vm.run(chunk).isUndefined());
-  EXPECT(vm.objectCount() == 4);
+  EXPECT(vm.objectCount() == 6);
 
   vm.collectGarbage();
   EXPECT(vm.objectCount() == 0);
@@ -486,10 +486,10 @@ void testBytecodeGcMarksClassMethodClosureUpvalues() {
 
   minijs::VM vm;
   EXPECT(vm.run(chunk).toString() == "hi");
-  EXPECT(vm.objectCount() == 6);
+  EXPECT(vm.objectCount() == 8);
 
   vm.collectGarbage();
-  EXPECT(vm.objectCount() == 6);
+  EXPECT(vm.objectCount() == 8);
 }
 
 void testBytecodeClassUsesGcObject() {
@@ -599,10 +599,10 @@ void testBytecodeGcBoundMethodKeepsReceiverInstance() {
 
   minijs::VM vm;
   EXPECT(vm.run(chunk).toString() == "Tom");
-  EXPECT(vm.objectCount() == 5);
+  EXPECT(vm.objectCount() == 6);
 
   vm.collectGarbage();
-  EXPECT(vm.objectCount() == 5);
+  EXPECT(vm.objectCount() == 6);
 }
 
 void testBytecodeGcBoundMethodUsesGcObject() {
@@ -619,10 +619,10 @@ void testBytecodeGcBoundMethodUsesGcObject() {
 
   minijs::VM vm;
   EXPECT(vm.run(chunk).isBytecodeBoundMethod());
-  EXPECT(vm.objectCount() == 5);
+  EXPECT(vm.objectCount() == 6);
 
   vm.collectGarbage();
-  EXPECT(vm.objectCount() == 4);
+  EXPECT(vm.objectCount() == 5);
 }
 
 void testBytecodeGcBoundMethodKeepsReceiverAfterOriginalVariableCleared() {
@@ -641,10 +641,10 @@ void testBytecodeGcBoundMethodKeepsReceiverAfterOriginalVariableCleared() {
 
   minijs::VM vm;
   EXPECT(vm.run(chunk).toString() == "Tom");
-  EXPECT(vm.objectCount() == 5);
+  EXPECT(vm.objectCount() == 6);
 
   vm.collectGarbage();
-  EXPECT(vm.objectCount() == 5);
+  EXPECT(vm.objectCount() == 6);
 }
 
 void testBytecodeGcMarksInstanceFieldObjectGraph() {
@@ -2100,6 +2100,23 @@ void testBytecodeBuiltinFunctionCanBeAssigned() {
   EXPECT(result.isNull());
 }
 
+void testBytecodeGcKeepsBuiltinNativeFunction() {
+  minijs::VM vm;
+  EXPECT(vm.run(minijs::Compiler().compileProgram(minijs::Parser("print;").parseProgram()))
+             .isNativeFunction());
+  EXPECT(vm.objectCount() == 0);
+
+  vm.collectGarbage();
+  EXPECT(vm.objectCount() == 0);
+
+  std::ostringstream output;
+  std::streambuf* previous = std::cout.rdbuf(output.rdbuf());
+  EXPECT(vm.run(minijs::Compiler().compileProgram(minijs::Parser("print(\"hello\");").parseProgram()))
+             .isNull());
+  std::cout.rdbuf(previous);
+  EXPECT(output.str() == "hello\n");
+}
+
 void testBytecodePrintArity() {
   try {
     runBytecodeProgram("print();");
@@ -2818,6 +2835,7 @@ void runBytecodeTests() {
   testBytecodeCallNonFunction();
   testBytecodePrintBuiltin();
   testBytecodeBuiltinFunctionCanBeAssigned();
+  testBytecodeGcKeepsBuiltinNativeFunction();
   testBytecodePrintArity();
   testBytecodeClockBuiltin();
   testBytecodeClockArity();

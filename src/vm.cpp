@@ -69,29 +69,20 @@ ObjClosure* findStaticMethod(const ObjClass* klass, const std::string& name) {
   return nullptr;
 }
 
-bool isBytecodeInstanceValue(const Value& value) {
-  return value.isBytecodeInstance() || value.isGcInstance();
+bool isGcInstanceValue(const Value& value) {
+  return value.isGcInstance();
 }
 
-ObjClass* bytecodeInstanceClass(const Value& value) {
-  if (value.isGcInstance()) {
-    return value.asGcInstance()->klass;
-  }
-  return nullptr;
+ObjClass* gcInstanceClass(const Value& value) {
+  return value.asGcInstance()->klass;
 }
 
-const std::unordered_map<std::string, Value>& bytecodeInstanceFields(const Value& value) {
-  if (value.isGcInstance()) {
-    return value.asGcInstance()->fields;
-  }
-  return value.asBytecodeInstance()->fields;
+const std::unordered_map<std::string, Value>& gcInstanceFields(const Value& value) {
+  return value.asGcInstance()->fields;
 }
 
-std::unordered_map<std::string, Value>& bytecodeInstanceFields(Value& value) {
-  if (value.isGcInstance()) {
-    return value.asGcInstance()->fields;
-  }
-  return value.asBytecodeInstance()->fields;
+std::unordered_map<std::string, Value>& gcInstanceFields(Value& value) {
+  return value.asGcInstance()->fields;
 }
 
 }  // namespace
@@ -107,87 +98,87 @@ VM::VM() {
   defineBuiltin("len", 1, [](const std::vector<Value>& arguments) -> Value {
     const Value& value = arguments[0];
 
-    if (value.isString()) {
-      return Value(static_cast<double>(value.asString().size()));
+    if (value.isGcString()) {
+      return Value(static_cast<double>(value.asGcString()->value.size()));
     }
 
-    if (value.isArray()) {
-      return Value(static_cast<double>(value.asArray().size()));
+    if (value.isGcArray()) {
+      return Value(static_cast<double>(value.asGcArray()->elements.size()));
     }
 
-    if (value.isObject()) {
-      return Value(static_cast<double>(value.asObject().size()));
+    if (value.isGcObject()) {
+      return Value(static_cast<double>(value.asGcObject()->properties.size()));
     }
 
-    if (isBytecodeInstanceValue(value)) {
-      return Value(static_cast<double>(bytecodeInstanceFields(value).size()));
+    if (isGcInstanceValue(value)) {
+      return Value(static_cast<double>(gcInstanceFields(value).size()));
     }
 
     throw RuntimeError("len expects string, array, object, or instance");
   });
 
-  defineBuiltin("typeOf", 1, [](const std::vector<Value>& arguments) -> Value {
+  defineBuiltin("typeOf", 1, [this](const std::vector<Value>& arguments) -> Value {
     const Value& value = arguments[0];
 
     if (value.isNumber()) {
-      return Value(std::string("number"));
+      return makeGcString("number");
     }
     if (value.isBoolean()) {
-      return Value(std::string("boolean"));
+      return makeGcString("boolean");
     }
-    if (value.isString()) {
-      return Value(std::string("string"));
+    if (value.isGcString()) {
+      return makeGcString("string");
     }
-    if (value.isArray()) {
-      return Value(std::string("array"));
+    if (value.isGcArray()) {
+      return makeGcString("array");
     }
-    if (value.isObject()) {
-      return Value(std::string("object"));
+    if (value.isGcObject()) {
+      return makeGcString("object");
     }
-    if (value.isBytecodeClass() || value.isGcClass()) {
-      return Value(std::string("class"));
+    if (value.isGcClass()) {
+      return makeGcString("class");
     }
-    if (isBytecodeInstanceValue(value)) {
-      return Value(std::string("instance"));
+    if (isGcInstanceValue(value)) {
+      return makeGcString("instance");
     }
-    if (value.isBytecodeFunction() || value.isBytecodeClosure() || value.isGcClosure() ||
-        value.isFunction()) {
-      return Value(std::string("function"));
+    if (value.isGcClosure() || value.isFunction()) {
+      return makeGcString("function");
     }
     if (value.isNativeFunction()) {
-      return Value(std::string("builtin"));
+      return makeGcString("builtin");
     }
     if (value.isNull()) {
-      return Value(std::string("null"));
+      return makeGcString("null");
     }
     if (value.isUndefined()) {
-      return Value(std::string("undefined"));
+      return makeGcString("undefined");
     }
 
-    return Value(std::string("unknown"));
+    return makeGcString("unknown");
   });
 
   defineBuiltin("has", 2, [](const std::vector<Value>& arguments) -> Value {
     const Value& object = arguments[0];
     const Value& key = arguments[1];
 
-    if (!key.isString()) {
+    if (!key.isGcString()) {
       throw RuntimeError("has key must be a string");
     }
 
-    const std::string& name = key.asString();
+    const std::string& name = key.asGcString()->value;
 
-    if (object.isObject()) {
-      return Value(object.asObject().find(name) != object.asObject().end());
+    if (object.isGcObject()) {
+      const auto& properties = object.asGcObject()->properties;
+      return Value(properties.find(name) != properties.end());
     }
-    if (isBytecodeInstanceValue(object)) {
-      const auto& fields = bytecodeInstanceFields(object);
+    if (isGcInstanceValue(object)) {
+      const auto& fields = gcInstanceFields(object);
       return Value(fields.find(name) != fields.end());
     }
-    if (object.isArray()) {
+    if (object.isGcArray()) {
       return Value(name == "length" || name == "push" || name == "pop");
     }
-    if (object.isString()) {
+    if (object.isGcString()) {
       return Value(name == "length");
     }
 
@@ -198,49 +189,45 @@ VM::VM() {
     Value object = arguments[0];
     const Value& key = arguments[1];
 
-    if (!key.isString()) {
+    if (!key.isGcString()) {
       throw RuntimeError("del key must be a string");
     }
 
-    const std::string& name = key.asString();
-    if (isBytecodeInstanceValue(object)) {
-      return Value(bytecodeInstanceFields(object).erase(name) > 0);
+    const std::string& name = key.asGcString()->value;
+    if (isGcInstanceValue(object)) {
+      return Value(gcInstanceFields(object).erase(name) > 0);
     }
-    if (!object.isObject()) {
-      return Value(false);
+    if (object.isGcObject()) {
+      return Value(object.asGcObject()->properties.erase(name) > 0);
     }
 
-    return Value(object.asObject().erase(name) > 0);
+    return Value(false);
   });
 
-  defineBuiltin("keys", 1, [](const std::vector<Value>& arguments) -> Value {
+  defineBuiltin("keys", 1, [this](const std::vector<Value>& arguments) -> Value {
     const Value& object = arguments[0];
-    std::vector<Value> keys;
+    std::vector<std::string> keys;
 
-    if (object.isObject()) {
-      for (const auto& key : object.asObject()) {
-        keys.push_back(Value(key.first));
+    if (object.isGcObject()) {
+      for (const auto& key : object.asGcObject()->properties) {
+        keys.push_back(key.first);
       }
-      return Value(std::move(keys));
+      return makeGcStringArray(std::move(keys));
     }
-    if (isBytecodeInstanceValue(object)) {
-      for (const auto& field : bytecodeInstanceFields(object)) {
-        keys.push_back(Value(field.first));
+    if (isGcInstanceValue(object)) {
+      for (const auto& field : gcInstanceFields(object)) {
+        keys.push_back(field.first);
       }
-      return Value(std::move(keys));
+      return makeGcStringArray(std::move(keys));
     }
-    if (object.isArray()) {
-      keys.push_back(Value(std::string("length")));
-      keys.push_back(Value(std::string("push")));
-      keys.push_back(Value(std::string("pop")));
-      return Value(std::move(keys));
+    if (object.isGcArray()) {
+      return makeGcStringArray({"length", "push", "pop"});
     }
-    if (object.isString()) {
-      keys.push_back(Value(std::string("length")));
-      return Value(std::move(keys));
+    if (object.isGcString()) {
+      return makeGcStringArray({"length"});
     }
 
-    return Value(std::move(keys));
+    return makeGcStringArray({});
   });
 }
 
@@ -255,29 +242,58 @@ VM::~VM() {
 }
 
 void VM::defineBuiltin(std::string name, std::size_t arity, NativeFn function) {
-  auto native = std::make_shared<NativeFunction>();
-  native->name = name;
-  native->arity = arity;
-  native->function = std::move(function);
+  auto* native = allocateObject<ObjNativeFunction>(std::move(name), arity, std::move(function));
+  ++permanentObjectCount_;
 
   globals_[native->name] = Value(native);
+}
+
+Value VM::makeGcString(std::string string) {
+  return Value(allocateObject<ObjString>(std::move(string)));
+}
+
+Value VM::makeGcStringArray(std::vector<std::string> strings) {
+  std::vector<Value> values;
+  values.reserve(strings.size());
+  const std::size_t rootStart = temporaryRoots_.size();
+
+  for (std::string& string : strings) {
+    auto* object = allocateObject<ObjString>(std::move(string));
+    temporaryRoots_.push_back(object);
+    values.push_back(Value(object));
+  }
+
+  auto* array = allocateObject<ObjArray>(std::move(values));
+  temporaryRoots_.resize(rootStart);
+  return Value(array);
+}
+
+ObjClosure* VM::makeGcClosure(const BytecodeFunction& function) {
+  auto* gcFunction = allocateObject<ObjFunction>(function);
+  temporaryRoots_.push_back(gcFunction);
+
+  auto* closure = allocateObject<ObjClosure>(gcFunction);
+  temporaryRoots_.pop_back();
+  return closure;
 }
 
 Value VM::run(const Chunk& chunk) {
   stack_.clear();
   frames_.clear();
   openUpvalues_.clear();
+  temporaryRoots_.clear();
 
   auto script = std::make_shared<BytecodeFunction>();
   script->name = "<script>";
   script->chunk = chunk;
-  ObjClosure scriptClosure(script);
+  ObjFunction scriptFunction(*script);
+  ObjClosure scriptClosure(&scriptFunction);
 
   frames_.push_back(CallFrame{&scriptClosure, 0, 0, 0});
 
   while (true) {
     CallFrame& frame = frames_.back();
-    const Chunk& chunk = frame.closure->function->chunk;
+    const Chunk& chunk = frame.closure->function->function.chunk;
 
     Opcode opcode = static_cast<Opcode>(chunk.readByte(frame.ip++));
 
@@ -286,7 +302,7 @@ Value VM::run(const Chunk& chunk) {
         const std::uint8_t index = chunk.readByte(frame.ip++);
         const Value& constant = chunk.constant(index);
         if (constant.isString()) {
-          push(Value(allocateObject<ObjString>(constant.asString())));
+          push(makeGcString(constant.asString()));
         } else {
           push(constant);
         }
@@ -295,8 +311,8 @@ Value VM::run(const Chunk& chunk) {
       case Opcode::Add: {
         Value right = pop();
         Value left = pop();
-        if (left.isString() || right.isString()) {
-          push(Value(left.toString() + right.toString()));
+        if (left.isGcString() || right.isGcString()) {
+          push(makeGcString(left.toString() + right.toString()));
         } else {
           push(Value(left.asNumber() + right.asNumber()));
         }
@@ -445,8 +461,13 @@ Value VM::run(const Chunk& chunk) {
         Value callee = stack_[calleeIndex];
 
         if (callee.isNativeFunction()) {
-          auto native = callee.asNativeFunction();
-          expectArity(argCount, native->arity, native->name);
+          const std::string& name = callee.isGcNativeFunction()
+                                        ? callee.asGcNativeFunction()->name
+                                        : callee.asNativeFunction()->name;
+          const std::size_t arity = callee.isGcNativeFunction()
+                                        ? callee.asGcNativeFunction()->arity
+                                        : callee.asNativeFunction()->arity;
+          expectArity(argCount, arity, name);
             
           std::vector<Value> arguments;
           arguments.reserve(argCount);
@@ -454,7 +475,9 @@ Value VM::run(const Chunk& chunk) {
             arguments.push_back(stack_[calleeIndex + 1 + i]);
           }
 
-          Value result = native->function(arguments);
+          Value result = callee.isGcNativeFunction()
+                             ? callee.asGcNativeFunction()->function(arguments)
+                             : callee.asNativeFunction()->function(arguments);
           stack_.resize(calleeIndex);
           push(result);
           break;
@@ -479,43 +502,18 @@ Value VM::run(const Chunk& chunk) {
           break;
         }
 
-        if (callee.isBytecodeBoundMethod() || callee.isGcBoundMethod()) {
-          Value receiver;
-          ObjClosure* method = nullptr;
-          if (callee.isGcBoundMethod()) {
-            auto* boundMethod = callee.asGcBoundMethod();
-            receiver = boundMethod->receiver;
-            method = boundMethod->method;
-          } else {
-            auto boundMethod = callee.asBytecodeBoundMethod();
-            receiver = boundMethod->receiver;
-            method = allocateObject<ObjClosure>(boundMethod->method->function);
-            push(Value(method));
-            for (const auto& upvalue : boundMethod->method->upvalues) {
-              auto* copied = allocateObject<ObjUpvalue>(upvalue->stackIndex);
-              copied->closed = copyOutValue(upvalue->closed);
-              copied->isClosed = upvalue->isClosed;
-              method->upvalues.push_back(copied);
-            }
-            pop();
-          }
-
-          stack_[calleeIndex] = receiver;
-          callBytecodeClosure(method, argCount, calleeIndex, calleeIndex, "method");
+        if (callee.isGcBoundMethod()) {
+          auto* boundMethod = callee.asGcBoundMethod();
+          stack_[calleeIndex] = boundMethod->receiver;
+          callBytecodeClosure(boundMethod->method, argCount, calleeIndex, calleeIndex, "method");
           break;
         }
 
-        if (callee.isBytecodeFunction() || callee.isGcClosure()) {
-          ObjClosure* closure = nullptr;
-          if (callee.isGcClosure()) {
-            closure = callee.asGcClosure();
-          } else {
-            closure = allocateObject<ObjClosure>(callee.asBytecodeFunction());
-          }
-
+        if (callee.isGcClosure()) {
           // callee 位于参数前一个槽位；新函数帧从第一个参数开始。
           // 因此 OP_GET_LOCAL 0 读取的就是第一个实参，无需复制参数数组。
-          callBytecodeClosure(closure, argCount, calleeIndex, calleeIndex + 1, "function");
+          callBytecodeClosure(callee.asGcClosure(), argCount, calleeIndex, calleeIndex + 1,
+                              "function");
           break;
         }
 
@@ -558,11 +556,13 @@ Value VM::run(const Chunk& chunk) {
       case Opcode::Closure: {
         const std::uint8_t functionIndex = chunk.readByte(frame.ip++);
         auto function = chunk.constant(functionIndex).asBytecodeFunction();
-        auto* closure = allocateObject<ObjClosure>(function);
+        auto* closure = makeGcClosure(*function);
         push(Value(closure));
-        closure->upvalues.reserve(function->upvalues.size());
 
-        for (const UpvalueDescriptor& descriptor : function->upvalues) {
+        const BytecodeFunction& gcFunction = closure->function->function;
+        closure->upvalues.reserve(gcFunction.upvalues.size());
+
+        for (const UpvalueDescriptor& descriptor : gcFunction.upvalues) {
           const bool isLocal = chunk.readByte(frame.ip++) != 0;
           const std::uint8_t index = chunk.readByte(frame.ip++);
           if (isLocal != descriptor.isLocal || index != descriptor.index) {
@@ -609,8 +609,8 @@ Value VM::run(const Chunk& chunk) {
 
         const std::size_t receiverIndex = stack_.size() - argCount - 1;
         Value receiver = stack_[receiverIndex];
-        if (isBytecodeInstanceValue(receiver)) {
-          auto method = findMethod(bytecodeInstanceClass(receiver), name);
+        if (isGcInstanceValue(receiver)) {
+          auto method = findMethod(gcInstanceClass(receiver), name);
           if (method == nullptr) {
             throw RuntimeError("value has no method: " + name);
           }
@@ -629,11 +629,11 @@ Value VM::run(const Chunk& chunk) {
           break;
         }
 
-        if (!receiver.isArray()) {
+        if (!receiver.isGcArray()) {
           throw RuntimeError("method call receiver is not an array");
         }
 
-        std::vector<Value>& array = receiver.asArray();
+        std::vector<Value>& array = receiver.asGcArray()->elements;
 
         if (name == "push") {
           if (argCount != 1) {
@@ -681,7 +681,7 @@ Value VM::run(const Chunk& chunk) {
         if (!superclass.isGcClass()) {
           throw RuntimeError("superclass must be a class");
         }
-        if (!isBytecodeInstanceValue(receiver)) {
+        if (!isGcInstanceValue(receiver)) {
           throw RuntimeError("this must be an instance");
         }
 
@@ -715,7 +715,10 @@ Value VM::run(const Chunk& chunk) {
       case Opcode::GetIndex: {
         Value index = pop();
         Value array = pop();
-        const std::vector<Value>& elements = array.asArray();
+        if (!array.isGcArray()) {
+          throw RuntimeError("value is not an array");
+        }
+        const std::vector<Value>& elements = array.asGcArray()->elements;
         push(elements[arrayIndexFromValue(index, elements.size())]);
         break;
       }
@@ -723,7 +726,10 @@ Value VM::run(const Chunk& chunk) {
         Value value = pop();
         Value index = pop();
         Value array = pop();
-        std::vector<Value>& elements = array.asArray();
+        if (!array.isGcArray()) {
+          throw RuntimeError("value is not an array");
+        }
+        std::vector<Value>& elements = array.asGcArray()->elements;
         elements[arrayIndexFromValue(index, elements.size())] = value;
         push(value);
         break;
@@ -749,9 +755,9 @@ Value VM::run(const Chunk& chunk) {
 
         Value object = pop();
 
-        if (object.isArray()) {
+        if (object.isGcArray()) {
           if (name == "length") {
-            push(Value(static_cast<double>(object.asArray().size())));
+            push(Value(static_cast<double>(object.asGcArray()->elements.size())));
             break;
           }
 
@@ -759,9 +765,9 @@ Value VM::run(const Chunk& chunk) {
           break;
         }
 
-        if (object.isString()) {
+        if (object.isGcString()) {
           if (name == "length") {
-            push(Value(static_cast<double>(object.asString().size())));
+            push(Value(static_cast<double>(object.asGcString()->value.size())));
             break;
           }
 
@@ -769,15 +775,15 @@ Value VM::run(const Chunk& chunk) {
           break;
         }
 
-        if (isBytecodeInstanceValue(object)) {
-          auto& fields = bytecodeInstanceFields(object);
+        if (isGcInstanceValue(object)) {
+          auto& fields = gcInstanceFields(object);
           auto field = fields.find(name);
           if (field != fields.end()) {
             push(field->second);
             break;
           }
 
-          auto method = findMethod(bytecodeInstanceClass(object), name);
+          auto method = findMethod(gcInstanceClass(object), name);
           if (method != nullptr) {
             push(object);
             auto* boundMethod = allocateObject<ObjBoundMethod>(object, method);
@@ -801,7 +807,11 @@ Value VM::run(const Chunk& chunk) {
           break;
         }
 
-        const auto& properties = object.asObject();
+        if (!object.isGcObject()) {
+          throw RuntimeError("value is not an object");
+        }
+
+        const auto& properties = object.asGcObject()->properties;
 
         auto it = properties.find(name);
         if (it == properties.end()) {
@@ -817,13 +827,17 @@ Value VM::run(const Chunk& chunk) {
 
         Value value = pop();
         Value object = pop();
-        if (isBytecodeInstanceValue(object)) {
-          bytecodeInstanceFields(object)[name] = value;
+        if (isGcInstanceValue(object)) {
+          gcInstanceFields(object)[name] = value;
           push(value);
           break;
         }
 
-        object.asObject()[name] = value;
+        if (!object.isGcObject()) {
+          throw RuntimeError("value is not an object");
+        }
+
+        object.asGcObject()->properties[name] = value;
         push(value);
 
         break;
@@ -837,26 +851,26 @@ Value VM::run(const Chunk& chunk) {
 }
 
 std::size_t VM::objectCount() const {
-  return objectCount_;
+  return objectCount_ - permanentObjectCount_;
 }
 
 Value VM::copyOutValue(const Value& value) const {
-  if (value.isString()) {
-    return Value(value.asString());
+  if (value.isGcString()) {
+    return Value(value.asGcString()->value);
   }
 
-  if (value.isArray()) {
+  if (value.isGcArray()) {
     std::vector<Value> elements;
-    elements.reserve(value.asArray().size());
-    for (const Value& element : value.asArray()) {
+    elements.reserve(value.asGcArray()->elements.size());
+    for (const Value& element : value.asGcArray()->elements) {
       elements.push_back(copyOutValue(element));
     }
     return Value(std::move(elements));
   }
 
-  if (value.isObject()) {
+  if (value.isGcObject()) {
     std::unordered_map<std::string, Value> properties;
-    for (const auto& property : value.asObject()) {
+    for (const auto& property : value.asGcObject()->properties) {
       properties[property.first] = copyOutValue(property.second);
     }
     return Value(std::move(properties));
@@ -886,6 +900,35 @@ Value VM::copyOutValue(const Value& value) const {
     return Value(method);
   }
 
+  if (value.isGcNativeFunction()) {
+    auto native = std::make_shared<NativeFunction>();
+    native->name = value.asGcNativeFunction()->name;
+    native->arity = value.asGcNativeFunction()->arity;
+    native->function = value.asGcNativeFunction()->function;
+    return Value(native);
+  }
+
+  if (value.isArray()) {
+    std::vector<Value> elements;
+    elements.reserve(value.asArray().size());
+    for (const Value& element : value.asArray()) {
+      elements.push_back(copyOutValue(element));
+    }
+    return Value(std::move(elements));
+  }
+
+  if (value.isObject()) {
+    std::unordered_map<std::string, Value> properties;
+    for (const auto& property : value.asObject()) {
+      properties[property.first] = copyOutValue(property.second);
+    }
+    return Value(std::move(properties));
+  }
+
+  if (value.isString()) {
+    return Value(value.asString());
+  }
+
   return value;
 }
 
@@ -912,7 +955,7 @@ std::shared_ptr<BytecodeClosure> VM::copyOutClosure(const ObjClosure* closure) c
   }
 
   auto copy = std::make_shared<BytecodeClosure>();
-  copy->function = closure->function;
+  copy->function = std::make_shared<BytecodeFunction>(closure->function->function);
   for (const auto* upvalue : closure->upvalues) {
     copy->upvalues.push_back(copyOutUpvalue(upvalue));
   }
@@ -953,10 +996,10 @@ const Value& VM::peek() const {
 void VM::callBytecodeClosure(ObjClosure* closure, std::size_t argCount, std::size_t returnSlot,
                              std::size_t slotStart, const std::string& label,
                              bool returnsReceiver) {
-  auto function = closure->function;
-  if (argCount != function->params.size()) {
-    throw RuntimeError(label + " " + function->name + " expects " +
-                       std::to_string(function->params.size()) + " arguments");
+  const BytecodeFunction& function = closure->function->function;
+  if (argCount != function.params.size()) {
+    throw RuntimeError(label + " " + function.name + " expects " +
+                       std::to_string(function.params.size()) + " arguments");
   }
 
   frames_.push_back(CallFrame{
@@ -1014,6 +1057,9 @@ void VM::markRoots() {
     markClosure(frame.closure);
   }
 
+  for (Obj* object : temporaryRoots_) {
+    markObject(object);
+  }
 }
 
 void VM::collectGarbageIfNeeded() {
@@ -1058,6 +1104,11 @@ void VM::markValue(const Value& value) {
 
   if (value.isGcClosure()) {
     markObject(value.asGcClosure());
+    return;
+  }
+
+  if (value.isGcNativeFunction()) {
+    markObject(value.asGcNativeFunction());
     return;
   }
 
@@ -1122,8 +1173,15 @@ void VM::markObjectChildren(Obj* object) {
       }
       break;
     }
-    case ObjType::Function:
+    case ObjType::Function: {
+      auto* function = static_cast<ObjFunction*>(object);
+
+      for (const Value& constant : function->function.chunk.constants()) {
+        markValue(constant);
+      }
+
       break;
+    }
     case ObjType::Upvalue: {
       auto* upvalue = static_cast<ObjUpvalue*>(object);
       if (upvalue->isClosed) {
@@ -1135,6 +1193,7 @@ void VM::markObjectChildren(Obj* object) {
     }
     case ObjType::Closure: {
       auto* closure = static_cast<ObjClosure*>(object);
+      markObject(closure->function);
       for (const auto& upvalue : closure->upvalues) {
         markUpvalue(upvalue);
       }

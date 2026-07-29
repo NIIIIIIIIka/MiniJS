@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "minijs/bytecode_function.h"
 #include "minijs/object.h"
 #include "minijs/value.h"
 
@@ -13,6 +14,8 @@ namespace minijs {
 
 struct ObjClass;
 struct ObjClosure;
+struct ObjFunction;
+struct ObjNativeFunction;
 struct ObjUpvalue;
 struct Upvalue;
 
@@ -48,9 +51,9 @@ struct ObjBoundMethod final : public Obj {
 
 // VM GC 管理的字节码闭包，保存函数模板和捕获到的 upvalue。
 struct ObjClosure final : public Obj {
-  explicit ObjClosure(std::shared_ptr<BytecodeFunction> function);
+  explicit ObjClosure(ObjFunction* function);
 
-  std::shared_ptr<BytecodeFunction> function;
+  ObjFunction* function = nullptr;
   std::vector<ObjUpvalue*> upvalues;
 };
 
@@ -70,5 +73,21 @@ struct ObjUpvalue final : public Obj {
   std::size_t stackIndex = 0;
   Value closed = Value::undefined();
   bool isClosed = false;
+};
+
+// VM GC 管理的字节码函数模板；闭包持有它，调用帧从中读取 chunk、参数和 upvalue 描述。
+struct ObjFunction final : public Obj {
+  ObjFunction() = default;
+  ObjFunction(BytecodeFunction function);
+  BytecodeFunction function;
+};
+
+// VM GC 管理的原生函数；用于 print、clock、len 等内置函数。
+struct ObjNativeFunction final : public Obj {
+  ObjNativeFunction(std::string name, std::size_t arity, NativeFn function);
+
+  std::string name;
+  std::size_t arity = 0;
+  NativeFn function;
 };
 }  // namespace minijs
