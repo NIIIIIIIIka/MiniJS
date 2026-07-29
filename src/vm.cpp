@@ -238,7 +238,7 @@ VM::~VM() {
     delete object;
     object = next;
   }
-  objectCount_ = 0;
+  heapObjectCount_ = 0;
 }
 
 VM::TemporaryRootScope::TemporaryRootScope(VM& vm)
@@ -254,7 +254,7 @@ void VM::TemporaryRootScope::add(Obj* object) {
 
 void VM::defineBuiltin(std::string name, std::size_t arity, NativeFn function) {
   auto* native = allocateObject<ObjNativeFunction>(std::move(name), arity, std::move(function));
-  ++permanentObjectCount_;
+  ++builtinObjectCount_;
 
   globals_[native->name] = Value(native);
 }
@@ -860,7 +860,7 @@ Value VM::run(const Chunk& chunk) {
 }
 
 std::size_t VM::objectCount() const {
-  return objectCount_ - permanentObjectCount_;
+  return heapObjectCount_ - builtinObjectCount_;
 }
 
 Value VM::copyOutValue(const Value& value) const {
@@ -1072,12 +1072,12 @@ void VM::markRoots() {
 }
 
 void VM::collectGarbageIfNeeded() {
-  if (objectCount_ + 1 <= nextGcObjectCount_) {
+  if (heapObjectCount_ + 1 <= nextGcObjectCount_) {
     return;
   }
 
   collectGarbage();
-  nextGcObjectCount_ = std::max<std::size_t>(objectCount_ * 2, 8);
+  nextGcObjectCount_ = std::max<std::size_t>(heapObjectCount_ * 2, 8);
 }
 
 void VM::markValue(const Value& value) {
@@ -1329,7 +1329,7 @@ void VM::sweep() {
     } else {
       previous->next = object;
     }
-    --objectCount_;
+    --heapObjectCount_;
     delete unreached;
   }
 }

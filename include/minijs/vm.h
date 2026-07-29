@@ -99,9 +99,9 @@ class VM {
   std::vector<Obj*> temporaryRoots_;
   // 未来 GC 管理的堆对象链表。当前阶段只建立链表所有权入口。
   Obj* objects_ = nullptr;
-  std::size_t objectCount_ = 0;
+  std::size_t heapObjectCount_ = 0;
   // VM 构造期创建的 builtin 是永久全局根；测试计数只暴露用户程序产生的 GC 对象。
-  std::size_t permanentObjectCount_ = 0;
+  std::size_t builtinObjectCount_ = 0;
   std::size_t nextGcObjectCount_ = 8;
 
   template <typename T, typename... Args>
@@ -116,7 +116,7 @@ T* VM::allocateObject(Args&&... args) {
   auto* object = new T(std::forward<Args>(args)...);
   object->next = objects_;
   objects_ = object;
-  ++objectCount_;
+  ++heapObjectCount_;
   return object;
 }
 }  // namespace minijs
