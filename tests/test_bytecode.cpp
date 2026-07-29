@@ -2383,6 +2383,25 @@ void testBytecodeKeysBuiltinObject() {
              .toString() == "true");
 }
 
+void testBytecodeGcCollectsTemporaryKeyStringsAfterKeysBuiltin() {
+  minijs::Parser parser("let p = { name: \"Tom\", age: 18 };"
+                        "keys(p);"
+                        "p = undefined;"
+                        "undefined;");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compileProgram(program);
+
+  minijs::VM vm;
+  EXPECT(vm.run(chunk).isUndefined());
+
+  vm.collectGarbage();
+  EXPECT(vm.objectCount() == 0);
+}
+
 void testBytecodeKeysBuiltinInstanceFields() {
   EXPECT(runBytecodeProgram("class Box {}"
                             "let b = Box();"
@@ -2912,6 +2931,7 @@ void runBytecodeTests() {
   testBytecodeDelArity();
   testBytecodeDelKeyMustBeString();
   testBytecodeKeysBuiltinObject();
+  testBytecodeGcCollectsTemporaryKeyStringsAfterKeysBuiltin();
   testBytecodeKeysBuiltinInstanceFields();
   testBytecodeKeysBuiltinArrayAndString();
   testBytecodeKeysArity();
