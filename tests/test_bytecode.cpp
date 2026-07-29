@@ -363,6 +363,48 @@ void testBytecodeGcMarksNestedObjectGraph() {
   EXPECT(vm.objectCount() == 3);
 }
 
+void testBytecodeManualGcIsIdempotent() {
+  {
+    minijs::Parser parser("let keep = { name: \"Tom\", values: [\"x\"] }; keep;");
+    minijs::Program program = parser.parseProgram();
+
+    EXPECT(parser.diagnostics().empty());
+
+    minijs::Compiler compiler;
+    minijs::Chunk chunk = compiler.compileProgram(program);
+
+    minijs::VM vm;
+    EXPECT(vm.run(chunk).isObject());
+    EXPECT(vm.objectCount() == 4);
+
+    vm.collectGarbage();
+    EXPECT(vm.objectCount() == 4);
+
+    vm.collectGarbage();
+    EXPECT(vm.objectCount() == 4);
+  }
+
+  {
+    minijs::Parser parser("{ let temp = { name: \"Tom\" }; } undefined;");
+    minijs::Program program = parser.parseProgram();
+
+    EXPECT(parser.diagnostics().empty());
+
+    minijs::Compiler compiler;
+    minijs::Chunk chunk = compiler.compileProgram(program);
+
+    minijs::VM vm;
+    EXPECT(vm.run(chunk).isUndefined());
+    EXPECT(vm.objectCount() == 2);
+
+    vm.collectGarbage();
+    EXPECT(vm.objectCount() == 0);
+
+    vm.collectGarbage();
+    EXPECT(vm.objectCount() == 0);
+  }
+}
+
 void testBytecodeAutoGcPressureKeepsReachableObjectGraph() {
   minijs::Parser parser("let keep = { name: \"Tom\", values: [1, 2, 3] };"
                         "let i = 0;"
@@ -2765,6 +2807,7 @@ void runBytecodeTests() {
   testBytecodeGcCollectsUnreachableObjectAndString();
   testBytecodeAutoGcKeepsObjectPropertiesDuringAllocation();
   testBytecodeGcMarksNestedObjectGraph();
+  testBytecodeManualGcIsIdempotent();
   testBytecodeAutoGcPressureKeepsReachableObjectGraph();
   testBytecodeAutoGcPressureKeepsClosureClassGraph();
   testBytecodeGcMarksClosedUpvalueValue();
