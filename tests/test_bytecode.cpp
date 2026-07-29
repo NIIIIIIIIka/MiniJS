@@ -363,6 +363,56 @@ void testBytecodeGcMarksNestedObjectGraph() {
   EXPECT(vm.objectCount() == 3);
 }
 
+void testBytecodeAutoGcPressureKeepsReachableObjectGraph() {
+  minijs::Parser parser("let keep = { name: \"Tom\", values: [1, 2, 3] };"
+                        "let i = 0;"
+                        "while (i < 40) {"
+                        "  [i, \"tmp\", { value: i }];"
+                        "  i = i + 1;"
+                        "}"
+                        "keep.name;");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compileProgram(program);
+
+  minijs::VM vm;
+  EXPECT(vm.run(chunk).toString() == "Tom");
+
+  vm.collectGarbage();
+  EXPECT(vm.objectCount() == 3);
+}
+
+void testBytecodeAutoGcPressureKeepsClosureClassGraph() {
+  minijs::Parser parser("function makeBox() {"
+                        "  let prefix = \"hi\";"
+                        "  class Box { get() { return prefix; } }"
+                        "  return Box;"
+                        "}"
+                        "let Box = makeBox();"
+                        "let b = Box();"
+                        "let i = 0;"
+                        "while (i < 40) {"
+                        "  [i, \"tmp\", { value: i }];"
+                        "  i = i + 1;"
+                        "}"
+                        "b.get();");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compileProgram(program);
+
+  minijs::VM vm;
+  EXPECT(vm.run(chunk).toString() == "hi");
+
+  vm.collectGarbage();
+  EXPECT(vm.objectCount() == 8);
+}
+
 void testBytecodeGcMarksClosedUpvalueValue() {
   minijs::Parser parser("function make() {"
                         "  let name = \"Tom\";"
@@ -2696,6 +2746,8 @@ void runBytecodeTests() {
   testBytecodeGcCollectsUnreachableObjectAndString();
   testBytecodeAutoGcKeepsObjectPropertiesDuringAllocation();
   testBytecodeGcMarksNestedObjectGraph();
+  testBytecodeAutoGcPressureKeepsReachableObjectGraph();
+  testBytecodeAutoGcPressureKeepsClosureClassGraph();
   testBytecodeGcMarksClosedUpvalueValue();
   testBytecodeClosureUsesGcObject();
   testBytecodeGcCollectsUnreachableClosure();
