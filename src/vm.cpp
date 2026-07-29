@@ -69,34 +69,6 @@ ObjClosure* findStaticMethod(const ObjClass* klass, const std::string& name) {
   return nullptr;
 }
 
-std::shared_ptr<BytecodeClosure> copyOutClosure(const ObjClosure* closure) {
-  if (closure == nullptr) {
-    return nullptr;
-  }
-
-  auto copy = std::make_shared<BytecodeClosure>();
-  copy->function = closure->function;
-  copy->upvalues = closure->upvalues;
-  return copy;
-}
-
-std::shared_ptr<BytecodeClass> copyOutClass(const ObjClass* klass) {
-  if (klass == nullptr) {
-    return nullptr;
-  }
-
-  auto copy = std::make_shared<BytecodeClass>();
-  copy->name = klass->name;
-  copy->superclass = copyOutClass(klass->superclass);
-  for (const auto& method : klass->methods) {
-    copy->methods[method.first] = copyOutClosure(method.second);
-  }
-  for (const auto& method : klass->staticMethods) {
-    copy->staticMethods[method.first] = copyOutClosure(method.second);
-  }
-  return copy;
-}
-
 bool isBytecodeInstanceValue(const Value& value) {
   return value.isBytecodeInstance() || value.isGcInstance();
 }
@@ -518,7 +490,14 @@ Value VM::run(const Chunk& chunk) {
             auto boundMethod = callee.asBytecodeBoundMethod();
             receiver = boundMethod->receiver;
             method = allocateObject<ObjClosure>(boundMethod->method->function);
-            method->upvalues = boundMethod->method->upvalues;
+            push(Value(method));
+            for (const auto& upvalue : boundMethod->method->upvalues) {
+              auto* copied = allocateObject<ObjUpvalue>(upvalue->stackIndex);
+              copied->closed = copyOutValue(upvalue->closed);
+              copied->isClosed = upvalue->isClosed;
+              method->upvalues.push_back(copied);
+            }
+            pop();
           }
 
           stack_[calleeIndex] = receiver;
@@ -910,6 +889,48 @@ Value VM::copyOutValue(const Value& value) const {
   return value;
 }
 
+std::shared_ptr<BytecodeClass> VM::copyOutClass(const ObjClass* klass) const {
+  if (klass == nullptr) {
+    return nullptr;
+  }
+
+  auto copy = std::make_shared<BytecodeClass>();
+  copy->name = klass->name;
+  copy->superclass = copyOutClass(klass->superclass);
+  for (const auto& method : klass->methods) {
+    copy->methods[method.first] = copyOutClosure(method.second);
+  }
+  for (const auto& method : klass->staticMethods) {
+    copy->staticMethods[method.first] = copyOutClosure(method.second);
+  }
+  return copy;
+}
+
+std::shared_ptr<BytecodeClosure> VM::copyOutClosure(const ObjClosure* closure) const {
+  if (closure == nullptr) {
+    return nullptr;
+  }
+
+  auto copy = std::make_shared<BytecodeClosure>();
+  copy->function = closure->function;
+  for (const auto* upvalue : closure->upvalues) {
+    copy->upvalues.push_back(copyOutUpvalue(upvalue));
+  }
+  return copy;
+}
+
+std::shared_ptr<Upvalue> VM::copyOutUpvalue(const ObjUpvalue* upvalue) const {
+  if (upvalue == nullptr) {
+    return nullptr;
+  }
+
+  auto copy = std::make_shared<Upvalue>();
+  copy->stackIndex = upvalue->stackIndex;
+  copy->closed = copyOutValue(upvalue->closed);
+  copy->isClosed = upvalue->isClosed;
+  return copy;
+}
+
 void VM::push(Value value) { stack_.push_back(std::move(value)); }
 
 Value VM::pop() {
@@ -949,15 +970,14 @@ void VM::callBytecodeClosure(ObjClosure* closure, std::size_t argCount, std::siz
 
 // 捕获仍在 VM 栈上的局部变量。
 // 同一个栈槽只创建一个 open upvalue，兄弟闭包共享同一个 Upvalue。
-std::shared_ptr<Upvalue> VM::captureUpvalue(std::size_t stackIndex) {
-  for (const auto& upvalue : openUpvalues_) {
+ObjUpvalue* VM::captureUpvalue(std::size_t stackIndex) {
+  for (auto* upvalue : openUpvalues_) {
     if (!upvalue->isClosed && upvalue->stackIndex == stackIndex) {
       return upvalue;
     }
   }
 
-  auto upvalue = std::make_shared<Upvalue>();
-  upvalue->stackIndex = stackIndex;
+  auto* upvalue = allocateObject<ObjUpvalue>(stackIndex);
   openUpvalues_.push_back(upvalue);
   return upvalue;
 }
@@ -965,7 +985,7 @@ std::shared_ptr<Upvalue> VM::captureUpvalue(std::size_t stackIndex) {
 // 关闭所有指向即将离开栈的 upvalue。
 // 值从 stack_ 复制到 Upvalue::closed，之后闭包从 closed 读写。
 void VM::closeUpvalues(std::size_t firstStackIndex) {
-  for (const auto& upvalue : openUpvalues_) {
+  for (auto* upvalue : openUpvalues_) {
     if (!upvalue->isClosed && upvalue->stackIndex >= firstStackIndex) {
       upvalue->closed = stack_[upvalue->stackIndex];
       upvalue->isClosed = true;
@@ -973,7 +993,7 @@ void VM::closeUpvalues(std::size_t firstStackIndex) {
   }
   openUpvalues_.erase(
       std::remove_if(openUpvalues_.begin(), openUpvalues_.end(),
-                     [](const std::shared_ptr<Upvalue>& upvalue) { return upvalue->isClosed; }),
+                     [](ObjUpvalue* upvalue) { return upvalue->isClosed; }),
       openUpvalues_.end());
 }
 
@@ -1056,9 +1076,7 @@ void VM::markValue(const Value& value) {
   }
 
   if (value.isBytecodeClosure()) {
-    for (const auto& upvalue : value.asBytecodeClosure()->upvalues) {
-      markUpvalue(upvalue);
-    }
+    markBytecodeClosure(value.asBytecodeClosure());
     return;
   }
 
@@ -1105,8 +1123,16 @@ void VM::markObjectChildren(Obj* object) {
       break;
     }
     case ObjType::Function:
-    case ObjType::Upvalue:
       break;
+    case ObjType::Upvalue: {
+      auto* upvalue = static_cast<ObjUpvalue*>(object);
+      if (upvalue->isClosed) {
+        markValue(upvalue->closed);
+      } else if (upvalue->stackIndex < stack_.size()) {
+        markValue(stack_[upvalue->stackIndex]);
+      }
+      break;
+    }
     case ObjType::Closure: {
       auto* closure = static_cast<ObjClosure*>(object);
       for (const auto& upvalue : closure->upvalues) {
@@ -1152,6 +1178,24 @@ void VM::markClosure(ObjClosure* closure) {
   markObject(closure);
 }
 
+void VM::markBytecodeClosure(const std::shared_ptr<BytecodeClosure>& closure) {
+  if (closure == nullptr) {
+    return;
+  }
+
+  for (const auto& upvalue : closure->upvalues) {
+    if (upvalue == nullptr) {
+      continue;
+    }
+
+    if (upvalue->isClosed) {
+      markValue(upvalue->closed);
+    } else if (upvalue->stackIndex < stack_.size()) {
+      markValue(stack_[upvalue->stackIndex]);
+    }
+  }
+}
+
 void VM::markBytecodeClass(const std::shared_ptr<BytecodeClass>& klass) {
   if (klass == nullptr) {
     return;
@@ -1160,15 +1204,11 @@ void VM::markBytecodeClass(const std::shared_ptr<BytecodeClass>& klass) {
   markBytecodeClass(klass->superclass);
 
   for (const auto& method : klass->methods) {
-    for (const auto& upvalue : method.second->upvalues) {
-      markUpvalue(upvalue);
-    }
+    markBytecodeClosure(method.second);
   }
 
   for (const auto& method : klass->staticMethods) {
-    for (const auto& upvalue : method.second->upvalues) {
-      markUpvalue(upvalue);
-    }
+    markBytecodeClosure(method.second);
   }
 }
 
@@ -1190,21 +1230,15 @@ void VM::markBytecodeBoundMethod(const std::shared_ptr<BytecodeBoundMethod>& met
   }
 
   markValue(method->receiver);
-  for (const auto& upvalue : method->method->upvalues) {
-    markUpvalue(upvalue);
-  }
+  markBytecodeClosure(method->method);
 }
 
-void VM::markUpvalue(const std::shared_ptr<Upvalue>& upvalue) {
+void VM::markUpvalue(ObjUpvalue* upvalue) {
   if (upvalue == nullptr) {
     return;
   }
 
-  if (upvalue->isClosed) {
-    markValue(upvalue->closed);
-  } else if (upvalue->stackIndex < stack_.size()) {
-    markValue(stack_[upvalue->stackIndex]);
-  }
+  markObject(upvalue);
 }
 
 void VM::sweep() {

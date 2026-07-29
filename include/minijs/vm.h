@@ -18,6 +18,8 @@
 namespace minijs {
 
 struct ObjClosure;
+struct ObjClass;
+struct ObjUpvalue;
 
 // 一次字节码函数调用的执行状态。
 struct CallFrame {
@@ -47,6 +49,9 @@ class VM {
  private:
   void defineBuiltin(std::string name, std::size_t arity, NativeFn function);
   Value copyOutValue(const Value& value) const;
+  std::shared_ptr<BytecodeClass> copyOutClass(const ObjClass* klass) const;
+  std::shared_ptr<BytecodeClosure> copyOutClosure(const ObjClosure* closure) const;
+  std::shared_ptr<Upvalue> copyOutUpvalue(const ObjUpvalue* upvalue) const;
 
   void push(Value value);
   Value pop();
@@ -54,7 +59,7 @@ class VM {
   void callBytecodeClosure(ObjClosure* closure, std::size_t argCount, std::size_t returnSlot,
                            std::size_t slotStart, const std::string& label,
                            bool returnsReceiver = false);
-  std::shared_ptr<Upvalue> captureUpvalue(std::size_t stackIndex);
+  ObjUpvalue* captureUpvalue(std::size_t stackIndex);
   void closeUpvalues(std::size_t firstStackIndex);
   void collectGarbageIfNeeded();
   void markRoots();
@@ -62,16 +67,17 @@ class VM {
   void markObject(Obj* object);
   void markObjectChildren(Obj* object);
   void markClosure(ObjClosure* closure);
+  void markBytecodeClosure(const std::shared_ptr<BytecodeClosure>& closure);
   void markBytecodeClass(const std::shared_ptr<BytecodeClass>& klass);
   void markBytecodeInstance(const std::shared_ptr<BytecodeInstance>& instance);
   void markBytecodeBoundMethod(const std::shared_ptr<BytecodeBoundMethod>& method);
-  void markUpvalue(const std::shared_ptr<Upvalue>& upvalue);
+  void markUpvalue(ObjUpvalue* upvalue);
   void sweep();
 
   // 操作数栈，同时承载当前调用帧的参数和局部变量槽位。
   std::vector<Value> stack_;
   std::vector<CallFrame> frames_;
-  std::vector<std::shared_ptr<Upvalue>> openUpvalues_;
+  std::vector<ObjUpvalue*> openUpvalues_;
   std::unordered_map<std::string, Value> globals_;
   // 未来 GC 管理的堆对象链表。当前阶段只建立链表所有权入口。
   Obj* objects_ = nullptr;

@@ -380,10 +380,10 @@ void testBytecodeGcMarksClosedUpvalueValue() {
 
   minijs::VM vm;
   EXPECT(vm.run(chunk).toString() == "Tom");
-  EXPECT(vm.objectCount() == 3);
+  EXPECT(vm.objectCount() == 4);
 
   vm.collectGarbage();
-  EXPECT(vm.objectCount() == 3);
+  EXPECT(vm.objectCount() == 4);
 }
 
 void testBytecodeClosureUsesGcObject() {
@@ -420,6 +420,54 @@ void testBytecodeGcCollectsUnreachableClosure() {
   EXPECT(vm.objectCount() == 0);
 }
 
+void testBytecodeUpvalueUsesGcObject() {
+  minijs::Parser parser("function make() {"
+                        "  let name = \"Tom\";"
+                        "  function get() { return name; }"
+                        "  return get;"
+                        "}"
+                        "let get = make();"
+                        "get;");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compileProgram(program);
+
+  minijs::VM vm;
+  EXPECT(vm.run(chunk).isBytecodeClosure());
+  EXPECT(vm.objectCount() == 4);
+
+  vm.collectGarbage();
+  EXPECT(vm.objectCount() == 4);
+}
+
+void testBytecodeGcCollectsUnreachableUpvalue() {
+  minijs::Parser parser("{"
+                        "  function make() {"
+                        "    let name = \"Tom\";"
+                        "    function get() { return name; }"
+                        "    return get;"
+                        "  }"
+                        "  make();"
+                        "}"
+                        "undefined;");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compileProgram(program);
+
+  minijs::VM vm;
+  EXPECT(vm.run(chunk).isUndefined());
+  EXPECT(vm.objectCount() == 4);
+
+  vm.collectGarbage();
+  EXPECT(vm.objectCount() == 0);
+}
+
 void testBytecodeGcMarksClassMethodClosureUpvalues() {
   minijs::Parser parser("function makeBox() {"
                         "  let prefix = \"hi\";"
@@ -438,10 +486,10 @@ void testBytecodeGcMarksClassMethodClosureUpvalues() {
 
   minijs::VM vm;
   EXPECT(vm.run(chunk).toString() == "hi");
-  EXPECT(vm.objectCount() == 5);
+  EXPECT(vm.objectCount() == 6);
 
   vm.collectGarbage();
-  EXPECT(vm.objectCount() == 5);
+  EXPECT(vm.objectCount() == 6);
 }
 
 void testBytecodeClassUsesGcObject() {
@@ -2634,6 +2682,8 @@ void runBytecodeTests() {
   testBytecodeGcMarksClosedUpvalueValue();
   testBytecodeClosureUsesGcObject();
   testBytecodeGcCollectsUnreachableClosure();
+  testBytecodeUpvalueUsesGcObject();
+  testBytecodeGcCollectsUnreachableUpvalue();
   testBytecodeGcMarksClassMethodClosureUpvalues();
   testBytecodeClassUsesGcObject();
   testBytecodeGcCollectsUnreachableClass();

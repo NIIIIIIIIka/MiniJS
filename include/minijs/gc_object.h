@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -12,6 +13,7 @@ namespace minijs {
 
 struct ObjClass;
 struct ObjClosure;
+struct ObjUpvalue;
 struct Upvalue;
 
 // VM GC 管理的数组对象，元素继续保存为动态 Value。
@@ -49,7 +51,7 @@ struct ObjClosure final : public Obj {
   explicit ObjClosure(std::shared_ptr<BytecodeFunction> function);
 
   std::shared_ptr<BytecodeFunction> function;
-  std::vector<std::shared_ptr<Upvalue>> upvalues;
+  std::vector<ObjUpvalue*> upvalues;
 };
 
 // VM GC 管理的字节码类对象，保存类名、父类和方法表。
@@ -62,4 +64,11 @@ struct ObjClass final : public Obj {
   std::unordered_map<std::string, ObjClosure*> staticMethods;
 };
 
+struct ObjUpvalue final : public Obj {
+  explicit ObjUpvalue(std::size_t stackIndex);
+
+  std::size_t stackIndex = 0;
+  Value closed = Value::undefined();
+  bool isClosed = false;
+};
 }  // namespace minijs

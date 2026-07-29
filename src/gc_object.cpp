@@ -19,4 +19,7 @@ ObjClosure::ObjClosure(std::shared_ptr<BytecodeFunction> function)
     : Obj(ObjType::Closure), function(std::move(function)) {}
 
 ObjClass::ObjClass(std::string name) : Obj(ObjType::Class), name(std::move(name)) {}
+
+ObjUpvalue::ObjUpvalue(std::size_t stackIndex)
+    : Obj(ObjType::Upvalue), stackIndex(stackIndex) {}
 }  // namespace minijs
