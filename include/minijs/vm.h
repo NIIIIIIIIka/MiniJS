@@ -61,6 +61,9 @@ class VM {
   };
 
   void defineBuiltin(std::string name, std::size_t arity, NativeFn function);
+  // 对外兼容层：VM 内部已经使用 Obj* 运行时对象，这组函数只在 run() 返回前
+  // 把 GC 对象转换成旧测试和外部接口仍能识别的 Bytecode*/Array/Object/String 值。
+  // 后续删除 Bytecode* 兼容结构时，应优先收窄并移除这组 copyOut* 函数。
   Value copyOutValue(const Value& value) const;
   std::shared_ptr<BytecodeClass> copyOutClass(const ObjClass* klass) const;
   std::shared_ptr<BytecodeClosure> copyOutClosure(const ObjClosure* closure) const;

@@ -478,8 +478,27 @@ void testBytecodeGcMarksClosedUpvalueValue() {
   EXPECT(vm.objectCount() == 6);
 }
 
-void testBytecodeClosureUsesGcObject() {
+void testBytecodeClosureReturnsCompatibleValue() {
   minijs::Parser parser("function get() { return \"Tom\"; } get;");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compileProgram(program);
+
+  minijs::VM vm;
+  EXPECT(vm.run(chunk).isBytecodeClosure());
+  EXPECT(vm.objectCount() == 2);
+
+  vm.collectGarbage();
+  EXPECT(vm.objectCount() == 2);
+}
+
+void testBytecodeGlobalClosureKeepsGcObjectGraph() {
+  minijs::Parser parser("let saved = undefined;"
+                        "{ function get() { return \"Tom\"; } saved = get; }"
+                        "saved;");
   minijs::Program program = parser.parseProgram();
 
   EXPECT(parser.diagnostics().empty());
@@ -512,7 +531,7 @@ void testBytecodeGcCollectsUnreachableClosure() {
   EXPECT(vm.objectCount() == 0);
 }
 
-void testBytecodeUpvalueUsesGcObject() {
+void testBytecodeUpvalueReturnsCompatibleClosureValue() {
   minijs::Parser parser("function make() {"
                         "  let name = \"Tom\";"
                         "  function get() { return name; }"
@@ -584,7 +603,7 @@ void testBytecodeGcMarksClassMethodClosureUpvalues() {
   EXPECT(vm.objectCount() == 8);
 }
 
-void testBytecodeClassUsesGcObject() {
+void testBytecodeClassReturnsCompatibleValue() {
   minijs::Parser parser("class Box {} Box;");
   minijs::Program program = parser.parseProgram();
 
@@ -618,7 +637,7 @@ void testBytecodeGcCollectsUnreachableClass() {
   EXPECT(vm.objectCount() == 0);
 }
 
-void testBytecodeClassInstanceUsesGcObject() {
+void testBytecodeClassInstanceReturnsCompatibleValue() {
   minijs::Parser parser("class Box {} Box();");
   minijs::Program program = parser.parseProgram();
 
@@ -697,7 +716,7 @@ void testBytecodeGcBoundMethodKeepsReceiverInstance() {
   EXPECT(vm.objectCount() == 6);
 }
 
-void testBytecodeGcBoundMethodUsesGcObject() {
+void testBytecodeBoundMethodReturnsCompatibleValue() {
   minijs::Parser parser("class Box { get() { return this.name; } }"
                         "let b = Box();"
                         "b.name = \"Tom\";"
@@ -2811,18 +2830,19 @@ void runBytecodeTests() {
   testBytecodeAutoGcPressureKeepsReachableObjectGraph();
   testBytecodeAutoGcPressureKeepsClosureClassGraph();
   testBytecodeGcMarksClosedUpvalueValue();
-  testBytecodeClosureUsesGcObject();
+  testBytecodeClosureReturnsCompatibleValue();
+  testBytecodeGlobalClosureKeepsGcObjectGraph();
   testBytecodeGcCollectsUnreachableClosure();
-  testBytecodeUpvalueUsesGcObject();
+  testBytecodeUpvalueReturnsCompatibleClosureValue();
   testBytecodeGcCollectsUnreachableUpvalue();
   testBytecodeGcMarksClassMethodClosureUpvalues();
-  testBytecodeClassUsesGcObject();
+  testBytecodeClassReturnsCompatibleValue();
   testBytecodeGcCollectsUnreachableClass();
-  testBytecodeClassInstanceUsesGcObject();
+  testBytecodeClassInstanceReturnsCompatibleValue();
   testBytecodeGcKeepsStringInInstanceField();
   testBytecodeGcCollectsUnreachableInstanceAndField();
   testBytecodeGcBoundMethodKeepsReceiverInstance();
-  testBytecodeGcBoundMethodUsesGcObject();
+  testBytecodeBoundMethodReturnsCompatibleValue();
   testBytecodeGcBoundMethodKeepsReceiverAfterOriginalVariableCleared();
   testBytecodeGcMarksInstanceFieldObjectGraph();
   testCompileStringConcatenation();
