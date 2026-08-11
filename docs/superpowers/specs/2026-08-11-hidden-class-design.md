@@ -1,16 +1,16 @@
-# Hidden Class Object Storage Design
+# Hidden Class 对象存储设计
 
-## Goal
+## 目标
 
-Introduce a first-stage hidden class object representation for MiniJS VM ordinary objects.
+为 MiniJS VM 的普通对象引入第一阶段 hidden class 对象表示。
 
-This phase changes ordinary `ObjObject` property storage from direct `unordered_map<string, Value>` lookup to shape-based slot storage while preserving the current user-visible semantics of object literals, property get/set, `len`, `has`, `keys`, `del`, GC marking, and VM return compatibility.
+这一阶段会把普通 `ObjObject` 的属性存储从直接使用 `unordered_map<string, Value>` 查找，改成基于 shape 的 slot 存储。同时保持当前用户可见语义不变，包括对象字面量、属性 get/set、`len`、`has`、`keys`、`del`、GC 标记，以及 VM 返回值兼容性。
 
-This phase does not implement inline caches, instance field shapes, array/string property optimization, class method lookup changes, or `super` changes. Those become follow-up phases after the ordinary object representation is stable.
+这一阶段不实现 inline cache，不迁移 instance field，不优化数组/字符串属性，不改 class method lookup，也不改 `super`。这些都放到普通对象表示稳定之后再做。
 
-## Motivation
+## 动机
 
-The current VM object representation stores ordinary object properties in a hash table. Every `obj.name` lookup pays string hash and map lookup cost. A hidden class, also called a shape, lets objects with the same property addition order share a property layout:
+当前 VM 的普通对象属性存在哈希表里。每次 `obj.name` 查找都要付出字符串 hash 和 map lookup 的成本。hidden class，也可以叫 shape，可以让属性添加顺序相同的对象共享同一份属性布局：
 
 ```text
 empty shape
@@ -21,31 +21,31 @@ object.shape = shape(name, age)
 object.slots = ["Tom", 18]
 ```
 
-This gives MiniJS a runtime architecture closer to real JavaScript engines and creates a clean foundation for later monomorphic inline caches.
+这会让 MiniJS 的运行时架构更接近真实 JavaScript 引擎，也为后续 monomorphic inline cache 打下清晰基础。
 
-## Scope
+## 范围
 
-In scope:
+本阶段包含：
 
-- Ordinary object literals and ordinary object property assignment.
-- Ordinary object property reads.
-- `len`, `has`, `keys`, and `del` for ordinary objects.
-- VM GC marking and copy-out compatibility for ordinary objects.
-- Tests that prove current object semantics are preserved.
-- Tests that prove objects with the same property addition order share a shape.
+- 普通对象字面量和普通对象属性赋值。
+- 普通对象属性读取。
+- 普通对象上的 `len`、`has`、`keys`、`del`。
+- 普通对象的 VM GC 标记和 copy-out 兼容。
+- 证明现有对象语义不变的测试。
+- 证明属性添加顺序相同的对象会共享 shape 的测试。
 
-Out of scope:
+本阶段不包含：
 
-- Inline cache implementation.
-- `ObjInstance::fields` migration.
-- Class method lookup, static methods, inherited methods, and `super`.
-- Array and string pseudo-properties.
-- Re-entering shape mode after dictionary fallback.
-- Optimizing property deletion with shape transitions.
+- inline cache 实现。
+- `ObjInstance::fields` 迁移。
+- class method lookup、static method、继承方法和 `super`。
+- 数组和字符串的伪属性。
+- dictionary fallback 之后重新回到 shape mode。
+- 用 shape 转换优化属性删除。
 
-## Data Model
+## 数据模型
 
-Add a new GC object type:
+新增一个 GC 对象类型：
 
 ```cpp
 struct ObjShape final : Obj {
@@ -56,9 +56,9 @@ struct ObjShape final : Obj {
 };
 ```
 
-`slots` maps each property name to its slot index for this shape. `transitions` maps a property name to the next shape reached by adding that property.
+`slots` 记录当前 shape 中每个属性名对应的 slot 下标。`transitions` 记录“在当前 shape 上新增某个属性后会转移到哪个 shape”。
 
-Update ordinary objects to:
+普通对象改成：
 
 ```cpp
 struct ObjObject final : Obj {
@@ -72,17 +72,17 @@ struct ObjObject final : Obj {
 };
 ```
 
-The VM owns one root empty shape:
+VM 持有一个 root empty shape：
 
 ```cpp
 ObjShape* rootObjectShape_ = nullptr;
 ```
 
-The root shape is allocated through the VM GC heap during VM construction and remains reachable through VM roots.
+root shape 在 VM 构造期间通过 GC heap 分配，并且通过 VM roots 保持可达。
 
-## Object Property Helpers
+## 对象属性辅助函数
 
-All ordinary object property operations should go through helper functions instead of touching fields directly:
+所有普通对象属性操作都应该走辅助函数，而不是在 VM 指令、内置函数或 GC 逻辑里直接访问字段：
 
 ```cpp
 std::size_t objectPropertyCount(const ObjObject& object);
@@ -94,37 +94,37 @@ std::vector<std::string> objectKeys(const ObjObject& object);
 void objectMaterializeDictionary(ObjObject& object);
 ```
 
-These helpers isolate storage details from `Opcode::GetProperty`, `Opcode::SetProperty`, builtins, GC compatibility code, and future inline cache work.
+这些辅助函数把存储细节从 `Opcode::GetProperty`、`Opcode::SetProperty`、内置函数、GC 兼容代码，以及后续 inline cache 工作中隔离出来。
 
-## Shape Transitions
+## Shape 转换
 
-When setting a new property on a shape-mode object:
+当对 shape mode 对象设置一个新属性时：
 
-1. Check whether the current shape already contains the property.
-2. If yes, update the existing slot.
-3. If no, check `shape->transitions[name]`.
-4. If a transition exists, reuse that shape.
-5. If no transition exists, allocate a new `ObjShape`, copy the parent slots, append `name -> newSlot`, and record the transition.
-6. Update `object.shape` and append the new value to `object.slots`.
+1. 检查当前 shape 是否已经包含这个属性。
+2. 如果包含，直接更新已有 slot。
+3. 如果不包含，检查 `shape->transitions[name]`。
+4. 如果转换已存在，复用对应 shape。
+5. 如果转换不存在，分配新的 `ObjShape`，复制父 shape 的 slots，追加 `name -> newSlot`，并记录转换。
+6. 更新 `object.shape`，并把新值追加到 `object.slots`。
 
-Objects with the same property addition order will converge to the same final shape.
+属性添加顺序相同的对象最终会收敛到同一个 shape。
 
-## Object Literals
+## 对象字面量
 
-`Opcode::Object` currently builds an unordered map from constant property names and stack values. It should instead:
+`Opcode::Object` 目前会根据常量属性名和栈上的属性值构造一个 unordered map。改造后应该变成：
 
-1. Allocate an `ObjObject` with the root shape.
-2. Pop property values in source order.
-3. Call `objectSetProperty` for each property name and value.
-4. Push the new object value.
+1. 用 root shape 分配一个 `ObjObject`。
+2. 按源码顺序取出属性值。
+3. 对每个属性名和值调用 `objectSetProperty`。
+4. 把新对象值压回栈。
 
-The source-order insertion requirement matters because hidden classes depend on property addition order. The existing compiler stores object literal property names in order, so the VM should preserve that order when populating slots.
+这里必须保留源码顺序，因为 hidden class 依赖属性添加顺序。现有 compiler 已经按顺序保存对象字面量属性名，所以 VM 在填充 slots 时也应该保持这个顺序。
 
-## Property Reads
+## 属性读取
 
-`Opcode::GetProperty` for ordinary objects should call `objectGetProperty`.
+普通对象的 `Opcode::GetProperty` 应该调用 `objectGetProperty`。
 
-Shape-mode read:
+shape mode 读取逻辑：
 
 ```cpp
 if (!object.dictionaryMode) {
@@ -136,45 +136,45 @@ if (!object.dictionaryMode) {
 }
 ```
 
-Dictionary-mode read uses the fallback dictionary and returns `undefined` for missing properties.
+dictionary mode 读取使用 fallback dictionary，属性不存在时返回 `undefined`。
 
-Array, string, class, instance, method, static method, and `super` paths remain unchanged in this phase.
+数组、字符串、class、instance、method、static method 和 `super` 路径在这一阶段保持不变。
 
-## Property Writes
+## 属性写入
 
-`Opcode::SetProperty` for ordinary objects should call `objectSetProperty`.
+普通对象的 `Opcode::SetProperty` 应该调用 `objectSetProperty`。
 
-Shape-mode write updates an existing slot or transitions to a new shape. Dictionary-mode write updates the dictionary.
+shape mode 写入会更新已有 slot，或者转换到新 shape。dictionary mode 写入则直接更新 dictionary。
 
-The operation must keep the current expression result behavior: property assignment pushes the assigned value back onto the VM stack.
+这个操作必须保留当前表达式结果行为：属性赋值后要把被赋的值重新压回 VM 栈。
 
-## Delete And Dictionary Fallback
+## 删除与 Dictionary Fallback
 
-`del(obj, key)` should not try to remove a property from a shape. Instead:
+`del(obj, key)` 不应该尝试从 shape 中移除属性。改用 fallback 策略：
 
-1. If the object is in shape mode, materialize `dictionary` from `shape->slots` and `slots`.
-2. Set `dictionaryMode = true`.
-3. Clear or leave `shape/slots` unused by all property helpers.
-4. Erase the requested key from `dictionary`.
+1. 如果对象处于 shape mode，根据 `shape->slots` 和 `slots` 物化出 `dictionary`。
+2. 设置 `dictionaryMode = true`。
+3. 清空 `shape/slots`，或者保留但让所有属性辅助函数不再使用它们。
+4. 从 `dictionary` 中删除目标 key。
 
-After dictionary fallback, the object stays in dictionary mode permanently. This keeps deletion semantics simple and mirrors the idea that highly dynamic objects are less optimized.
+进入 dictionary fallback 后，对象永久停留在 dictionary mode。这能保持删除语义简单，也符合“高度动态对象不走优化路径”的设计思路。
 
-## Builtins
+## 内置函数
 
-Update ordinary object handling in builtins:
+更新内置函数里的普通对象处理：
 
-- `len(object)` uses `objectPropertyCount`.
-- `has(object, key)` uses `objectHasProperty`.
-- `keys(object)` uses `objectKeys`.
-- `del(object, key)` uses `objectDeleteProperty`.
+- `len(object)` 使用 `objectPropertyCount`。
+- `has(object, key)` 使用 `objectHasProperty`。
+- `keys(object)` 使用 `objectKeys`。
+- `del(object, key)` 使用 `objectDeleteProperty`。
 
-Instance handling remains map-based in this phase.
+instance 处理在这一阶段继续保持 map-based。
 
 ## GC
 
-Add `ObjType::Shape` and mark shape objects.
+新增 `ObjType::Shape`，并在 GC 中标记 shape 对象。
 
-Ordinary object marking:
+普通对象标记：
 
 ```cpp
 markObject(object->shape);
@@ -186,7 +186,7 @@ for (const auto& entry : object->dictionary) {
 }
 ```
 
-Shape marking:
+shape 标记：
 
 ```cpp
 markObject(shape->parent);
@@ -195,58 +195,57 @@ for (const auto& transition : shape->transitions) {
 }
 ```
 
-Shape property names are C++ strings and do not need GC marking. Shape transitions must be marked so a live shape keeps its transition tree reachable. The VM root shape must also be part of the root set.
+shape 的属性名是 C++ string，不需要 GC 标记。shape 转换必须被标记，这样一个 live shape 才能保持它的转换树可达。VM root shape 也必须加入 root set。
 
-## Copy-Out Compatibility
+## 返回值转换兼容
 
-`VM::copyOutValue` currently converts GC ordinary objects back into legacy `Value` object maps. It should use `objectKeys` and `objectGetProperty` to build the map rather than reading internal storage.
+`VM::copyOutValue` 当前会把 GC 普通对象转换回旧的 `Value` object map。改造后它应该通过 `objectKeys` 和 `objectGetProperty` 构造 map，而不是直接读取内部存储。
 
-This preserves existing tests and external behavior while changing VM internals.
+这样可以在改变 VM 内部表示的同时，保留现有测试和外部行为。
 
-## Tests
+## 测试
 
-Behavior tests:
+行为测试：
 
-- Object literal property reads still work.
-- Dynamic property assignment still works.
-- Reassigning an existing property updates the old value.
-- Missing ordinary object property still returns `undefined`.
-- Two objects with the same properties have independent values.
-- `len`, `has`, `keys`, and `del` preserve existing behavior.
-- After `del`, get/set/has/keys/len still work through dictionary mode.
+- 对象字面量属性读取仍然正常。
+- 动态属性赋值仍然正常。
+- 重新赋值已有属性会更新旧值。
+- 普通对象缺失属性仍然返回 `undefined`。
+- 两个拥有相同属性的对象仍然保持值独立。
+- `len`、`has`、`keys`、`del` 保持现有行为。
+- `del` 后 get/set/has/keys/len 仍然能通过 dictionary mode 正常工作。
 
-Shape tests:
+shape 测试：
 
-- Two objects that add `x` then `y` share the same final shape.
-- Two objects that add `x` then `y` versus `y` then `x` do not share the same final shape.
-- Reassigning an existing property does not change shape.
-- Deleting a property switches that object to dictionary mode.
+- 两个都按 `x` 再 `y` 顺序添加属性的对象，会共享同一个最终 shape。
+- `x` 再 `y` 和 `y` 再 `x` 两种添加顺序不会共享同一个最终 shape。
+- 重新赋值已有属性不会改变 shape。
+- 删除属性会让该对象切换到 dictionary mode。
 
-GC tests:
+GC 测试：
 
-- Shape-mode object slots keep nested strings, arrays, objects, classes, and closures alive.
-- Unreachable shape-mode objects are collected.
-- Root object shape remains alive across manual GC.
-- Dictionary-mode object values are marked after deletion fallback.
+- shape mode 对象 slots 中的嵌套 string、array、object、class、closure 会保持可达。
+- 不可达的 shape mode 对象会被回收。
+- root object shape 在手动 GC 后仍保持存活。
+- dictionary fallback 后，dictionary mode 对象里的值仍会被标记。
 
-## Implementation Order
+## 实现顺序
 
-1. Add helper functions around the existing `unordered_map` implementation and update VM/builtins/copy-out call sites to use them.
-2. Add `ObjShape`, `ObjType::Shape`, VM root shape allocation, and GC marking.
-3. Change `ObjObject` to shape-mode fields plus dictionary fallback.
-4. Update object literal creation and ordinary object get/set/delete helpers.
-5. Add behavior tests and shape-sharing tests.
-6. Add GC tests for slot marking and dictionary-mode marking.
+1. 先在现有 `unordered_map` 实现外面包一层辅助函数，并更新 VM/内置函数/copy-out 调用点，让它们都走辅助函数。
+2. 新增 `ObjShape`、`ObjType::Shape`、VM root shape 分配和 GC 标记逻辑。
+3. 把 `ObjObject` 改成 shape-mode 字段加 dictionary fallback。
+4. 更新对象字面量创建，以及普通对象 get/set/delete 辅助函数。
+5. 增加行为测试和 shape-sharing 测试。
+6. 增加 slot marking 和 dictionary-mode marking 的 GC 测试。
 
-Inline cache should only begin after this phase passes all existing tests and the new shape tests.
+inline cache 应该等这一阶段通过所有现有测试和新增 shape 测试后再开始。
 
-## Success Criteria
+## 成功标准
 
-- All existing tests continue to pass.
-- New object behavior tests pass.
-- New shape-sharing tests pass.
-- New GC tests pass.
-- No CLI behavior changes are introduced.
-- Ordinary object internals use shape/slots for non-deleted objects.
-- `del` reliably switches ordinary objects to dictionary mode.
-
+- 所有现有测试继续通过。
+- 新增对象行为测试通过。
+- 新增 shape-sharing 测试通过。
+- 新增 GC 测试通过。
+- 不引入 CLI 行为变化。
+- 未删除属性的普通对象内部使用 shape/slots。
+- `del` 能稳定地把普通对象切换到 dictionary mode。
