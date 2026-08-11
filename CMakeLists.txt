@@ -79,4 +79,30 @@ if(MINIJS_BUILD_TESTS)
 
         add_test(NAME minijs_tests COMMAND minijs_tests)
     endif()
+
+    if(TARGET minijs)
+        add_test(
+            NAME minijs_cli_default_uses_vm
+            COMMAND minijs "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/cli_vm_only.js"
+        )
+        set_tests_properties(minijs_cli_default_uses_vm PROPERTIES
+            PASS_REGULAR_EXPRESSION "^0\n$"
+        )
+
+        add_test(
+            NAME minijs_cli_run_uses_vm
+            COMMAND minijs --run "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/cli_vm_only.js"
+        )
+        set_tests_properties(minijs_cli_run_uses_vm PROPERTIES
+            PASS_REGULAR_EXPRESSION "^0\n$"
+        )
+
+        add_test(
+            NAME minijs_cli_interp_runs_ast_interpreter
+            COMMAND minijs --interp "${CMAKE_CURRENT_SOURCE_DIR}/examples/basics.js"
+        )
+        set_tests_properties(minijs_cli_interp_runs_ast_interpreter PROPERTIES
+            PASS_REGULAR_EXPRESSION "^30\n$"
+        )
+    endif()
 endif()

@@ -5,10 +5,12 @@
 #include <string>
 #include <string_view>
 
+#include "minijs/compiler.h"
 #include "minijs/interpreter.h"
 #include "minijs/lexer.h"
 #include "minijs/parser.h"
 #include "minijs/token.h"
+#include "minijs/vm.h"
 
 #ifndef MINIJS_VERSION
 #define MINIJS_VERSION "unknown"
@@ -23,6 +25,7 @@ void printUsage(std::ostream& output) {
          << "       minijs --tokens <file>\n"
          << "       minijs --ast <file>\n"
          << "       minijs --run <file>\n"
+         << "       minijs --interp <file>\n"
          << "       minijs --help\n"
          << "       minijs --version\n";
 }
@@ -79,7 +82,30 @@ bool printAst(std::string_view source) {
   return true;
 }
 
-bool runProgram(std::string_view source) {
+bool runVmProgram(std::string_view source) {
+  minijs::Parser parser(source);
+  minijs::Program program = parser.parseProgram();
+
+  for (const minijs::Diagnostic& diagnostic : parser.diagnostics()) {
+    std::cerr << diagnostic.location.line << ':' << diagnostic.location.column
+              << ": error: " << diagnostic.message << '\n';
+  }
+
+  if (!parser.diagnostics().empty()) {
+    return false;
+  }
+
+  minijs::Compiler compiler;
+  const minijs::Chunk chunk = compiler.compileProgram(program);
+  minijs::VM vm;
+  const minijs::Value result = vm.run(chunk);
+  if (!result.isNull()) {
+    std::cout << result.toString() << '\n';
+  }
+  return true;
+}
+
+bool runInterpreterProgram(std::string_view source) {
   minijs::Parser parser(source);
   minijs::Program program = parser.parseProgram();
 
@@ -103,14 +129,15 @@ bool runProgram(std::string_view source) {
 
 int main(int argc, char* argv[]) {
   if (argc != 2 && argc != 3) {
-    std::cerr << "error: expected one argument, or --tokens plus a file\n";
+    std::cerr << "error: expected one argument, or an option plus a file\n";
     printUsage(std::cerr);
     return ExitUsageError;
   }
 
   const std::string argument = argv[1];
 
-  if (argc == 3 && argument != "--tokens" && argument != "--ast" && argument != "--run") {
+  if (argc == 3 && argument != "--tokens" && argument != "--ast" && argument != "--run" &&
+      argument != "--interp") {
     std::cerr << "error: unknown two-argument command: " << argument << '\n';
     printUsage(std::cerr);
     return ExitUsageError;
@@ -155,7 +182,22 @@ int main(int argc, char* argv[]) {
     }
 
     try {
-      return runProgram(readFile(argv[2])) ? 0 : ExitInputError;
+      return runVmProgram(readFile(argv[2])) ? 0 : ExitInputError;
+    } catch (const std::exception& error) {
+      std::cerr << "error: " << error.what() << '\n';
+      return ExitInputError;
+    }
+  }
+
+  if (argument == "--interp") {
+    if (argc != 3) {
+      std::cerr << "error: --interp expects a file\n";
+      printUsage(std::cerr);
+      return ExitUsageError;
+    }
+
+    try {
+      return runInterpreterProgram(readFile(argv[2])) ? 0 : ExitInputError;
     } catch (const std::exception& error) {
       std::cerr << "error: " << error.what() << '\n';
       return ExitInputError;
@@ -179,7 +221,7 @@ int main(int argc, char* argv[]) {
   }
 
   try {
-    return runProgram(readFile(argument)) ? 0 : ExitInputError;
+    return runVmProgram(readFile(argument)) ? 0 : ExitInputError;
   } catch (const std::exception& error) {
     std::cerr << "error: " << error.what() << '\n';
     return ExitInputError;
