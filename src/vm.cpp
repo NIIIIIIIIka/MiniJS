@@ -88,6 +88,8 @@ std::unordered_map<std::string, Value>& gcInstanceFields(Value& value) {
 }  // namespace
 
 VM::VM() {
+  rootObjectShape_ = allocateInternalObject<ObjShape>(nullptr, "");
+
   defineBuiltin("print", 1, [](const std::vector<Value>& arguments) -> Value {
     std::cout << arguments[0].toString() << '\n';
     return Value();
@@ -95,7 +97,7 @@ VM::VM() {
 
   defineBuiltin("clock", 0, [](const std::vector<Value>&) -> Value { return Value(0.0); });
 
-  defineBuiltin("len", 1, [](const std::vector<Value>& arguments) -> Value {
+  defineBuiltin("len", 1, [this](const std::vector<Value>& arguments) -> Value {
     const Value& value = arguments[0];
 
     if (value.isGcString()) {
@@ -107,7 +109,7 @@ VM::VM() {
     }
 
     if (value.isGcObject()) {
-      return Value(static_cast<double>(value.asGcObject()->properties.size()));
+      return Value(static_cast<double>(objectPropertyCount(*value.asGcObject())));
     }
 
     if (isGcInstanceValue(value)) {
@@ -157,7 +159,7 @@ VM::VM() {
     return makeGcString("unknown");
   });
 
-  defineBuiltin("has", 2, [](const std::vector<Value>& arguments) -> Value {
+  defineBuiltin("has", 2, [this](const std::vector<Value>& arguments) -> Value {
     const Value& object = arguments[0];
     const Value& key = arguments[1];
 
@@ -168,8 +170,7 @@ VM::VM() {
     const std::string& name = key.asGcString()->value;
 
     if (object.isGcObject()) {
-      const auto& properties = object.asGcObject()->properties;
-      return Value(properties.find(name) != properties.end());
+      return Value(objectHasProperty(*object.asGcObject(), name));
     }
     if (isGcInstanceValue(object)) {
       const auto& fields = gcInstanceFields(object);
@@ -185,7 +186,7 @@ VM::VM() {
     return Value(false);
   });
 
-  defineBuiltin("del", 2, [](const std::vector<Value>& arguments) -> Value {
+  defineBuiltin("del", 2, [this](const std::vector<Value>& arguments) -> Value {
     Value object = arguments[0];
     const Value& key = arguments[1];
 
@@ -198,7 +199,7 @@ VM::VM() {
       return Value(gcInstanceFields(object).erase(name) > 0);
     }
     if (object.isGcObject()) {
-      return Value(object.asGcObject()->properties.erase(name) > 0);
+      return Value(objectDeleteProperty(*object.asGcObject(), name));
     }
 
     return Value(false);
@@ -209,10 +210,7 @@ VM::VM() {
     std::vector<std::string> keys;
 
     if (object.isGcObject()) {
-      for (const auto& key : object.asGcObject()->properties) {
-        keys.push_back(key.first);
-      }
-      return makeGcStringArray(std::move(keys));
+      return makeGcStringArray(objectKeys(*object.asGcObject()));
     }
     if (isGcInstanceValue(object)) {
       for (const auto& field : gcInstanceFields(object)) {
@@ -253,9 +251,8 @@ void VM::TemporaryRootScope::add(Obj* object) {
 }
 
 void VM::defineBuiltin(std::string name, std::size_t arity, NativeFn function) {
-  auto* native = allocateObject<ObjNativeFunction>(std::move(name), arity, std::move(function));
-  ++builtinObjectCount_;
-
+  auto* native =
+      allocateInternalObject<ObjNativeFunction>(std::move(name), arity, std::move(function));
   globals_[native->name] = Value(native);
 }
 
@@ -747,15 +744,25 @@ Value VM::run(const Chunk& chunk) {
         const std::uint8_t namesIndex = chunk.readByte(frame.ip++);
         const std::vector<Value>& names = chunk.constant(namesIndex).asArray();
 
-        collectGarbageIfNeeded();
-
-        std::unordered_map<std::string, Value> properties;
-        for (std::size_t i = names.size(); i > 0; --i) {
-          Value value = pop();
-          const std::string& name = names[i - 1].asString();
-          properties[name] = value;
+        if (stack_.size() < names.size()) {
+          throw RuntimeError("bytecode stack underflow");
         }
-        push(Value(allocateObject<ObjObject>(std::move(properties))));
+
+        auto* object = allocateObject<ObjObject>(rootObjectShape_);
+        TemporaryRootScope roots(*this);
+        roots.add(object);
+
+        const std::size_t valueStart = stack_.size() - names.size();
+        for (std::size_t i = 0; i < names.size(); ++i) {
+          const std::string& name = names[i].asString();
+          objectSetProperty(*object, name, stack_[valueStart + i]);
+        }
+
+        for (std::size_t i = 0; i < names.size(); ++i) {
+          pop();
+        }
+
+        push(Value(object));
         break;
       }
       case Opcode::GetProperty: {
@@ -820,24 +827,23 @@ Value VM::run(const Chunk& chunk) {
           throw RuntimeError("value is not an object");
         }
 
-        const auto& properties = object.asGcObject()->properties;
-
-        auto it = properties.find(name);
-        if (it == properties.end()) {
-          push(Value::undefined());
-        } else {
-          push(it->second);
-        }
+        push(objectGetProperty(*object.asGcObject(), name));
         break;
       }
       case Opcode::SetProperty: {
         const std::uint8_t nameIndex = chunk.readByte(frame.ip++);
         const std::string& name = chunk.constant(nameIndex).asString();
 
-        Value value = pop();
-        Value object = pop();
+        if (stack_.size() < 2) {
+          throw RuntimeError("bytecode stack underflow");
+        }
+
+        Value value = peek();
+        Value object = stack_[stack_.size() - 2];
         if (isGcInstanceValue(object)) {
           gcInstanceFields(object)[name] = value;
+          pop();
+          pop();
           push(value);
           break;
         }
@@ -846,9 +852,10 @@ Value VM::run(const Chunk& chunk) {
           throw RuntimeError("value is not an object");
         }
 
-        object.asGcObject()->properties[name] = value;
+        objectSetProperty(*object.asGcObject(), name, value);
+        pop();
+        pop();
         push(value);
-
         break;
       }
       case Opcode::GetCurrentClosure:
@@ -860,7 +867,120 @@ Value VM::run(const Chunk& chunk) {
 }
 
 std::size_t VM::objectCount() const {
-  return heapObjectCount_ - builtinObjectCount_;
+  return heapObjectCount_ - internalObjectCount_;
+}
+
+#ifdef MINIJS_TESTING
+const ObjShape* VM::debugGlobalObjectShape(const std::string& name) const {
+  auto global = globals_.find(name);
+  if (global == globals_.end() || !global->second.isGcObject()) {
+    return nullptr;
+  }
+  return global->second.asGcObject()->shape;
+}
+
+bool VM::debugGlobalObjectUsesDictionary(const std::string& name) const {
+  auto global = globals_.find(name);
+  if (global == globals_.end() || !global->second.isGcObject()) {
+    return false;
+  }
+  return global->second.asGcObject()->dictionaryMode;
+}
+#endif
+
+std::size_t VM::objectPropertyCount(const ObjObject& object) const {
+  if (object.dictionaryMode) {
+    return object.dictionary.size();
+  }
+  return object.slots.size();
+}
+
+bool VM::objectHasProperty(const ObjObject& object, const std::string& name) const {
+  if (object.dictionaryMode) {
+    return object.dictionary.find(name) != object.dictionary.end();
+  }
+  return object.shape->slots.find(name) != object.shape->slots.end();
+}
+
+Value VM::objectGetProperty(const ObjObject& object, const std::string& name) const {
+  if (object.dictionaryMode) {
+    auto property = object.dictionary.find(name);
+    if (property == object.dictionary.end()) {
+      return Value::undefined();
+    }
+    return property->second;
+  }
+
+  auto slot = object.shape->slots.find(name);
+  if (slot == object.shape->slots.end()) {
+    return Value::undefined();
+  }
+  return object.slots[slot->second];
+}
+
+void VM::objectSetProperty(ObjObject& object, const std::string& name, Value value) {
+  if (object.dictionaryMode) {
+    object.dictionary[name] = std::move(value);
+    return;
+  }
+
+  auto slot = object.shape->slots.find(name);
+  if (slot != object.shape->slots.end()) {
+    object.slots[slot->second] = std::move(value);
+    return;
+  }
+
+  object.shape = transitionObjectShape(object.shape, name);
+  object.slots.push_back(std::move(value));
+}
+
+bool VM::objectDeleteProperty(ObjObject& object, const std::string& name) {
+  objectMaterializeDictionary(object);
+  return object.dictionary.erase(name) > 0;
+}
+
+std::vector<std::string> VM::objectKeys(const ObjObject& object) const {
+  std::vector<std::string> keys;
+  if (object.dictionaryMode) {
+    keys.reserve(object.dictionary.size());
+    for (const auto& property : object.dictionary) {
+      keys.push_back(property.first);
+    }
+    return keys;
+  }
+
+  keys.reserve(object.shape->slots.size());
+  for (const auto& slot : object.shape->slots) {
+    keys.push_back(slot.first);
+  }
+  return keys;
+}
+
+ObjShape* VM::transitionObjectShape(ObjShape* shape, const std::string& name) {
+  auto existing = shape->transitions.find(name);
+  if (existing != shape->transitions.end()) {
+    return existing->second;
+  }
+
+  auto* next = allocateInternalObject<ObjShape>(shape, name);
+  next->slots = shape->slots;
+  next->slots[name] = next->slots.size();
+  shape->transitions[name] = next;
+  return next;
+}
+
+void VM::objectMaterializeDictionary(ObjObject& object) const {
+  if (object.dictionaryMode) {
+    return;
+  }
+
+  object.dictionary.clear();
+  for (const auto& slot : object.shape->slots) {
+    object.dictionary[slot.first] = object.slots[slot.second];
+  }
+  object.dictionaryMode = true;
+  object.shape = rootObjectShape_;
+  object.slots.clear();
 }
 
 Value VM::copyOutValue(const Value& value) const {
@@ -879,8 +999,8 @@ Value VM::copyOutValue(const Value& value) const {
 
   if (value.isGcObject()) {
     std::unordered_map<std::string, Value> properties;
-    for (const auto& property : value.asGcObject()->properties) {
-      properties[property.first] = copyOutValue(property.second);
+    for (const std::string& key : objectKeys(*value.asGcObject())) {
+      properties[key] = copyOutValue(objectGetProperty(*value.asGcObject(), key));
     }
     return Value(std::move(properties));
   }
@@ -1050,6 +1170,8 @@ void VM::closeUpvalues(std::size_t firstStackIndex) {
 }
 
 void VM::markRoots() {
+  markObject(rootObjectShape_);
+
   for (const Value& value : stack_) {
     markValue(value);
   }
@@ -1176,7 +1298,11 @@ void VM::markObjectChildren(Obj* object) {
     }
     case ObjType::Object: {
       auto* objectValue = static_cast<ObjObject*>(object);
-      for (const auto& property : objectValue->properties) {
+      markObject(objectValue->shape);
+      for (const Value& slot : objectValue->slots) {
+        markValue(slot);
+      }
+      for (const auto& property : objectValue->dictionary) {
         markValue(property.second);
       }
       break;
@@ -1234,6 +1360,14 @@ void VM::markObjectChildren(Obj* object) {
     }
     case ObjType::NativeFunction:
       break;
+    case ObjType::Shape: {
+      auto* shape = static_cast<ObjShape*>(object);
+      markObject(shape->parent);
+      for (const auto& transition : shape->transitions) {
+        markObject(transition.second);
+      }
+      break;
+    }
   }
 }
 

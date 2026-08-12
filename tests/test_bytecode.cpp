@@ -38,6 +38,18 @@ minijs::Value runBytecodeProgram(std::string_view source) {
   return vm.run(chunk);
 }
 
+void runBytecodeProgramOnVm(minijs::VM& vm, std::string_view source) {
+  minijs::Parser parser(source);
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compileProgram(program);
+
+  (void)vm.run(chunk);
+}
+
 void testCompileNumberExpression() { EXPECT(runBytecode("42;").asNumber() == 42); }
 
 void testCompileArithmeticExpression() {
@@ -265,6 +277,18 @@ void testBytecodeGcCollectsUnreachableArrayAndString() {
   EXPECT(vm.objectCount() == 0);
 }
 
+void testBytecodeVmRootShapeIsInternalObject() {
+  minijs::VM vm;
+
+  EXPECT(vm.debugHasRootObjectShape());
+  EXPECT(vm.objectCount() == 0);
+
+  vm.collectGarbage();
+
+  EXPECT(vm.debugHasRootObjectShape());
+  EXPECT(vm.objectCount() == 0);
+}
+
 void testBytecodeObjectLiteralUsesGcObject() {
   minijs::Parser parser("{ age: 18 };");
   minijs::ExprPtr expression = parser.parse();
@@ -291,6 +315,46 @@ void testBytecodeGcKeepsStringInGcObject() {
   minijs::VM vm;
   EXPECT(vm.run(chunk).isObject());
   EXPECT(vm.objectCount() == 2);
+
+  vm.collectGarbage();
+  EXPECT(vm.objectCount() == 2);
+}
+
+void testBytecodeGcKeepsDynamicShapeSlotValue() {
+  minijs::Parser parser("let p = {};"
+                        "p.name = \"Tom\";"
+                        "p;");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compileProgram(program);
+
+  minijs::VM vm;
+  EXPECT(vm.run(chunk).isObject());
+  EXPECT(vm.objectCount() == 2);
+
+  vm.collectGarbage();
+  EXPECT(vm.objectCount() == 2);
+}
+
+void testBytecodeGcKeepsDictionaryModeObjectValue() {
+  minijs::Parser parser("let p = { old: 1 };"
+                        "del(p, \"old\");"
+                        "p.name = \"Tom\";"
+                        "p;");
+  minijs::Program program = parser.parseProgram();
+
+  EXPECT(parser.diagnostics().empty());
+
+  minijs::Compiler compiler;
+  minijs::Chunk chunk = compiler.compileProgram(program);
+
+  minijs::VM vm;
+  EXPECT(vm.run(chunk).isObject());
+  EXPECT(vm.debugGlobalObjectUsesDictionary("p"));
+  EXPECT(vm.objectCount() == 3);
 
   vm.collectGarbage();
   EXPECT(vm.objectCount() == 2);
@@ -2665,6 +2729,115 @@ void testCompileObjectPropertyAssignment() {
              .asNumber() == 20);
 }
 
+void testBytecodeObjectPropertyHelpersPreserveBehavior() {
+  EXPECT(runBytecodeProgram("let p = { name: \"Tom\", age: 18 };"
+                            "p.age = p.age + 1;"
+                            "p.city = \"Shanghai\";"
+                            "has(p, \"name\") && has(p, \"city\") && p.age == 19 && len(p) == 3;")
+             .toString() == "true");
+
+  EXPECT(runBytecodeProgram("let p = { name: \"Tom\", age: 18 };"
+                            "del(p, \"age\");"
+                            "p.age = 20;"
+                            "has(p, \"age\") && p.age == 20 && len(p) == 2;")
+             .toString() == "true");
+
+  EXPECT(runBytecodeProgram("let p = { name: \"Tom\" }; p.missing;").isUndefined());
+}
+
+void testBytecodeShapeModeObjectPropertiesPreserveSemantics() {
+  EXPECT(runBytecodeProgram("let p = { name: \"Tom\", age: 18 };"
+                            "p.age = 19;"
+                            "p.city = \"Shanghai\";"
+                            "p.name == \"Tom\" && p.age == 19 && p.city == \"Shanghai\" && "
+                            "has(p, \"name\") && has(p, \"city\") && len(p) == 3;")
+             .toString() == "true");
+
+  EXPECT(runBytecodeProgram("let p = { name: \"Tom\" };"
+                            "p.name = \"Jerry\";"
+                            "p.name == \"Jerry\" && len(p) == 1;")
+             .toString() == "true");
+}
+
+void testBytecodeShapeSetKeepsAssignedValuesDuringGcPressure() {
+  EXPECT(runBytecodeProgram("let p = {};"
+                            "p.name = \"Tom\";"
+                            "p.a0 = \"a0\";"
+                            "p.a1 = \"a1\";"
+                            "p.a2 = \"a2\";"
+                            "p.a3 = \"a3\";"
+                            "p.a4 = \"a4\";"
+                            "p.a5 = \"a5\";"
+                            "p.a6 = \"a6\";"
+                            "p.a7 = \"a7\";"
+                            "p.name;")
+             .toString() == "Tom");
+}
+
+void testBytecodeObjectDeleteFallsBackToDictionarySemantics() {
+  EXPECT(runBytecodeProgram("let p = { name: \"Tom\", age: 18 };"
+                            "del(p, \"age\");"
+                            "p.city = \"Shanghai\";"
+                            "p.name == \"Tom\" && p.city == \"Shanghai\" && "
+                            "!has(p, \"age\") && len(p) == 2;")
+             .toString() == "true");
+}
+
+void testBytecodeObjectsWithSamePropertyOrderShareShape() {
+  minijs::VM vm;
+  runBytecodeProgramOnVm(vm,
+                         "let a = {};"
+                         "a.x = 1;"
+                         "a.y = 2;"
+                         "let b = {};"
+                         "b.x = 3;"
+                         "b.y = 4;"
+                         "true;");
+
+  EXPECT(vm.debugGlobalObjectShape("a") != nullptr);
+  EXPECT(vm.debugGlobalObjectShape("a") == vm.debugGlobalObjectShape("b"));
+}
+
+void testBytecodeObjectsWithDifferentPropertyOrderUseDifferentShapes() {
+  minijs::VM vm;
+  runBytecodeProgramOnVm(vm,
+                         "let a = {};"
+                         "a.x = 1;"
+                         "a.y = 2;"
+                         "let b = {};"
+                         "b.y = 3;"
+                         "b.x = 4;"
+                         "true;");
+
+  EXPECT(vm.debugGlobalObjectShape("a") != nullptr);
+  EXPECT(vm.debugGlobalObjectShape("b") != nullptr);
+  EXPECT(vm.debugGlobalObjectShape("a") != vm.debugGlobalObjectShape("b"));
+}
+
+void testBytecodeReassigningExistingPropertyKeepsShape() {
+  minijs::VM vm;
+  runBytecodeProgramOnVm(vm,
+                         "let a = {};"
+                         "a.x = 1;"
+                         "let b = {};"
+                         "b.x = 2;"
+                         "a.x = 3;"
+                         "true;");
+
+  EXPECT(vm.debugGlobalObjectShape("a") != nullptr);
+  EXPECT(vm.debugGlobalObjectShape("a") == vm.debugGlobalObjectShape("b"));
+}
+
+void testBytecodeDeletingPropertySwitchesObjectToDictionaryMode() {
+  minijs::VM vm;
+  runBytecodeProgramOnVm(vm,
+                         "let p = { name: \"Tom\", age: 18 };"
+                         "del(p, \"age\");"
+                         "true;");
+
+  EXPECT(vm.debugGlobalObjectUsesDictionary("p"));
+}
+
 void testCompileObjectReferenceSemantics() {
   EXPECT(runBytecodeProgram("let p = { age: 18 };"
                             "let q = p;"
@@ -2821,8 +2994,11 @@ void runBytecodeTests() {
   testBytecodeGcKeepsStringInGcArray();
   testBytecodeAutoGcKeepsArrayElementsDuringAllocation();
   testBytecodeGcCollectsUnreachableArrayAndString();
+  testBytecodeVmRootShapeIsInternalObject();
   testBytecodeObjectLiteralUsesGcObject();
   testBytecodeGcKeepsStringInGcObject();
+  testBytecodeGcKeepsDynamicShapeSlotValue();
+  testBytecodeGcKeepsDictionaryModeObjectValue();
   testBytecodeGcCollectsUnreachableObjectAndString();
   testBytecodeAutoGcKeepsObjectPropertiesDuringAllocation();
   testBytecodeGcMarksNestedObjectGraph();
@@ -3018,6 +3194,14 @@ void runBytecodeTests() {
   testCompileMissingObjectProperty();
   testBytecodeGetPropertyFromNonObject();
   testCompileObjectPropertyAssignment();
+  testBytecodeObjectPropertyHelpersPreserveBehavior();
+  testBytecodeShapeModeObjectPropertiesPreserveSemantics();
+  testBytecodeShapeSetKeepsAssignedValuesDuringGcPressure();
+  testBytecodeObjectDeleteFallsBackToDictionarySemantics();
+  testBytecodeObjectsWithSamePropertyOrderShareShape();
+  testBytecodeObjectsWithDifferentPropertyOrderUseDifferentShapes();
+  testBytecodeReassigningExistingPropertyKeepsShape();
+  testBytecodeDeletingPropertySwitchesObjectToDictionaryMode();
   testCompileObjectReferenceSemantics();
   testBytecodeArrayLengthProperty();
   testBytecodeStringLengthProperty();

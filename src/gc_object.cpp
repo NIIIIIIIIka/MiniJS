@@ -7,8 +7,10 @@ namespace minijs {
 ObjArray::ObjArray(std::vector<Value> elements)
     : Obj(ObjType::Array), elements(std::move(elements)) {}
 
-ObjObject::ObjObject(std::unordered_map<std::string, Value> properties)
-    : Obj(ObjType::Object), properties(std::move(properties)) {}
+ObjShape::ObjShape(ObjShape* parent, std::string addedProperty)
+    : Obj(ObjType::Shape), parent(parent), addedProperty(std::move(addedProperty)) {}
+
+ObjObject::ObjObject(ObjShape* rootShape) : Obj(ObjType::Object), shape(rootShape) {}
 
 ObjInstance::ObjInstance(ObjClass* klass) : Obj(ObjType::Instance), klass(klass) {}
 
