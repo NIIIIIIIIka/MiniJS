@@ -358,16 +358,22 @@ Value VM::run(const Chunk& chunk) {
         Value result = pop();
 
         if (frames_.size() == 1) {
-          return copyOutValue(result);
+          Value copied = copyOutValue(result);
+          frames_.clear();
+          return copied;
         }
 
-        if (frame.returnsReceiver) {
-          result = stack_[frame.slotStart];  // this
+        const std::size_t slotStart = frame.slotStart;
+        const std::size_t returnSlot = frame.returnSlot;
+        const bool returnsReceiver = frame.returnsReceiver;
+
+        if (returnsReceiver) {
+          result = stack_[slotStart];  // this
         }
 
-        closeUpvalues(frame.slotStart);
+        closeUpvalues(slotStart);
         frames_.pop_back();
-        stack_.resize(frame.returnSlot);
+        stack_.resize(returnSlot);
         push(result);
 
         break;
