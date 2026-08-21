@@ -2,6 +2,7 @@
 #include <memory>
 #include <sstream>
 #include <string_view>
+#include <utility>
 
 #include "minijs/compiler.h"
 #include "minijs/disassembler.h"
@@ -48,6 +49,33 @@ void runBytecodeProgramOnVm(minijs::VM& vm, std::string_view source) {
   minijs::Chunk chunk = compiler.compileProgram(program);
 
   (void)vm.run(chunk);
+}
+
+void testChunkInlineCacheStartsEmptyAfterCopyOrMove() {
+  minijs::Chunk chunk;
+  chunk.writeOpcode(minijs::Opcode::Return);
+
+  minijs::PropertyInlineCache& original = chunk.propertyInlineCache(0);
+  original.initialized = true;
+  original.slot = 3;
+
+  minijs::Chunk copied(chunk);
+  EXPECT(!copied.propertyInlineCache(0).initialized);
+
+  minijs::Chunk assigned;
+  assigned = chunk;
+  EXPECT(!assigned.propertyInlineCache(0).initialized);
+
+  minijs::Chunk moved(std::move(chunk));
+  EXPECT(!moved.propertyInlineCache(0).initialized);
+
+  minijs::PropertyInlineCache& copiedCache = copied.propertyInlineCache(8);
+  copiedCache.initialized = true;
+  copiedCache.slot = 1;
+
+  minijs::Chunk moveAssigned;
+  moveAssigned = std::move(copied);
+  EXPECT(!moveAssigned.propertyInlineCache(8).initialized);
 }
 
 void testCompileNumberExpression() { EXPECT(runBytecode("42;").asNumber() == 42); }
@@ -2977,6 +3005,7 @@ void testDisassembleObjectLiteralProperty() {
 }  // namespace
 
 void runBytecodeTests() {
+  testChunkInlineCacheStartsEmptyAfterCopyOrMove();
   testCompileNumberExpression();
   testCompileArithmeticExpression();
   testCompileUnaryMinus();

@@ -2,11 +2,20 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <unordered_map>
 #include <vector>
 
 #include "minijs/value.h"
 
 namespace minijs {
+
+struct ObjShape;
+
+struct PropertyInlineCache {
+  bool initialized = false;
+  ObjShape* shape = nullptr;
+  std::size_t slot = 0;
+};
 
 // VM 支持的字节码指令。
 enum class Opcode : std::uint8_t {
@@ -54,6 +63,12 @@ enum class Opcode : std::uint8_t {
 // 一段可执行字节码，包含指令流和常量池。
 class Chunk {
  public:
+  Chunk() = default;
+  Chunk(const Chunk& other);
+  Chunk& operator=(const Chunk& other);
+  Chunk(Chunk&& other) noexcept;
+  Chunk& operator=(Chunk&& other) noexcept;
+
   void writeOpcode(Opcode opcode);
   void writeByte(std::uint8_t byte);
 
@@ -70,9 +85,13 @@ class Chunk {
   // 回填已写入的占位字节，例如跳转偏移。
   void patchByte(std::size_t offset, std::uint8_t byte);
 
+  PropertyInlineCache& propertyInlineCache(std::size_t opcodeOffset) const;
+  void clearInlineCaches() const;
+
  private:
   std::vector<std::uint8_t> code_;
   std::vector<Value> constants_;
+  mutable std::unordered_map<std::size_t, PropertyInlineCache> propertyInlineCaches_;
 };
 
 }  // namespace minijs

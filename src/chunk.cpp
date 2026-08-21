@@ -6,6 +6,36 @@
 
 namespace minijs {
 
+Chunk::Chunk(const Chunk& other) : code_(other.code_), constants_(other.constants_) {}
+
+Chunk& Chunk::operator=(const Chunk& other) {
+  if (this == &other) {
+    return *this;
+  }
+
+  code_ = other.code_;
+  constants_ = other.constants_;
+  clearInlineCaches();
+  return *this;
+}
+
+Chunk::Chunk(Chunk&& other) noexcept
+    : code_(std::move(other.code_)), constants_(std::move(other.constants_)) {
+  other.clearInlineCaches();
+}
+
+Chunk& Chunk::operator=(Chunk&& other) noexcept {
+  if (this == &other) {
+    return *this;
+  }
+
+  code_ = std::move(other.code_);
+  constants_ = std::move(other.constants_);
+  clearInlineCaches();
+  other.clearInlineCaches();
+  return *this;
+}
+
 void Chunk::writeOpcode(Opcode opcode) { code_.push_back(static_cast<std::uint8_t>(opcode)); }
 
 void Chunk::writeByte(std::uint8_t byte) { code_.push_back(byte); }
@@ -32,6 +62,12 @@ const Value& Chunk::constant(std::size_t index) const {
 const std::vector<std::uint8_t>& Chunk::code() const { return code_; }
 
 const std::vector<Value>& Chunk::constants() const { return constants_; }
+
+PropertyInlineCache& Chunk::propertyInlineCache(std::size_t opcodeOffset) const {
+  return propertyInlineCaches_[opcodeOffset];
+}
+
+void Chunk::clearInlineCaches() const { propertyInlineCaches_.clear(); }
 
 std::size_t Chunk::count() const { return code_.size(); }
 
