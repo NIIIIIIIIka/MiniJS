@@ -2809,6 +2809,76 @@ void testBytecodeGetPropertyInlineCacheHitsRepeatedSameShapeAccess() {
   EXPECT(stats.bypasses == 0);
 }
 
+void testBytecodeGetPropertyInlineCacheMissesAndUpdatesOnShapeChange() {
+  minijs::VM vm;
+  const minijs::Value result =
+      runBytecodeProgramOnVm(vm,
+                             "let p = { name: \"Tom\" };"
+                             "let i = 0;"
+                             "let value = \"\";"
+                             "while (i < 3) {"
+                             "  value = p.name;"
+                             "  if (i == 0) {"
+                             "    p = { name: \"Jerry\", age: 18 };"
+                             "  }"
+                             "  i = i + 1;"
+                             "}"
+                             "value;");
+
+  const minijs::PropertyInlineCacheStats stats = vm.debugPropertyInlineCacheStats();
+
+  EXPECT(result.toString() == "Jerry");
+  EXPECT(stats.misses == 2);
+  EXPECT(stats.updates == 2);
+  EXPECT(stats.hits == 1);
+  EXPECT(stats.bypasses == 0);
+}
+
+void testBytecodeGetPropertyInlineCacheBypassesDictionaryMode() {
+  minijs::VM vm;
+  const minijs::Value result =
+      runBytecodeProgramOnVm(vm,
+                             "let p = { name: \"Tom\", age: 18 };"
+                             "del(p, \"age\");"
+                             "let i = 0;"
+                             "let value = \"\";"
+                             "while (i < 3) {"
+                             "  value = p.name;"
+                             "  i = i + 1;"
+                             "}"
+                             "value;");
+
+  const minijs::PropertyInlineCacheStats stats = vm.debugPropertyInlineCacheStats();
+
+  EXPECT(result.toString() == "Tom");
+  EXPECT(stats.misses == 0);
+  EXPECT(stats.updates == 0);
+  EXPECT(stats.hits == 0);
+  EXPECT(stats.bypasses == 3);
+}
+
+void testBytecodeGetPropertyInlineCacheDoesNotUpdateMissingProperty() {
+  minijs::VM vm;
+  const minijs::Value result =
+      runBytecodeProgramOnVm(vm,
+                             "let p = { name: \"Tom\" };"
+                             "let i = 0;"
+                             "let value = null;"
+                             "while (i < 3) {"
+                             "  value = p.missing;"
+                             "  i = i + 1;"
+                             "}"
+                             "value;");
+
+  const minijs::PropertyInlineCacheStats stats = vm.debugPropertyInlineCacheStats();
+
+  EXPECT(result.isUndefined());
+  EXPECT(stats.misses == 3);
+  EXPECT(stats.updates == 0);
+  EXPECT(stats.hits == 0);
+  EXPECT(stats.bypasses == 0);
+}
+
 void testBytecodeShapeSetKeepsAssignedValuesDuringGcPressure() {
   EXPECT(runBytecodeProgram("let p = {};"
                             "p.name = \"Tom\";"
@@ -3248,6 +3318,9 @@ void runBytecodeTests() {
   testBytecodeObjectPropertyHelpersPreserveBehavior();
   testBytecodeShapeModeObjectPropertiesPreserveSemantics();
   testBytecodeGetPropertyInlineCacheHitsRepeatedSameShapeAccess();
+  testBytecodeGetPropertyInlineCacheMissesAndUpdatesOnShapeChange();
+  testBytecodeGetPropertyInlineCacheBypassesDictionaryMode();
+  testBytecodeGetPropertyInlineCacheDoesNotUpdateMissingProperty();
   testBytecodeShapeSetKeepsAssignedValuesDuringGcPressure();
   testBytecodeObjectDeleteFallsBackToDictionarySemantics();
   testBytecodeObjectsWithSamePropertyOrderShareShape();
