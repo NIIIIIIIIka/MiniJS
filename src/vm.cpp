@@ -772,6 +772,7 @@ Value VM::run(const Chunk& chunk) {
         break;
       }
       case Opcode::GetProperty: {
+        const std::size_t opcodeOffset = frame.ip - 1;
         const std::uint8_t nameIndex = chunk.readByte(frame.ip++);
         const std::string& name = chunk.constant(nameIndex).asString();
 
@@ -833,7 +834,32 @@ Value VM::run(const Chunk& chunk) {
           throw RuntimeError("value is not an object");
         }
 
-        push(objectGetProperty(*object.asGcObject(), name));
+        ObjObject* objectValue = object.asGcObject();
+        if (objectValue->dictionaryMode) {
+          ++propertyInlineCacheStats_.bypasses;
+          push(objectGetProperty(*objectValue, name));
+          break;
+        }
+
+        PropertyInlineCache& cache = chunk.propertyInlineCache(opcodeOffset);
+        if (cache.initialized && cache.shape == objectValue->shape &&
+            cache.slot < objectValue->slots.size()) {
+          ++propertyInlineCacheStats_.hits;
+          push(objectValue->slots[cache.slot]);
+          break;
+        }
+
+        ++propertyInlineCacheStats_.misses;
+        Value result = objectGetProperty(*objectValue, name);
+        auto slot = objectValue->shape->slots.find(name);
+        if (slot != objectValue->shape->slots.end() && slot->second < objectValue->slots.size()) {
+          cache.initialized = true;
+          cache.shape = objectValue->shape;
+          cache.slot = slot->second;
+          ++propertyInlineCacheStats_.updates;
+        }
+
+        push(result);
         break;
       }
       case Opcode::SetProperty: {
@@ -891,6 +917,14 @@ bool VM::debugGlobalObjectUsesDictionary(const std::string& name) const {
     return false;
   }
   return global->second.asGcObject()->dictionaryMode;
+}
+
+PropertyInlineCacheStats VM::debugPropertyInlineCacheStats() const {
+  return propertyInlineCacheStats_;
+}
+
+void VM::debugResetPropertyInlineCacheStats() {
+  propertyInlineCacheStats_ = PropertyInlineCacheStats{};
 }
 #endif
 

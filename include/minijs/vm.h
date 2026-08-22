@@ -37,6 +37,13 @@ struct CallFrame {
   bool returnsReceiver = false;
 };
 
+struct PropertyInlineCacheStats {
+  std::size_t hits = 0;
+  std::size_t misses = 0;
+  std::size_t updates = 0;
+  std::size_t bypasses = 0;
+};
+
 // 执行 Chunk 的栈式虚拟机。
 class VM {
  public:
@@ -52,6 +59,8 @@ class VM {
   bool debugHasRootObjectShape() const { return rootObjectShape_ != nullptr; }
   const ObjShape* debugGlobalObjectShape(const std::string& name) const;
   bool debugGlobalObjectUsesDictionary(const std::string& name) const;
+  PropertyInlineCacheStats debugPropertyInlineCacheStats() const;
+  void debugResetPropertyInlineCacheStats();
 #endif
 
  private:
@@ -125,6 +134,7 @@ class VM {
   std::size_t internalObjectCount_ = 0;
   ObjShape* rootObjectShape_ = nullptr;
   std::size_t nextGcObjectCount_ = 8;
+  PropertyInlineCacheStats propertyInlineCacheStats_;
 
   template <typename T, typename... Args>
   T* allocateObject(Args&&... args);

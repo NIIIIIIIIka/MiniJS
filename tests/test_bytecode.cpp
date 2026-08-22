@@ -39,7 +39,7 @@ minijs::Value runBytecodeProgram(std::string_view source) {
   return vm.run(chunk);
 }
 
-void runBytecodeProgramOnVm(minijs::VM& vm, std::string_view source) {
+minijs::Value runBytecodeProgramOnVm(minijs::VM& vm, std::string_view source) {
   minijs::Parser parser(source);
   minijs::Program program = parser.parseProgram();
 
@@ -48,7 +48,7 @@ void runBytecodeProgramOnVm(minijs::VM& vm, std::string_view source) {
   minijs::Compiler compiler;
   minijs::Chunk chunk = compiler.compileProgram(program);
 
-  (void)vm.run(chunk);
+  return vm.run(chunk);
 }
 
 void testChunkInlineCacheStartsEmptyAfterCopyOrMove() {
@@ -2787,6 +2787,28 @@ void testBytecodeShapeModeObjectPropertiesPreserveSemantics() {
              .toString() == "true");
 }
 
+void testBytecodeGetPropertyInlineCacheHitsRepeatedSameShapeAccess() {
+  minijs::VM vm;
+  const minijs::Value result =
+      runBytecodeProgramOnVm(vm,
+                             "let p = { name: \"Tom\" };"
+                             "let i = 0;"
+                             "let value = \"\";"
+                             "while (i < 3) {"
+                             "  value = p.name;"
+                             "  i = i + 1;"
+                             "}"
+                             "value;");
+
+  const minijs::PropertyInlineCacheStats stats = vm.debugPropertyInlineCacheStats();
+
+  EXPECT(result.toString() == "Tom");
+  EXPECT(stats.misses == 1);
+  EXPECT(stats.updates == 1);
+  EXPECT(stats.hits >= 2);
+  EXPECT(stats.bypasses == 0);
+}
+
 void testBytecodeShapeSetKeepsAssignedValuesDuringGcPressure() {
   EXPECT(runBytecodeProgram("let p = {};"
                             "p.name = \"Tom\";"
@@ -3225,6 +3247,7 @@ void runBytecodeTests() {
   testCompileObjectPropertyAssignment();
   testBytecodeObjectPropertyHelpersPreserveBehavior();
   testBytecodeShapeModeObjectPropertiesPreserveSemantics();
+  testBytecodeGetPropertyInlineCacheHitsRepeatedSameShapeAccess();
   testBytecodeShapeSetKeepsAssignedValuesDuringGcPressure();
   testBytecodeObjectDeleteFallsBackToDictionarySemantics();
   testBytecodeObjectsWithSamePropertyOrderShareShape();
