@@ -8,6 +8,7 @@ namespace minijs {
 enum class ObjType {
   String,
   Array,
+  Shape,
   Object,
   Function,
   Closure,

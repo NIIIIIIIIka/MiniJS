@@ -26,11 +26,23 @@ struct ObjArray final : public Obj {
   std::vector<Value> elements;
 };
 
+struct ObjShape final : public Obj {
+  ObjShape(ObjShape* parent, std::string addedProperty);
+
+  ObjShape* parent = nullptr;
+  std::string addedProperty;
+  std::unordered_map<std::string, std::size_t> slots;
+  std::unordered_map<std::string, ObjShape*> transitions;
+};
+
 // VM GC 管理的对象字面量，属性值继续保存为动态 Value。
 struct ObjObject final : public Obj {
-  explicit ObjObject(std::unordered_map<std::string, Value> properties);
+  explicit ObjObject(ObjShape* rootShape);
 
-  std::unordered_map<std::string, Value> properties;
+  ObjShape* shape = nullptr;
+  std::vector<Value> slots;
+  bool dictionaryMode = false;
+  std::unordered_map<std::string, Value> dictionary;
 };
 
 // VM GC 管理的字节码实例，字段保存在实例自身。

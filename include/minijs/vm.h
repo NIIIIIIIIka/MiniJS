@@ -19,6 +19,7 @@ namespace minijs {
 
 struct ObjClosure;
 struct ObjClass;
+struct ObjShape;
 struct ObjUpvalue;
 struct ObjFunction;
 
@@ -36,6 +37,13 @@ struct CallFrame {
   bool returnsReceiver = false;
 };
 
+struct PropertyInlineCacheStats {
+  std::size_t hits = 0;
+  std::size_t misses = 0;
+  std::size_t updates = 0;
+  std::size_t bypasses = 0;
+};
+
 // 执行 Chunk 的栈式虚拟机。
 class VM {
  public:
@@ -46,6 +54,14 @@ class VM {
   std::size_t objectCount() const;
 
   void collectGarbage();
+
+#ifdef MINIJS_TESTING
+  bool debugHasRootObjectShape() const { return rootObjectShape_ != nullptr; }
+  const ObjShape* debugGlobalObjectShape(const std::string& name) const;
+  bool debugGlobalObjectUsesDictionary(const std::string& name) const;
+  PropertyInlineCacheStats debugPropertyInlineCacheStats() const;
+  void debugResetPropertyInlineCacheStats();
+#endif
 
  private:
   class TemporaryRootScope {
@@ -68,6 +84,17 @@ class VM {
   std::shared_ptr<BytecodeClass> copyOutClass(const ObjClass* klass) const;
   std::shared_ptr<BytecodeClosure> copyOutClosure(const ObjClosure* closure) const;
   std::shared_ptr<Upvalue> copyOutUpvalue(const ObjUpvalue* upvalue) const;
+
+  // 对象属性：使用快访问
+  std::size_t objectPropertyCount(const ObjObject& object) const;
+  bool objectHasProperty(const ObjObject& object, const std::string& name) const;
+  Value objectGetProperty(const ObjObject& object, const std::string& name) const;
+  void objectSetProperty(ObjObject& object, const std::string& name, Value value);
+  bool objectDeleteProperty(ObjObject& object, const std::string& name);
+  std::vector<std::string> objectKeys(const ObjObject& object) const;
+  ObjShape* transitionObjectShape(ObjShape* shape, const std::string& name);
+  void objectMaterializeDictionary(ObjObject& object) const;
+
   Value makeGcString(std::string string);
   Value makeGcStringArray(std::vector<std::string> strings);
   ObjClosure* makeGcClosure(const BytecodeFunction& function);
@@ -103,12 +130,17 @@ class VM {
   // 未来 GC 管理的堆对象链表。当前阶段只建立链表所有权入口。
   Obj* objects_ = nullptr;
   std::size_t heapObjectCount_ = 0;
-  // VM 构造期创建的 builtin 是永久全局根；测试计数只暴露用户程序产生的 GC 对象。
-  std::size_t builtinObjectCount_ = 0;
+  // VM 内部创建的永久对象不计入用户程序可见的 objectCount()。
+  std::size_t internalObjectCount_ = 0;
+  ObjShape* rootObjectShape_ = nullptr;
   std::size_t nextGcObjectCount_ = 8;
+  PropertyInlineCacheStats propertyInlineCacheStats_;
 
   template <typename T, typename... Args>
   T* allocateObject(Args&&... args);
+
+  template <typename T, typename... Args>
+  T* allocateInternalObject(Args&&... args);
 };
 
 template <typename T, typename... Args>
@@ -120,6 +152,13 @@ T* VM::allocateObject(Args&&... args) {
   object->next = objects_;
   objects_ = object;
   ++heapObjectCount_;
+  return object;
+}
+
+template <typename T, typename... Args>
+T* VM::allocateInternalObject(Args&&... args) {
+  T* object = allocateObject<T>(std::forward<Args>(args)...);
+  ++internalObjectCount_;
   return object;
 }
 }  // namespace minijs

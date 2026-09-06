@@ -185,18 +185,12 @@ const std::unordered_map<std::string, Value>& Value::asObject() const {
   if (!isObject()) {
     throw RuntimeError("value is not an object");
   }
-  if (value_type_ == ValueType::GcObject) {
-    return gc_object_->properties;
-  }
   return *object_;
 }
 
 std::unordered_map<std::string, Value>& Value::asObject() {
   if (!isObject()) {
     throw RuntimeError("value is not an object");
-  }
-  if (value_type_ == ValueType::GcObject) {
-    return gc_object_->properties;
   }
   return *object_;
 }
@@ -405,7 +399,7 @@ bool Value::isString() const {
 }
 
 bool Value::isObject() const {
-  return value_type_ == ValueType::Object || value_type_ == ValueType::GcObject;
+  return value_type_ == ValueType::Object;
 }
 
 bool Value::isBuiltinFunction() const { return isNativeFunction(); }

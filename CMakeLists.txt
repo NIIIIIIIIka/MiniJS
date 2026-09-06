@@ -42,6 +42,9 @@ if(MINIJS_CORE_SOURCES)
             "${CMAKE_CURRENT_SOURCE_DIR}/include"
     )
     target_compile_features(minijs_core PUBLIC cxx_std_17)
+    if(MINIJS_BUILD_TESTS)
+        target_compile_definitions(minijs_core PRIVATE MINIJS_TESTING)
+    endif()
     minijs_enable_warnings(minijs_core)
 else()
     # This keeps the initial empty project configurable. It becomes a static
@@ -75,6 +78,7 @@ if(MINIJS_BUILD_TESTS)
     if(MINIJS_TEST_SOURCES)
         add_executable(minijs_tests ${MINIJS_TEST_SOURCES})
         target_link_libraries(minijs_tests PRIVATE minijs_core)
+        target_compile_definitions(minijs_tests PRIVATE MINIJS_TESTING)
         minijs_enable_warnings(minijs_tests)
 
         add_test(NAME minijs_tests COMMAND minijs_tests)
