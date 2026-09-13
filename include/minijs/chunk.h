@@ -1,20 +1,58 @@
-﻿#pragma once
+#pragma once
 
 #include <cstddef>
 #include <cstdint>
-#include <unordered_map>
+#include <array>
 #include <vector>
-
 #include "minijs/value.h"
 
 namespace minijs {
 
 struct ObjShape;
+struct ObjClass;
+struct ObjClosure;
 
-struct PropertyInlineCache {
-  bool initialized = false;
+struct PropertyInlineCacheEntry {
   ObjShape* shape = nullptr;
   std::size_t slot = 0;
+};
+
+struct PropertyInlineCache {
+  static constexpr std::size_t MaxEntries = 4;
+  std::array<PropertyInlineCacheEntry, MaxEntries> entries{};
+  std::size_t size = 0;
+};
+
+struct MethodInlineCacheEntry {
+  ObjClass* klass = nullptr;
+  ObjClosure* method = nullptr;
+  bool isStatic = false;
+};
+
+struct MethodInlineCache {
+  static constexpr std::size_t MaxEntries = 4;
+  std::array<MethodInlineCacheEntry, MaxEntries> entries{};
+  std::size_t size = 0;
+};
+
+enum class FeedbackKind : std::uint8_t {
+  GetProperty,
+  SetProperty,
+  MethodCall,
+};
+
+enum class FeedbackState : std::uint8_t {
+  Uninitialized,
+  Monomorphic,
+  Polymorphic,
+  Megamorphic,
+};
+
+struct FeedbackSlot {
+  FeedbackKind kind;
+  FeedbackState state = FeedbackState::Uninitialized;
+  PropertyInlineCache property;
+  MethodInlineCache method;
 };
 
 // VM 支持的字节码指令。
@@ -76,6 +114,9 @@ class Chunk {
 
   std::size_t addConstant(Value value);
   const Value& constant(std::size_t index) const;
+  std::size_t addFeedbackSlot(FeedbackKind kind);
+  FeedbackSlot& feedbackSlot(std::size_t index) const;
+  const std::vector<FeedbackSlot>& feedbackSlots() const;
 
   const std::vector<std::uint8_t>& code() const;
   const std::vector<Value>& constants() const;
@@ -85,13 +126,12 @@ class Chunk {
   // 回填已写入的占位字节，例如跳转偏移。
   void patchByte(std::size_t offset, std::uint8_t byte);
 
-  PropertyInlineCache& propertyInlineCache(std::size_t opcodeOffset) const;
-  void clearInlineCaches() const;
+  void clearFeedbackCaches() const;
 
  private:
   std::vector<std::uint8_t> code_;
   std::vector<Value> constants_;
-  mutable std::unordered_map<std::size_t, PropertyInlineCache> propertyInlineCaches_;
+  mutable std::vector<FeedbackSlot> feedbackSlots_;
 };
 
 }  // namespace minijs

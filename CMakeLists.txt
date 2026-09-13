@@ -26,17 +26,24 @@ function(minijs_enable_warnings target)
     endif()
 endfunction()
 
-# Core sources are discovered while the project is still small. main.cpp is
-# excluded because it belongs to the command-line executable.
+# Core sources are discovered while the project is still small. Headers are
+# listed as target sources as well so IDE project trees display them.
 file(GLOB_RECURSE MINIJS_CORE_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
+)
+file(GLOB_RECURSE MINIJS_CORE_HEADERS CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/*.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/*.hpp"
 )
 list(REMOVE_ITEM MINIJS_CORE_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp"
 )
 
 if(MINIJS_CORE_SOURCES)
-    add_library(minijs_core STATIC ${MINIJS_CORE_SOURCES})
+    add_library(minijs_core STATIC
+        ${MINIJS_CORE_SOURCES}
+        ${MINIJS_CORE_HEADERS}
+    )
     target_include_directories(minijs_core
         PUBLIC
             "${CMAKE_CURRENT_SOURCE_DIR}/include"
@@ -107,6 +114,78 @@ if(MINIJS_BUILD_TESTS)
         )
         set_tests_properties(minijs_cli_interp_runs_ast_interpreter PROPERTIES
             PASS_REGULAR_EXPRESSION "^30\n$"
+        )
+
+        add_test(
+            NAME minijs_cli_bytecode_disassembles_program
+            COMMAND minijs --bytecode "${CMAKE_CURRENT_SOURCE_DIR}/examples/objects_arrays.js"
+        )
+        set_tests_properties(minijs_cli_bytecode_disassembles_program PROPERTIES
+            PASS_REGULAR_EXPRESSION "OP_SET_PROPERTY"
+        )
+
+        add_test(
+            NAME minijs_cli_ic_stats_reports_method_cache_hits
+            COMMAND minijs --ic-stats "${CMAKE_CURRENT_SOURCE_DIR}/examples/method_calls.js"
+        )
+        set_tests_properties(minijs_cli_ic_stats_reports_method_cache_hits PROPERTIES
+            PASS_REGULAR_EXPRESSION "method call: hits=2 misses=1 updates=1 bypasses=0"
+        )
+
+        add_test(
+            NAME minijs_cli_ic_stats_reports_polymorphic_method_cache_hits
+            COMMAND minijs --ic-stats "${CMAKE_CURRENT_SOURCE_DIR}/examples/polymorphic_method_calls.js"
+        )
+        set_tests_properties(minijs_cli_ic_stats_reports_polymorphic_method_cache_hits PROPERTIES
+            PASS_REGULAR_EXPRESSION "method call: hits=2 misses=2 updates=2 bypasses=0"
+        )
+
+        add_test(
+            NAME minijs_cli_ic_stats_reports_polymorphic_static_method_cache_hits
+            COMMAND minijs --ic-stats "${CMAKE_CURRENT_SOURCE_DIR}/examples/polymorphic_static_calls.js"
+        )
+        set_tests_properties(minijs_cli_ic_stats_reports_polymorphic_static_method_cache_hits PROPERTIES
+            PASS_REGULAR_EXPRESSION "method call: hits=2 misses=2 updates=2 bypasses=0"
+        )
+
+        add_test(
+            NAME minijs_cli_super_call_preserves_method_cache_boundary
+            COMMAND minijs --ic-stats "${CMAKE_CURRENT_SOURCE_DIR}/examples/super_calls.js"
+        )
+        set_tests_properties(minijs_cli_super_call_preserves_method_cache_boundary PROPERTIES
+            PASS_REGULAR_EXPRESSION "method call: hits=0 misses=1 updates=1 bypasses=0"
+        )
+
+        add_test(
+            NAME minijs_cli_ic_stats_reports_polymorphic_property_reads
+            COMMAND minijs --ic-stats "${CMAKE_CURRENT_SOURCE_DIR}/examples/polymorphic_property_reads.js"
+        )
+        set_tests_properties(minijs_cli_ic_stats_reports_polymorphic_property_reads PROPERTIES
+            PASS_REGULAR_EXPRESSION "get property: hits=2 misses=2 updates=2 bypasses=0"
+        )
+
+        add_test(
+            NAME minijs_cli_ic_stats_reports_polymorphic_property_writes
+            COMMAND minijs --ic-stats "${CMAKE_CURRENT_SOURCE_DIR}/examples/polymorphic_property_writes.js"
+        )
+        set_tests_properties(minijs_cli_ic_stats_reports_polymorphic_property_writes PROPERTIES
+            PASS_REGULAR_EXPRESSION "set property: hits=2 misses=2 updates=2 bypasses=0"
+        )
+
+        add_test(
+            NAME minijs_cli_benchmark_reports_timing_and_ic_stats
+            COMMAND minijs --benchmark "${CMAKE_CURRENT_SOURCE_DIR}/examples/inline_cache_benchmark.js"
+        )
+        set_tests_properties(minijs_cli_benchmark_reports_timing_and_ic_stats PROPERTIES
+            PASS_REGULAR_EXPRESSION "run_us: [0-9]+"
+        )
+
+        add_test(
+            NAME minijs_cli_benchmark_compare_reports_ic_on_and_off
+            COMMAND minijs --benchmark-compare "${CMAKE_CURRENT_SOURCE_DIR}/examples/inline_cache_benchmark.js"
+        )
+        set_tests_properties(minijs_cli_benchmark_compare_reports_ic_on_and_off PROPERTIES
+            PASS_REGULAR_EXPRESSION "without_ic:"
         )
     endif()
 endif()

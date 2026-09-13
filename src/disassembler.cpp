@@ -6,6 +6,7 @@
 #include <sstream>
 #include <string_view>
 
+#include "minijs/bytecode_decoder.h"
 #include "minijs/bytecode_function.h"
 
 namespace minijs {
@@ -21,58 +22,75 @@ std::size_t simpleInstruction(std::string_view name, std::size_t offset, std::os
   return offset + 1;
 }
 
-std::size_t constantInstruction(const Chunk& chunk, std::string_view name, std::size_t offset,
+std::size_t constantInstruction(const Chunk& chunk, const DecodedInstruction& instruction,
+                                std::string_view name,
                                 std::ostream& output) {
-  const std::uint8_t index = chunk.readByte(offset + 1);
+  const std::uint8_t index = static_cast<std::uint8_t>(instruction.operands[0]);
   output << name << " " << static_cast<int>(index) << " " << chunk.constant(index).toString()
          << '\n';
-  return offset + 2;
+  return instruction.nextOffset;
 }
 
-std::size_t nameInstruction(const Chunk& chunk, std::string_view name, std::size_t offset,
+std::size_t nameInstruction(const Chunk& chunk, const DecodedInstruction& instruction,
+                            std::string_view name,
                             std::ostream& output) {
-  return constantInstruction(chunk, name, offset, output);
+  return constantInstruction(chunk, instruction, name, output);
 }
 
-std::size_t byteInstruction(const Chunk& chunk, std::string_view name, std::size_t offset,
+std::size_t byteInstruction(const DecodedInstruction& instruction, std::string_view name,
                             std::ostream& output) {
-  const std::uint8_t slot = chunk.readByte(offset + 1);
+  const std::uint8_t slot = static_cast<std::uint8_t>(instruction.operands[0]);
   output << name << " " << static_cast<int>(slot) << '\n';
-  return offset + 2;
+  return instruction.nextOffset;
 }
 
-std::size_t jumpInstruction(const Chunk& chunk, std::string_view name, std::size_t offset,
+std::size_t propertyInstruction(const Chunk& chunk, const DecodedInstruction& instruction,
+                                std::string_view name,
+                                std::ostream& output) {
+  const std::uint8_t nameIndex = static_cast<std::uint8_t>(instruction.operands[0]);
+  const std::uint8_t feedbackSlot = static_cast<std::uint8_t>(instruction.operands[1]);
+  output << name << " " << static_cast<int>(nameIndex) << " "
+         << chunk.constant(nameIndex).toString() << " feedback="
+         << static_cast<int>(feedbackSlot) << '\n';
+  return instruction.nextOffset;
+}
+
+std::size_t jumpInstruction(const DecodedInstruction& instruction, std::string_view name,
                             std::ostream& output) {
-  const std::uint16_t jump =
-      static_cast<std::uint16_t>((chunk.readByte(offset + 1) << 8) | chunk.readByte(offset + 2));
-  output << name << " " << offset << " -> " << offset + 3 + jump << '\n';
-  return offset + 3;
+  output << name << " " << instruction.offset << " -> " << instruction.jumpTarget << '\n';
+  return instruction.nextOffset;
 }
 
-std::size_t loopInstruction(const Chunk& chunk, std::string_view name, std::size_t offset,
-                            std::ostream& output) {
-  const std::uint16_t jump =
-      static_cast<std::uint16_t>((chunk.readByte(offset + 1) << 8) | chunk.readByte(offset + 2));
-  output << name << " " << offset << " -> " << offset + 3 - jump << '\n';
-  return offset + 3;
-}
-
-std::size_t methodCallInstruction(const Chunk& chunk, std::string_view name, std::size_t offset,
+std::size_t methodCallInstruction(const Chunk& chunk, const DecodedInstruction& instruction,
+                                  std::string_view name,
                                   std::ostream& output) {
-  const std::uint8_t nameIndex = chunk.readByte(offset + 1);
-  const std::uint8_t argCount = chunk.readByte(offset + 2);
+  const std::uint8_t nameIndex = static_cast<std::uint8_t>(instruction.operands[0]);
+  const std::uint8_t argCount = static_cast<std::uint8_t>(instruction.operands[1]);
+  const std::uint8_t feedbackSlot = static_cast<std::uint8_t>(instruction.operands[2]);
+  output << name << " " << static_cast<int>(nameIndex) << " "
+         << chunk.constant(nameIndex).toString() << " " << static_cast<int>(argCount)
+         << " feedback=" << static_cast<int>(feedbackSlot) << '\n';
+  return instruction.nextOffset;
+}
+
+std::size_t superCallInstruction(const Chunk& chunk, const DecodedInstruction& instruction,
+                                 std::string_view name,
+                                 std::ostream& output) {
+  const std::uint8_t nameIndex = static_cast<std::uint8_t>(instruction.operands[0]);
+  const std::uint8_t argCount = static_cast<std::uint8_t>(instruction.operands[1]);
   output << name << " " << static_cast<int>(nameIndex) << " "
          << chunk.constant(nameIndex).toString() << " " << static_cast<int>(argCount) << '\n';
-  return offset + 3;
+  return instruction.nextOffset;
 }
 
-std::size_t closureInstruction(const Chunk& chunk, std::size_t offset, std::ostream& output) {
-  const std::uint8_t index = chunk.readByte(offset + 1);
+std::size_t closureInstruction(const Chunk& chunk, const DecodedInstruction& instruction,
+                               std::ostream& output) {
+  const std::uint8_t index = static_cast<std::uint8_t>(instruction.operands[0]);
   const auto& function = chunk.constant(index).asBytecodeFunction();
   output << "OP_CLOSURE " << static_cast<int>(index) << " "
          << chunk.constant(index).toString() << '\n';
 
-  std::size_t next = offset + 2;
+  std::size_t next = instruction.offset + 2;
   for (const UpvalueDescriptor& upvalue : function->upvalues) {
     const std::uint8_t isLocal = chunk.readByte(next++);
     const std::uint8_t slot = chunk.readByte(next++);
@@ -100,10 +118,11 @@ std::string disassembleChunk(const Chunk& chunk) {
 std::size_t disassembleInstruction(const Chunk& chunk, std::size_t offset, std::ostream& output) {
   writeOffset(offset, output);
 
-  const Opcode opcode = static_cast<Opcode>(chunk.readByte(offset));
-  switch (opcode) {
+  // 反汇编只负责展示；指令长度、操作数和跳转目标统一由 Decoder 解析。
+  const DecodedInstruction instruction = decodeInstruction(chunk, offset);
+  switch (instruction.opcode) {
     case Opcode::Constant:
-      return constantInstruction(chunk, "OP_CONSTANT", offset, output);
+      return constantInstruction(chunk, instruction, "OP_CONSTANT", output);
     case Opcode::Add:
       return simpleInstruction("OP_ADD", offset, output);
     case Opcode::Sub:
@@ -119,15 +138,15 @@ std::size_t disassembleInstruction(const Chunk& chunk, std::size_t offset, std::
     case Opcode::Return:
       return simpleInstruction("OP_RETURN", offset, output);
     case Opcode::DefineGlobal:
-      return nameInstruction(chunk, "OP_DEFINE_GLOBAL", offset, output);
+      return nameInstruction(chunk, instruction, "OP_DEFINE_GLOBAL", output);
     case Opcode::GetGlobal:
-      return nameInstruction(chunk, "OP_GET_GLOBAL", offset, output);
+      return nameInstruction(chunk, instruction, "OP_GET_GLOBAL", output);
     case Opcode::SetGlobal:
-      return nameInstruction(chunk, "OP_SET_GLOBAL", offset, output);
+      return nameInstruction(chunk, instruction, "OP_SET_GLOBAL", output);
     case Opcode::GetLocal:
-      return byteInstruction(chunk, "OP_GET_LOCAL", offset, output);
+      return byteInstruction(instruction, "OP_GET_LOCAL", output);
     case Opcode::SetLocal:
-      return byteInstruction(chunk, "OP_SET_LOCAL", offset, output);
+      return byteInstruction(instruction, "OP_SET_LOCAL", output);
     case Opcode::Pop:
       return simpleInstruction("OP_POP", offset, output);
     case Opcode::Not:
@@ -139,47 +158,47 @@ std::size_t disassembleInstruction(const Chunk& chunk, std::size_t offset, std::
     case Opcode::Less:
       return simpleInstruction("OP_LESS", offset, output);
     case Opcode::JumpIfFalse:
-      return jumpInstruction(chunk, "OP_JUMP_IF_FALSE", offset, output);
+      return jumpInstruction(instruction, "OP_JUMP_IF_FALSE", output);
     case Opcode::Jump:
-      return jumpInstruction(chunk, "OP_JUMP", offset, output);
+      return jumpInstruction(instruction, "OP_JUMP", output);
     case Opcode::Loop:
-      return loopInstruction(chunk, "OP_LOOP", offset, output);
+      return jumpInstruction(instruction, "OP_LOOP", output);
     case Opcode::Call:
-      return byteInstruction(chunk, "OP_CALL", offset, output);
+      return byteInstruction(instruction, "OP_CALL", output);
     case Opcode::Array:
-      return byteInstruction(chunk, "OP_ARRAY", offset, output);
+      return byteInstruction(instruction, "OP_ARRAY", output);
     case Opcode::GetIndex:
       return simpleInstruction("OP_GET_INDEX", offset, output);
     case Opcode::SetIndex:
       return simpleInstruction("OP_SET_INDEX", offset, output);
     case Opcode::Object:
-      return constantInstruction(chunk, "OP_OBJECT", offset, output);
+      return constantInstruction(chunk, instruction, "OP_OBJECT", output);
     case Opcode::GetProperty:
-      return constantInstruction(chunk, "OP_GET_PROPERTY", offset, output);
+      return propertyInstruction(chunk, instruction, "OP_GET_PROPERTY", output);
     case Opcode::SetProperty:
-      return constantInstruction(chunk, "OP_SET_PROPERTY", offset, output);
+      return propertyInstruction(chunk, instruction, "OP_SET_PROPERTY", output);
     case Opcode::MethodCall:
-      return methodCallInstruction(chunk, "OP_METHOD_CALL", offset, output);
+      return methodCallInstruction(chunk, instruction, "OP_METHOD_CALL", output);
     case Opcode::Closure:
-      return closureInstruction(chunk, offset, output);
+      return closureInstruction(chunk, instruction, output);
     case Opcode::GetUpvalue:
-      return byteInstruction(chunk, "OP_GET_UPVALUE", offset, output);
+      return byteInstruction(instruction, "OP_GET_UPVALUE", output);
     case Opcode::SetUpvalue:
-      return byteInstruction(chunk, "OP_SET_UPVALUE", offset, output);
+      return byteInstruction(instruction, "OP_SET_UPVALUE", output);
     case Opcode::CloseUpvalue:
       return simpleInstruction("OP_CLOSE_UPVALUE", offset, output);
     case Opcode::GetCurrentClosure:
       return simpleInstruction("OP_GET_CURRENT_CLOSURE", offset, output);
     case Opcode::Class:
-      return constantInstruction(chunk, "OP_CLASS", offset, output);
+      return constantInstruction(chunk, instruction, "OP_CLASS", output);
     case Opcode::Method:
-      return constantInstruction(chunk, "OP_METHOD", offset, output);
+      return constantInstruction(chunk, instruction, "OP_METHOD", output);
     case Opcode::StaticMethod:
-      return constantInstruction(chunk, "OP_STATIC_METHOD", offset, output);
+      return constantInstruction(chunk, instruction, "OP_STATIC_METHOD", output);
     case Opcode::Inherit:
       return simpleInstruction("OP_INHERIT", offset, output);
     case Opcode::SuperCall:
-      return methodCallInstruction(chunk, "OP_SUPER_CALL", offset, output);
+      return superCallInstruction(chunk, instruction, "OP_SUPER_CALL", output);
   }
 
   output << "OP_UNKNOWN " << static_cast<int>(chunk.readByte(offset)) << '\n';

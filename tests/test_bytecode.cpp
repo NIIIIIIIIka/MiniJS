@@ -4,6 +4,11 @@
 #include <string_view>
 #include <utility>
 
+#include "minijs/baseline_compiler.h"
+#include "minijs/baseline_code.h"
+#include "minijs/baseline_runtime.h"
+#include "minijs/bytecode_decoder.h"
+#include "minijs/bytecode_function.h"
 #include "minijs/compiler.h"
 #include "minijs/disassembler.h"
 #include "minijs/parser.h"
@@ -51,31 +56,113 @@ minijs::Value runBytecodeProgramOnVm(minijs::VM& vm, std::string_view source) {
   return vm.run(chunk);
 }
 
+void baselineAbiAddEntry(minijs::BaselineFrame* frame) {
+  if (!minijsBaselineGetLocal(frame, 0)) {
+    return;
+  }
+  if (!minijsBaselineGetLocal(frame, 1)) {
+    return;
+  }
+  if (!minijsBaselineAdd(frame)) {
+    return;
+  }
+  minijsBaselineReturn(frame);
+}
+
+void baselineAbiConstantEntry(minijs::BaselineFrame* frame) {
+  if (!minijsBaselinePushConstant(frame, 0)) {
+    return;
+  }
+  if (!minijsBaselineSetLocal(frame, 0)) {
+    return;
+  }
+  minijsBaselineReturn(frame);
+}
+
+void baselineAbiPushEntry(minijs::BaselineFrame* frame) {
+  const minijs::Value value(9.0);
+  if (!minijsBaselinePush(frame, &value)) {
+    return;
+  }
+  minijsBaselineReturn(frame);
+}
+
+void baselineAbiDivisionByZeroEntry(minijs::BaselineFrame* frame) {
+  if (!minijsBaselineGetLocal(frame, 0)) {
+    return;
+  }
+  if (!minijsBaselineGetLocal(frame, 1)) {
+    return;
+  }
+  minijsBaselineDiv(frame);
+}
+
+void baselineAbiInvalidLocalEntry(minijs::BaselineFrame* frame) {
+  minijsBaselineGetLocal(frame, 99);
+}
+
+void baselineAbiMutatesAfterReturnEntry(minijs::BaselineFrame* frame) {
+  const minijs::Value value(1.0);
+  if (!minijsBaselinePush(frame, &value)) {
+    return;
+  }
+  if (!minijsBaselineReturn(frame)) {
+    return;
+  }
+  minijsBaselinePush(frame, &value);
+}
+
 void testChunkInlineCacheStartsEmptyAfterCopyOrMove() {
   minijs::Chunk chunk;
   chunk.writeOpcode(minijs::Opcode::Return);
 
-  minijs::PropertyInlineCache& original = chunk.propertyInlineCache(0);
-  original.initialized = true;
-  original.slot = 3;
+  const std::size_t propertySlot = chunk.addFeedbackSlot(minijs::FeedbackKind::GetProperty);
+  minijs::PropertyInlineCache& original = chunk.feedbackSlot(propertySlot).property;
+  original.size = 1;
+  original.entries[0].slot = 3;
+  chunk.feedbackSlot(propertySlot).state = minijs::FeedbackState::Monomorphic;
+  const std::size_t methodSlot = chunk.addFeedbackSlot(minijs::FeedbackKind::MethodCall);
+  minijs::MethodInlineCache& originalMethod = chunk.feedbackSlot(methodSlot).method;
+  originalMethod.size = 1;
+  chunk.feedbackSlot(methodSlot).state = minijs::FeedbackState::Polymorphic;
 
   minijs::Chunk copied(chunk);
-  EXPECT(!copied.propertyInlineCache(0).initialized);
+  EXPECT(copied.feedbackSlot(propertySlot).property.size == 0);
+  EXPECT(copied.feedbackSlot(methodSlot).method.size == 0);
+  EXPECT(copied.feedbackSlot(propertySlot).state == minijs::FeedbackState::Uninitialized);
+  EXPECT(copied.feedbackSlot(methodSlot).state == minijs::FeedbackState::Uninitialized);
 
   minijs::Chunk assigned;
   assigned = chunk;
-  EXPECT(!assigned.propertyInlineCache(0).initialized);
+  EXPECT(assigned.feedbackSlot(propertySlot).property.size == 0);
+  EXPECT(assigned.feedbackSlot(methodSlot).method.size == 0);
+  EXPECT(assigned.feedbackSlot(propertySlot).state == minijs::FeedbackState::Uninitialized);
+  EXPECT(assigned.feedbackSlot(methodSlot).state == minijs::FeedbackState::Uninitialized);
 
   minijs::Chunk moved(std::move(chunk));
-  EXPECT(!moved.propertyInlineCache(0).initialized);
+  EXPECT(moved.feedbackSlot(propertySlot).property.size == 0);
+  EXPECT(moved.feedbackSlot(methodSlot).method.size == 0);
+  EXPECT(moved.feedbackSlot(propertySlot).state == minijs::FeedbackState::Uninitialized);
+  EXPECT(moved.feedbackSlot(methodSlot).state == minijs::FeedbackState::Uninitialized);
 
-  minijs::PropertyInlineCache& copiedCache = copied.propertyInlineCache(8);
-  copiedCache.initialized = true;
-  copiedCache.slot = 1;
+  const std::size_t copiedPropertySlot = copied.addFeedbackSlot(minijs::FeedbackKind::SetProperty);
+  minijs::PropertyInlineCache& copiedCache = copied.feedbackSlot(copiedPropertySlot).property;
+  copiedCache.size = 1;
+  copiedCache.entries[0].slot = 1;
+  copied.feedbackSlot(copiedPropertySlot).state = minijs::FeedbackState::Megamorphic;
+  const std::size_t copiedMethodSlot = copied.addFeedbackSlot(minijs::FeedbackKind::MethodCall);
+  minijs::MethodInlineCache& copiedMethodCache = copied.feedbackSlot(copiedMethodSlot).method;
+  copiedMethodCache.size = 1;
+  copied.feedbackSlot(copiedMethodSlot).state = minijs::FeedbackState::Monomorphic;
 
   minijs::Chunk moveAssigned;
   moveAssigned = std::move(copied);
-  EXPECT(!moveAssigned.propertyInlineCache(8).initialized);
+  EXPECT(moveAssigned.feedbackSlot(copiedPropertySlot).property.size == 0);
+  EXPECT(moveAssigned.feedbackSlot(copiedMethodSlot).method.size == 0);
+  EXPECT(moveAssigned.feedbackSlot(copiedPropertySlot).state ==
+         minijs::FeedbackState::Uninitialized);
+  EXPECT(moveAssigned.feedbackSlot(copiedMethodSlot).state ==
+         minijs::FeedbackState::Uninitialized);
 }
 
 void testCompileNumberExpression() { EXPECT(runBytecode("42;").asNumber() == 42); }
@@ -939,6 +1026,126 @@ minijs::Chunk compileProgram(std::string_view source) {
   return compiler.compileProgram(program);
 }
 
+minijs::DecodedInstruction findDecodedInstruction(const minijs::Chunk& chunk,
+                                                  minijs::Opcode opcode) {
+  std::size_t offset = 0;
+  while (offset < chunk.code().size()) {
+    minijs::DecodedInstruction instruction = minijs::decodeInstruction(chunk, offset);
+    if (instruction.opcode == opcode) {
+      return instruction;
+    }
+    offset = instruction.nextOffset;
+  }
+
+  EXPECT(false);
+  return {};
+}
+
+std::shared_ptr<minijs::BytecodeFunction> lastBytecodeFunctionNamed(
+    const minijs::Chunk& chunk, std::string_view name) {
+  std::shared_ptr<minijs::BytecodeFunction> result;
+  for (const minijs::Value& constant : chunk.constants()) {
+    if (constant.isBytecodeFunction() && constant.asBytecodeFunction()->name == name) {
+      result = constant.asBytecodeFunction();
+    }
+  }
+  return result;
+}
+
+void testDecodeInstructionReadsFeedbackOperands() {
+  const minijs::Chunk chunk = compileProgram("let p = { age: 18 };"
+                                             "p.age = 20;"
+                                             "p.age;"
+                                             "let a = [];"
+                                             "a.push(1);");
+
+  const minijs::DecodedInstruction get =
+      findDecodedInstruction(chunk, minijs::Opcode::GetProperty);
+  EXPECT(get.operandCount == 2);
+  EXPECT(get.nextOffset == get.offset + 3);
+  EXPECT(get.operands[1] < chunk.feedbackSlots().size());
+  EXPECT(chunk.feedbackSlots()[get.operands[1]].kind == minijs::FeedbackKind::GetProperty);
+
+  const minijs::DecodedInstruction set =
+      findDecodedInstruction(chunk, minijs::Opcode::SetProperty);
+  EXPECT(set.operandCount == 2);
+  EXPECT(set.nextOffset == set.offset + 3);
+  EXPECT(set.operands[1] < chunk.feedbackSlots().size());
+  EXPECT(chunk.feedbackSlots()[set.operands[1]].kind == minijs::FeedbackKind::SetProperty);
+
+  const minijs::DecodedInstruction call =
+      findDecodedInstruction(chunk, minijs::Opcode::MethodCall);
+  EXPECT(call.operandCount == 3);
+  EXPECT(call.nextOffset == call.offset + 4);
+  EXPECT(call.operands[2] < chunk.feedbackSlots().size());
+  EXPECT(chunk.feedbackSlots()[call.operands[2]].kind == minijs::FeedbackKind::MethodCall);
+}
+
+void testDecodeInstructionReadsSuperCallWithoutFeedbackOperand() {
+  const minijs::Chunk chunk =
+      compileProgram("class Parent { speak() { return \"parent\"; } }"
+                     "class Child < Parent { speak() { return super.speak(); } }"
+                     "Child().speak();");
+
+  const auto childSpeak = lastBytecodeFunctionNamed(chunk, "speak");
+  EXPECT(childSpeak != nullptr);
+
+  const minijs::DecodedInstruction superCall =
+      findDecodedInstruction(childSpeak->chunk, minijs::Opcode::SuperCall);
+  EXPECT(superCall.operandCount == 2);
+  EXPECT(superCall.nextOffset == superCall.offset + 3);
+  EXPECT(childSpeak->chunk.feedbackSlots().empty());
+}
+
+void testVerifyBytecodeAcceptsCompiledChunk() {
+  const minijs::Chunk chunk = compileProgram("let p = { age: 18 };"
+                                             "p.age = p.age + 1;"
+                                             "p.age;");
+
+  const minijs::BytecodeVerificationResult result = minijs::verifyBytecode(chunk);
+  EXPECT(result.valid);
+  EXPECT(result.error.empty());
+  EXPECT(!result.instructionOffsets.empty());
+}
+
+void testVerifyBytecodeRejectsTruncatedInstruction() {
+  minijs::Chunk chunk;
+  chunk.writeOpcode(minijs::Opcode::Constant);
+
+  const minijs::BytecodeVerificationResult result = minijs::verifyBytecode(chunk);
+  EXPECT(!result.valid);
+  EXPECT(result.error.find("out of bounds") != std::string::npos);
+}
+
+void testVerifyBytecodeRejectsMismatchedFeedbackSlotKind() {
+  minijs::Chunk chunk;
+  const std::uint8_t nameIndex =
+      static_cast<std::uint8_t>(chunk.addConstant(minijs::Value(std::string("age"))));
+  const std::uint8_t feedbackSlot =
+      static_cast<std::uint8_t>(chunk.addFeedbackSlot(minijs::FeedbackKind::SetProperty));
+
+  chunk.writeOpcode(minijs::Opcode::GetProperty);
+  chunk.writeByte(nameIndex);
+  chunk.writeByte(feedbackSlot);
+  chunk.writeOpcode(minijs::Opcode::Return);
+
+  const minijs::BytecodeVerificationResult result = minijs::verifyBytecode(chunk);
+  EXPECT(!result.valid);
+  EXPECT(result.error.find("feedback slot kind mismatch") != std::string::npos);
+}
+
+void testVerifyBytecodeRejectsJumpIntoOperandBytes() {
+  minijs::Chunk chunk;
+  chunk.writeOpcode(minijs::Opcode::Jump);
+  chunk.writeByte(0);
+  chunk.writeByte(1);
+  chunk.writeOpcode(minijs::Opcode::Return);
+
+  const minijs::BytecodeVerificationResult result = minijs::verifyBytecode(chunk);
+  EXPECT(!result.valid);
+  EXPECT(result.error.find("jump target is not an instruction") != std::string::npos);
+}
+
 void testDisassembleArithmeticExpression() {
   const minijs::Chunk chunk = compileExpression("1 + 2 * 3;");
 
@@ -1155,17 +1362,13 @@ void testDisassembleSuperMethodCall() {
   EXPECT(bytecode.find("OP_INHERIT") != std::string::npos);
   EXPECT(bytecode.find("speak") != std::string::npos);
 
-  std::shared_ptr<minijs::BytecodeFunction> dogSpeak;
-  for (const minijs::Value& constant : chunk.constants()) {
-    if (constant.isBytecodeFunction() && constant.asBytecodeFunction()->name == "speak") {
-      dogSpeak = constant.asBytecodeFunction();
-    }
-  }
-
+  const auto dogSpeak = lastBytecodeFunctionNamed(chunk, "speak");
   EXPECT(dogSpeak != nullptr);
   const std::string methodBytecode = minijs::disassembleChunk(dogSpeak->chunk);
   EXPECT(methodBytecode.find("OP_SUPER_CALL") != std::string::npos);
   EXPECT(methodBytecode.find("speak") != std::string::npos);
+  EXPECT(methodBytecode.find("feedback=") == std::string::npos);
+  EXPECT(methodBytecode.find("OP_RETURN") != std::string::npos);
 }
 
 void testDisassembleBreakClosesUpvalueBeforeJump() {
@@ -2834,6 +3037,50 @@ void testBytecodeGetPropertyInlineCacheMissesAndUpdatesOnShapeChange() {
   EXPECT(stats.bypasses == 0);
 }
 
+void testBytecodeGetPropertyInlineCacheCachesMultipleShapesAtSameAccessSite() {
+  minijs::VM vm;
+  const minijs::Value result =
+      runBytecodeProgramOnVm(vm,
+                             "function read(object) { return object.name; }"
+                             "let first = { name: \"A\", extra: 1 };"
+                             "let second = { extra: 2, name: \"B\" };"
+                             "read(first) + read(second) + read(first) + read(second);");
+
+  const minijs::PropertyInlineCacheStats stats = vm.debugPropertyInlineCacheStats();
+
+  EXPECT(result.toString() == "ABAB");
+  EXPECT(stats.misses == 2);
+  EXPECT(stats.updates == 2);
+  EXPECT(stats.hits == 2);
+  EXPECT(stats.bypasses == 0);
+}
+
+void testBytecodeGetPropertyInlineCacheBecomesMegamorphicAfterCapacity() {
+  minijs::VM vm;
+  const minijs::Value result =
+      runBytecodeProgramOnVm(vm, R"(
+        function read(object) {
+          return object.name;
+        }
+
+        let a = { name: 1 };
+        let b = { x: 0, name: 2 };
+        let c = { x: 0, y: 0, name: 3 };
+        let d = { x: 0, y: 0, z: 0, name: 4 };
+        let e = { x: 0, y: 0, z: 0, w: 0, name: 5 };
+
+        read(a) + read(b) + read(c) + read(d) + read(a) + read(e) + read(e);
+      )");
+
+  const minijs::PropertyInlineCacheStats stats = vm.debugPropertyInlineCacheStats();
+
+  EXPECT(result.asNumber() == 21);
+  EXPECT(stats.misses == 5);
+  EXPECT(stats.updates == 4);
+  EXPECT(stats.hits == 1);
+  EXPECT(stats.bypasses == 1);
+}
+
 void testBytecodeGetPropertyInlineCacheBypassesDictionaryMode() {
   minijs::VM vm;
   const minijs::Value result =
@@ -2877,6 +3124,186 @@ void testBytecodeGetPropertyInlineCacheDoesNotUpdateMissingProperty() {
   EXPECT(stats.updates == 0);
   EXPECT(stats.hits == 0);
   EXPECT(stats.bypasses == 0);
+}
+
+void testBytecodeSetPropertyInlineCacheHitsRepeatedExistingPropertyAssignment() {
+  minijs::VM vm;
+  const minijs::Value result =
+      runBytecodeProgramOnVm(vm,
+                             "let p = { name: \"Tom\" };"
+                             "let i = 0;"
+                             "while (i < 3) {"
+                             "  p.name = i;"
+                             "  i = i + 1;"
+                             "}"
+                             "p.name;");
+
+  const minijs::PropertyInlineCacheStats stats = vm.debugPropertyInlineCacheStats();
+
+  EXPECT(result.asNumber() == 2);
+  EXPECT(stats.setMisses == 1);
+  EXPECT(stats.setUpdates == 1);
+  EXPECT(stats.setHits == 2);
+  EXPECT(stats.setBypasses == 0);
+}
+
+void testBytecodeSetPropertyInlineCacheUpdatesAfterAddingProperty() {
+  minijs::VM vm;
+  const minijs::Value result =
+      runBytecodeProgramOnVm(vm,
+                             "let p = {};"
+                             "let i = 0;"
+                             "while (i < 3) {"
+                             "  p.name = i;"
+                             "  i = i + 1;"
+                             "}"
+                             "p.name;");
+
+  const minijs::PropertyInlineCacheStats stats = vm.debugPropertyInlineCacheStats();
+
+  EXPECT(result.asNumber() == 2);
+  EXPECT(stats.setMisses == 1);
+  EXPECT(stats.setUpdates == 1);
+  EXPECT(stats.setHits == 2);
+  EXPECT(stats.setBypasses == 0);
+}
+
+void testBytecodeSetPropertyInlineCacheMissesAndUpdatesOnShapeChange() {
+  minijs::VM vm;
+  const minijs::Value result =
+      runBytecodeProgramOnVm(vm,
+                             "let a = { name: \"Tom\" };"
+                             "let b = { age: 18, name: \"Ada\" };"
+                             "let current = a;"
+                             "let i = 0;"
+                             "while (i < 3) {"
+                             "  current.name = i;"
+                             "  if (i == 0) {"
+                             "    current = b;"
+                             "  }"
+                             "  i = i + 1;"
+                             "}"
+                             "b.name;");
+
+  const minijs::PropertyInlineCacheStats stats = vm.debugPropertyInlineCacheStats();
+
+  EXPECT(result.asNumber() == 2);
+  EXPECT(stats.setMisses == 2);
+  EXPECT(stats.setUpdates == 2);
+  EXPECT(stats.setHits == 1);
+  EXPECT(stats.setBypasses == 0);
+}
+
+void testBytecodeSetPropertyInlineCacheCachesMultipleShapesAtSameAccessSite() {
+  minijs::VM vm;
+  const minijs::Value result =
+      runBytecodeProgramOnVm(vm,
+                             "function write(object, value) { object.name = value; }"
+                             "let first = { name: 0, extra: 1 };"
+                             "let second = { extra: 0, name: 0 };"
+                             "write(first, 1);"
+                             "write(second, 2);"
+                             "write(first, 3);"
+                             "write(second, 4);"
+                             "first.name + second.name;");
+
+  const minijs::PropertyInlineCacheStats stats = vm.debugPropertyInlineCacheStats();
+
+  EXPECT(result.asNumber() == 7);
+  EXPECT(stats.setMisses == 2);
+  EXPECT(stats.setUpdates == 2);
+  EXPECT(stats.setHits == 2);
+  EXPECT(stats.setBypasses == 0);
+}
+
+void testBytecodeSetPropertyInlineCacheBecomesMegamorphicAfterCapacity() {
+  minijs::VM vm;
+  const minijs::Value result =
+      runBytecodeProgramOnVm(vm, R"(
+        function write(object, value) {
+          object.name = value;
+          return value;
+        }
+
+        let a = { name: 0 };
+        let b = { x: 0, name: 0 };
+        let c = { x: 0, y: 0, name: 0 };
+        let d = { x: 0, y: 0, z: 0, name: 0 };
+        let e = { x: 0, y: 0, z: 0, w: 0, name: 0 };
+
+        write(a, 1) + write(b, 2) + write(c, 3) + write(d, 4) + write(a, 5) +
+            write(e, 6) + write(e, 7);
+      )");
+
+  const minijs::PropertyInlineCacheStats stats = vm.debugPropertyInlineCacheStats();
+
+  EXPECT(result.asNumber() == 28);
+  EXPECT(stats.setMisses == 5);
+  EXPECT(stats.setUpdates == 4);
+  EXPECT(stats.setHits == 1);
+  EXPECT(stats.setBypasses == 1);
+}
+
+void testBytecodePolymorphicPropertyInlineCacheSurvivesManualGc() {
+  minijs::VM vm;
+  const minijs::Value first = runBytecodeProgramOnVm(vm, R"(
+    function read(object) {
+      return object.name;
+    }
+
+    function write(object, value) {
+      object.name = value;
+      return value;
+    }
+
+    let first = { name: 1, extra: 10 };
+    let second = { extra: 20, name: 2 };
+
+    read(first);
+    read(second);
+    write(first, 3);
+    write(second, 4);
+  )");
+  EXPECT(first.asNumber() == 4);
+
+  vm.collectGarbage();
+  vm.debugResetPropertyInlineCacheStats();
+
+  const minijs::Value second = runBytecodeProgramOnVm(
+      vm, "read(first) + read(second); write(first, 5) + write(second, 6);");
+  const minijs::PropertyInlineCacheStats stats = vm.debugPropertyInlineCacheStats();
+
+  EXPECT(second.asNumber() == 11);
+  EXPECT(stats.hits == 2);
+  EXPECT(stats.misses == 0);
+  EXPECT(stats.updates == 0);
+  EXPECT(stats.setHits == 2);
+  EXPECT(stats.setMisses == 0);
+  EXPECT(stats.setUpdates == 0);
+  EXPECT(stats.bypasses == 0);
+  EXPECT(stats.setBypasses == 0);
+}
+
+void testBytecodeSetPropertyInlineCacheBypassesDictionaryMode() {
+  minijs::VM vm;
+  const minijs::Value result =
+      runBytecodeProgramOnVm(vm,
+                             "let p = { name: \"Tom\", age: 18 };"
+                             "del(p, \"age\");"
+                             "let i = 0;"
+                             "while (i < 3) {"
+                             "  p.name = i;"
+                             "  i = i + 1;"
+                             "}"
+                             "p.name;");
+
+  const minijs::PropertyInlineCacheStats stats = vm.debugPropertyInlineCacheStats();
+
+  EXPECT(result.asNumber() == 2);
+  EXPECT(stats.setMisses == 0);
+  EXPECT(stats.setUpdates == 0);
+  EXPECT(stats.setHits == 0);
+  EXPECT(stats.setBypasses == 3);
 }
 
 void testBytecodeShapeSetKeepsAssignedValuesDuringGcPressure() {
@@ -3062,6 +3489,288 @@ void testBytecodeUnknownArrayMethod() {
   }
 }
 
+void testBytecodeMethodCallStatsCountsClassDispatches() {
+  minijs::VM vm;
+  const minijs::Value result =
+      runBytecodeProgramOnVm(vm,
+                             "class Box {"
+                             "  static make(value) { return value + 1; }"
+                             "  init(value) { this.value = value; }"
+                             "  get() { return this.value; }"
+                             "}"
+                             "Box.make(1) + Box(2).get();");
+
+  const minijs::PropertyInlineCacheStats stats = vm.debugPropertyInlineCacheStats();
+
+  EXPECT(result.asNumber() == 4);
+  EXPECT(stats.methodCallInstanceDispatches == 1);
+  EXPECT(stats.methodCallStaticDispatches == 1);
+  EXPECT(stats.methodCallArrayPushes == 0);
+  EXPECT(stats.methodCallArrayPops == 0);
+  EXPECT(stats.methodCallDispatchErrors == 0);
+  EXPECT(stats.methodCallHits == 0);
+  EXPECT(stats.methodCallMisses == 2);
+  EXPECT(stats.methodCallUpdates == 2);
+  EXPECT(stats.methodCallBypasses == 0);
+}
+
+void testBytecodeMethodCallStatsCountsArrayBuiltins() {
+  minijs::VM vm;
+  const minijs::Value result = runBytecodeProgramOnVm(vm,
+                                                     "let a = [];"
+                                                     "a.push(1);"
+                                                     "a.push(2);"
+                                                     "a.pop();");
+
+  const minijs::PropertyInlineCacheStats stats = vm.debugPropertyInlineCacheStats();
+
+  EXPECT(result.asNumber() == 2);
+  EXPECT(stats.methodCallInstanceDispatches == 0);
+  EXPECT(stats.methodCallStaticDispatches == 0);
+  EXPECT(stats.methodCallArrayPushes == 2);
+  EXPECT(stats.methodCallArrayPops == 1);
+  EXPECT(stats.methodCallDispatchErrors == 0);
+  EXPECT(stats.methodCallHits == 0);
+  EXPECT(stats.methodCallMisses == 0);
+  EXPECT(stats.methodCallUpdates == 0);
+  EXPECT(stats.methodCallBypasses == 3);
+}
+
+void testBytecodeMethodCallStatsCountsDispatchErrors() {
+  minijs::VM vm;
+
+  try {
+    runBytecodeProgramOnVm(vm,
+                           "let a = [];"
+                           "a.shift();");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: unknown array method: shift");
+  }
+
+  const minijs::PropertyInlineCacheStats stats = vm.debugPropertyInlineCacheStats();
+
+  EXPECT(stats.methodCallInstanceDispatches == 0);
+  EXPECT(stats.methodCallStaticDispatches == 0);
+  EXPECT(stats.methodCallArrayPushes == 0);
+  EXPECT(stats.methodCallArrayPops == 0);
+  EXPECT(stats.methodCallDispatchErrors == 1);
+  EXPECT(stats.methodCallHits == 0);
+  EXPECT(stats.methodCallMisses == 0);
+  EXPECT(stats.methodCallUpdates == 0);
+  EXPECT(stats.methodCallBypasses == 1);
+}
+
+void testBytecodeMethodCallStatsCountsInstanceArityErrors() {
+  minijs::VM vm;
+
+  try {
+    runBytecodeProgramOnVm(vm,
+                           "class Box { set(value) { this.value = value; } }"
+                           "let box = Box();"
+                           "box.set();");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: method set expects 1 arguments");
+  }
+
+  const minijs::PropertyInlineCacheStats stats = vm.debugPropertyInlineCacheStats();
+
+  EXPECT(stats.methodCallInstanceDispatches == 0);
+  EXPECT(stats.methodCallStaticDispatches == 0);
+  EXPECT(stats.methodCallHits == 0);
+  EXPECT(stats.methodCallMisses == 1);
+  EXPECT(stats.methodCallUpdates == 1);
+  EXPECT(stats.methodCallBypasses == 0);
+  EXPECT(stats.methodCallDispatchErrors == 1);
+}
+
+void testBytecodeMethodCallStatsCountsStaticArityErrors() {
+  minijs::VM vm;
+
+  try {
+    runBytecodeProgramOnVm(vm,
+                           "class Box { static make(value) { return value; } }"
+                           "Box.make();");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: function make expects 1 arguments");
+  }
+
+  const minijs::PropertyInlineCacheStats stats = vm.debugPropertyInlineCacheStats();
+
+  EXPECT(stats.methodCallInstanceDispatches == 0);
+  EXPECT(stats.methodCallStaticDispatches == 0);
+  EXPECT(stats.methodCallHits == 0);
+  EXPECT(stats.methodCallMisses == 1);
+  EXPECT(stats.methodCallUpdates == 1);
+  EXPECT(stats.methodCallBypasses == 0);
+  EXPECT(stats.methodCallDispatchErrors == 1);
+}
+
+void testBytecodeMethodCallInlineCacheHitsRepeatedInstanceMethod() {
+  minijs::VM vm;
+  const minijs::Value result =
+      runBytecodeProgramOnVm(vm,
+                             "class Box {"
+                             "  init(value) { this.value = value; }"
+                             "  get() { return this.value; }"
+                             "}"
+                             "let box = Box(7);"
+                             "let total = 0;"
+                             "let i = 0;"
+                             "while (i < 3) {"
+                             "  total = total + box.get();"
+                             "  i = i + 1;"
+                             "}"
+                             "total;");
+
+  const minijs::PropertyInlineCacheStats stats = vm.debugPropertyInlineCacheStats();
+
+  EXPECT(result.asNumber() == 21);
+  EXPECT(stats.methodCallInstanceDispatches == 3);
+  EXPECT(stats.methodCallStaticDispatches == 0);
+  EXPECT(stats.methodCallHits == 2);
+  EXPECT(stats.methodCallMisses == 1);
+  EXPECT(stats.methodCallUpdates == 1);
+  EXPECT(stats.methodCallBypasses == 0);
+  EXPECT(stats.methodCallDispatchErrors == 0);
+}
+
+void testBytecodeMethodCallInlineCacheHitsRepeatedStaticMethod() {
+  minijs::VM vm;
+  const minijs::Value result =
+      runBytecodeProgramOnVm(vm,
+                             "class Box {"
+                             "  static make(value) { return value + 1; }"
+                             "}"
+                             "let total = 0;"
+                             "let i = 0;"
+                             "while (i < 3) {"
+                             "  total = total + Box.make(i);"
+                             "  i = i + 1;"
+                             "}"
+                             "total;");
+
+  const minijs::PropertyInlineCacheStats stats = vm.debugPropertyInlineCacheStats();
+
+  EXPECT(result.asNumber() == 6);
+  EXPECT(stats.methodCallInstanceDispatches == 0);
+  EXPECT(stats.methodCallStaticDispatches == 3);
+  EXPECT(stats.methodCallHits == 2);
+  EXPECT(stats.methodCallMisses == 1);
+  EXPECT(stats.methodCallUpdates == 1);
+  EXPECT(stats.methodCallBypasses == 0);
+  EXPECT(stats.methodCallDispatchErrors == 0);
+}
+
+void testBytecodeMethodCallInlineCacheHitSurvivesManualGc() {
+  minijs::VM vm;
+  const minijs::Value first = runBytecodeProgramOnVm(vm,
+                                                    "function invoke(receiver) {"
+                                                    "  return receiver.get();"
+                                                    "}"
+                                                    "function makeBox() {"
+                                                    "  let offset = 1;"
+                                                    "  class Box {"
+                                                    "    init(value) { this.value = value; }"
+                                                    "    get() { return this.value + offset; }"
+                                                    "  }"
+                                                    "  return Box;"
+                                                    "}"
+                                                    "let Box = makeBox();"
+                                                    "let box = Box(8);"
+                                                    "Box = undefined;"
+                                                    "invoke(box);");
+  EXPECT(first.asNumber() == 9);
+
+  vm.collectGarbage();
+  vm.debugResetPropertyInlineCacheStats();
+
+  const minijs::Value second = runBytecodeProgramOnVm(vm, "invoke(box);");
+  const minijs::PropertyInlineCacheStats stats = vm.debugPropertyInlineCacheStats();
+
+  EXPECT(second.asNumber() == 9);
+  EXPECT(stats.methodCallInstanceDispatches == 1);
+  EXPECT(stats.methodCallHits == 1);
+  EXPECT(stats.methodCallMisses == 0);
+  EXPECT(stats.methodCallUpdates == 0);
+  EXPECT(stats.methodCallDispatchErrors == 0);
+}
+
+void testBytecodePolymorphicMethodCallInlineCacheSurvivesManualGc() {
+  minijs::VM vm;
+  const minijs::Value first = runBytecodeProgramOnVm(vm, R"(
+    function invoke(receiver) {
+      return receiver.get();
+    }
+
+    function makeA() {
+      let offset = 1;
+      class A { get() { return offset; } }
+      return A;
+    }
+
+    function makeB() {
+      let offset = 10;
+      class B { get() { return offset; } }
+      return B;
+    }
+
+    let A = makeA();
+    let B = makeB();
+    let first = A();
+    let second = B();
+    A = undefined;
+    B = undefined;
+    invoke(first) + invoke(second);
+  )");
+  EXPECT(first.asNumber() == 11);
+
+  vm.collectGarbage();
+  vm.debugResetPropertyInlineCacheStats();
+
+  const minijs::Value second = runBytecodeProgramOnVm(vm, "invoke(first) + invoke(second);");
+  const minijs::PropertyInlineCacheStats stats = vm.debugPropertyInlineCacheStats();
+
+  EXPECT(second.asNumber() == 11);
+  EXPECT(stats.methodCallInstanceDispatches == 2);
+  EXPECT(stats.methodCallHits == 2);
+  EXPECT(stats.methodCallMisses == 0);
+  EXPECT(stats.methodCallUpdates == 0);
+  EXPECT(stats.methodCallDispatchErrors == 0);
+}
+
+void testBytecodeMethodCallInlineCacheMissesAndUpdatesOnClassChange() {
+  minijs::VM vm;
+  const minijs::Value result =
+      runBytecodeProgramOnVm(vm,
+                             "class A { value() { return 1; } }"
+                             "class B { value() { return 10; } }"
+                             "let current = A();"
+                             "let total = 0;"
+                             "let i = 0;"
+                             "while (i < 3) {"
+                             "  total = total + current.value();"
+                             "  if (i == 0) {"
+                             "    current = B();"
+                             "  }"
+                             "  i = i + 1;"
+                             "}"
+                             "total;");
+
+  const minijs::PropertyInlineCacheStats stats = vm.debugPropertyInlineCacheStats();
+
+  EXPECT(result.asNumber() == 21);
+  EXPECT(stats.methodCallInstanceDispatches == 3);
+  EXPECT(stats.methodCallStaticDispatches == 0);
+  EXPECT(stats.methodCallHits == 1);
+  EXPECT(stats.methodCallMisses == 2);
+  EXPECT(stats.methodCallUpdates == 2);
+  EXPECT(stats.methodCallBypasses == 0);
+  EXPECT(stats.methodCallDispatchErrors == 0);
+}
+
 void testDisassembleArrayMethodCall() {
   const minijs::Chunk chunk = compileProgram("let a = [];"
                                              "a.push(1);");
@@ -3071,8 +3780,8 @@ void testDisassembleArrayMethodCall() {
       "0002 OP_DEFINE_GLOBAL 0 a\n"
       "0004 OP_GET_GLOBAL 1 a\n"
       "0006 OP_CONSTANT 2 1\n"
-      "0008 OP_METHOD_CALL 3 push 1\n"
-      "0011 OP_RETURN\n";
+      "0008 OP_METHOD_CALL 3 push 1 feedback=0\n"
+      "0012 OP_RETURN\n";
 
   EXPECT(minijs::disassembleChunk(chunk) == expected);
 }
@@ -3088,12 +3797,748 @@ void testDisassembleObjectLiteralProperty() {
       "0004 OP_OBJECT 2 [name, age]\n"
       "0006 OP_DEFINE_GLOBAL 3 p\n"
       "0008 OP_GET_GLOBAL 4 p\n"
-      "0010 OP_GET_PROPERTY 5 age\n"
-      "0012 OP_RETURN\n";
+      "0010 OP_GET_PROPERTY 5 age feedback=0\n"
+      "0013 OP_RETURN\n";
 
   EXPECT(minijs::disassembleChunk(chunk) == expected);
 }
 
+void testBytecodeMethodCallInlineCacheCachesMultipleReceiverClassesAtSameCallSite() {
+  minijs::VM vm;
+  const minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+    class A {
+      get() { return 1; }
+    }
+
+    class B {
+      get() { return 2; }
+    }
+
+    function read(box) {
+      return box.get();
+    }
+
+    read(A()) + read(B()) + read(A()) + read(B());
+  )");
+
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 6);
+
+  const minijs::PropertyInlineCacheStats stats = vm.debugPropertyInlineCacheStats();
+  EXPECT(stats.methodCallMisses == 2);
+  EXPECT(stats.methodCallUpdates == 2);
+  EXPECT(stats.methodCallHits == 2);
+  EXPECT(stats.methodCallInstanceDispatches == 4);
+}
+
+void testBytecodeMethodCallInlineCacheBecomesMegamorphicAfterCapacity() {
+  minijs::VM vm;
+  const minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+    class A { get() { return 1; } }
+    class B { get() { return 2; } }
+    class C { get() { return 3; } }
+    class D { get() { return 4; } }
+    class E { get() { return 5; } }
+
+    function read(value) {
+      return value.get();
+    }
+
+    read(A()) + read(B()) + read(C()) + read(D()) + read(A()) + read(E()) + read(E());
+  )");
+
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 21);
+
+  const minijs::PropertyInlineCacheStats stats = vm.debugPropertyInlineCacheStats();
+  EXPECT(stats.methodCallMisses == 5);
+  EXPECT(stats.methodCallUpdates == 4);
+  EXPECT(stats.methodCallHits == 1);
+  EXPECT(stats.methodCallInstanceDispatches == 7);
+  EXPECT(stats.methodCallBypasses == 1);
+  EXPECT(stats.methodCallDispatchErrors == 0);
+}
+
+void testBytecodeMethodCallInlineCacheCachesMultipleStaticClassesAtSameCallSite() {
+  minijs::VM vm;
+  const minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+    class Alpha {
+      static make(value) { return value + 1; }
+    }
+
+    class Beta {
+      static make(value) { return value + 10; }
+    }
+
+    function read(type) {
+      return type.make(1);
+    }
+
+    read(Alpha) + read(Beta) + read(Alpha) + read(Beta);
+  )");
+
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 26);
+
+  const minijs::PropertyInlineCacheStats stats = vm.debugPropertyInlineCacheStats();
+  EXPECT(stats.methodCallMisses == 2);
+  EXPECT(stats.methodCallUpdates == 2);
+  EXPECT(stats.methodCallHits == 2);
+  EXPECT(stats.methodCallInstanceDispatches == 0);
+  EXPECT(stats.methodCallStaticDispatches == 4);
+  EXPECT(stats.methodCallBypasses == 0);
+  EXPECT(stats.methodCallDispatchErrors == 0);
+}
+
+void testBytecodeSuperCallDoesNotPolluteMethodInlineCache() {
+  minijs::VM vm;
+  const minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+    class Parent {
+      value() { return 10; }
+    }
+
+    class Child < Parent {
+      value() { return super.value() + 1; }
+    }
+
+    Child().value();
+  )");
+
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 11);
+
+  const minijs::PropertyInlineCacheStats stats = vm.debugPropertyInlineCacheStats();
+  EXPECT(stats.methodCallMisses == 1);
+  EXPECT(stats.methodCallUpdates == 1);
+  EXPECT(stats.methodCallHits == 0);
+  EXPECT(stats.methodCallInstanceDispatches == 1);
+  EXPECT(stats.methodCallStaticDispatches == 0);
+  EXPECT(stats.methodCallBypasses == 0);
+  EXPECT(stats.methodCallDispatchErrors == 0);
+}
+
+void testJitCallThresholdCompilesSupportedFunction() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(3);
+
+  runBytecodeProgramOnVm(vm, R"(
+    function addOne(value) { return value + 1; }
+    addOne(1);
+    addOne(2);
+    addOne(3);
+  )");
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("addOne");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->callCount == 3);
+  EXPECT(feedback->backedgeCount == 0);
+  EXPECT(feedback->baselineEntryCount == 0);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+  const minijs::BaselineCode* code = vm.debugGlobalFunctionBaselineCode("addOne");
+  EXPECT(code != nullptr);
+  EXPECT(code->entry != nullptr);
+  EXPECT(code->executableMemory != nullptr);
+  EXPECT(!code->bytecodeOffsetToNativeOffset.empty());
+  EXPECT(vm.debugGlobalFunctionJitCompileError("addOne").empty());
+}
+
+void testJitCallCountStaysColdBelowThreshold() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(3);
+
+  runBytecodeProgramOnVm(vm, R"(
+    function addOne(value) { return value + 1; }
+    addOne(1);
+    addOne(2);
+  )");
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("addOne");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->callCount == 2);
+  EXPECT(feedback->baselineEntryCount == 0);
+  EXPECT(feedback->state == minijs::JitState::Cold);
+}
+
+void testJitBackedgeThresholdCompilesSupportedFunction() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(100);
+  vm.setJitBackedgeThreshold(5);
+
+  runBytecodeProgramOnVm(vm, R"(
+    function loop() {
+      let i = 0;
+      while (i < 5) { i = i + 1; }
+    }
+    loop();
+  )");
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("loop");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->callCount == 1);
+  EXPECT(feedback->backedgeCount == 5);
+  EXPECT(feedback->baselineEntryCount == 0);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+  EXPECT(vm.debugGlobalFunctionBaselineCode("loop") != nullptr);
+}
+
+void testJitDisabledDoesNotCollectHeat() {
+  minijs::VM vm;
+  vm.setJitCallThreshold(1);
+  vm.setJitBackedgeThreshold(1);
+
+  runBytecodeProgramOnVm(vm, R"(
+    function loop() {
+      let i = 0;
+      while (i < 3) { i = i + 1; }
+    }
+    loop();
+  )");
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("loop");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->callCount == 0);
+  EXPECT(feedback->backedgeCount == 0);
+  EXPECT(feedback->baselineEntryCount == 0);
+  EXPECT(feedback->state == minijs::JitState::Cold);
+}
+
+void testJitArityErrorDoesNotCountCall() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  try {
+    runBytecodeProgramOnVm(vm, "function one(value) { return value; } one();");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError&) {
+  }
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("one");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->callCount == 0);
+  EXPECT(feedback->baselineEntryCount == 0);
+  EXPECT(feedback->state == minijs::JitState::Cold);
+}
+
+void testJitUnsupportedCallOpcodeFailsAndFallsBackToVm() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  const minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+    function addOne(value) { return value + 1; }
+    function callAdd(value) { return addOne(value); }
+    callAdd(1);
+  )");
+
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 2);
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("callAdd");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->callCount == 1);
+  EXPECT(feedback->baselineEntryCount == 0);
+  EXPECT(feedback->state == minijs::JitState::Failed);
+  EXPECT(vm.debugGlobalFunctionBaselineCode("callAdd") == nullptr);
+  EXPECT(vm.debugGlobalFunctionJitCompileError("callAdd").find("OP_CALL") !=
+         std::string::npos);
+}
+
+void testBaselineExecutorRunsArithmeticAndLocals() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  runBytecodeProgramOnVm(vm, R"(
+    function calc(a, b) {
+      let c = a + b * 2;
+      return c - 1;
+    }
+    calc(1, 2);
+  )");
+
+  const minijs::BaselineCode* code = vm.debugGlobalFunctionBaselineCode("calc");
+  EXPECT(code != nullptr);
+  EXPECT(!code->instructions.empty());
+  EXPECT(code->instructions.back().opcode == minijs::Opcode::Return);
+
+  const minijs::Value result =
+      vm.debugExecuteGlobalFunctionBaseline("calc", {minijs::Value(10.0), minijs::Value(6.0)});
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 21);
+}
+
+void testBaselineExecutorRunsSimpleLoop() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  runBytecodeProgramOnVm(vm, R"(
+    function sumTo(n) {
+      let i = 0;
+      let total = 0;
+      while (i < n) {
+        total = total + i;
+        i = i + 1;
+      }
+      return total;
+    }
+    sumTo(1);
+  )");
+
+  const minijs::BaselineCode* code = vm.debugGlobalFunctionBaselineCode("sumTo");
+  EXPECT(code != nullptr);
+
+  const minijs::Value result =
+      vm.debugExecuteGlobalFunctionBaseline("sumTo", {minijs::Value(5.0)});
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 10);
+}
+
+void testBaselineExecutorPreservesArithmeticErrors() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  runBytecodeProgramOnVm(vm, R"(
+    function divide(a, b) { return a / b; }
+    divide(1, 1);
+  )");
+
+  try {
+    vm.debugExecuteGlobalFunctionBaseline("divide", {minijs::Value(1.0), minijs::Value(0.0)});
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: division by zero");
+  }
+}
+
+void testBaselineCompilerGeneratesArm64ForAddFunction() {
+  const minijs::Chunk chunk = compileProgram("function addOne(value) { return value + 1; }");
+  const auto function = lastBytecodeFunctionNamed(chunk, "addOne");
+  EXPECT(function != nullptr);
+
+  minijs::BaselineCompiler compiler;
+  const minijs::BaselineCompileResult result = compiler.compile(*function);
+  EXPECT(result.succeeded());
+  EXPECT(result.error.empty());
+  EXPECT(result.code != nullptr);
+  EXPECT(result.code->entry != nullptr);
+  EXPECT(result.code->executableMemory != nullptr);
+  EXPECT(result.code->executableMemory->size() > 0);
+  EXPECT(!result.code->instructions.empty());
+  EXPECT(result.code->instructions.back().opcode == minijs::Opcode::Return);
+
+  const minijs::DecodedInstruction getLocal =
+      findDecodedInstruction(function->chunk, minijs::Opcode::GetLocal);
+  const minijs::DecodedInstruction constant =
+      findDecodedInstruction(function->chunk, minijs::Opcode::Constant);
+  EXPECT(result.code->bytecodeOffsetToNativeOffset.size() ==
+         function->chunk.code().size() + 1);
+  EXPECT(result.code->bytecodeOffsetToNativeOffset[getLocal.offset] !=
+         minijs::kInvalidNativeOffset);
+  EXPECT(result.code->bytecodeOffsetToNativeOffset[constant.offset] !=
+         minijs::kInvalidNativeOffset);
+  EXPECT(result.code->bytecodeOffsetToNativeOffset[function->chunk.code().size()] !=
+         minijs::kInvalidNativeOffset);
+  EXPECT(result.code->bytecodeOffsetToNativeOffset[function->chunk.code().size()] <
+         result.code->executableMemory->size());
+}
+
+void testBaselineCompilerRejectsUnsupportedOpcode() {
+  const minijs::Chunk chunk = compileProgram("function sub(a, b) { return a - b; }");
+  const auto function = lastBytecodeFunctionNamed(chunk, "sub");
+  EXPECT(function != nullptr);
+
+  minijs::BaselineCompiler compiler;
+  const minijs::BaselineCompileResult result = compiler.compile(*function);
+  EXPECT(!result.succeeded());
+  EXPECT(result.code == nullptr);
+  EXPECT(result.error.find("OP_SUB") != std::string::npos);
+}
+
+#if defined(__aarch64__) || defined(_M_ARM64)
+void testBaselineCompilerNativeEntryRunsAddFunction() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  runBytecodeProgramOnVm(vm, R"(
+    function add(a, b) { return a + b; }
+    add(1, 2);
+  )");
+
+  const minijs::BaselineCode* code = vm.debugGlobalFunctionBaselineCode("add");
+  EXPECT(code != nullptr);
+  EXPECT(code->entry != nullptr);
+
+  const minijs::Value result =
+      vm.debugExecuteGlobalFunctionBaselineEntry("add", {minijs::Value(4.0), minijs::Value(8.0)},
+                                                 code->entry);
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 12);
+}
+#endif
+
+void testBaselineRuntimeAbiRunsArithmeticEntry() {
+  minijs::VM vm;
+
+  runBytecodeProgramOnVm(vm, "function add(a, b) { return a + b; }");
+
+  const minijs::Value result =
+      vm.debugExecuteGlobalFunctionBaselineEntry("add", {minijs::Value(2.0), minijs::Value(5.0)},
+                                                 baselineAbiAddEntry);
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 7);
+}
+
+void testBaselineRuntimeAbiPushesConstantsAndSetsLocals() {
+  minijs::VM vm;
+
+  runBytecodeProgramOnVm(vm, "function literal() { return 41; }");
+
+  const minijs::Value result =
+      vm.debugExecuteGlobalFunctionBaselineEntry("literal", {}, baselineAbiConstantEntry);
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 41);
+}
+
+void testBaselineRuntimeAbiPushesValuesByPointer() {
+  minijs::VM vm;
+
+  runBytecodeProgramOnVm(vm, "function value() { return 0; }");
+
+  const minijs::Value result =
+      vm.debugExecuteGlobalFunctionBaselineEntry("value", {}, baselineAbiPushEntry);
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 9);
+}
+
+void testBaselineRuntimeAbiTurnsHelperErrorsIntoFailedFrame() {
+  minijs::VM vm;
+
+  runBytecodeProgramOnVm(vm, "function divide(a, b) { return a / b; }");
+
+  try {
+    vm.debugExecuteGlobalFunctionBaselineEntry(
+        "divide", {minijs::Value(1.0), minijs::Value(0.0)}, baselineAbiDivisionByZeroEntry);
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: baseline runtime helper failed");
+  }
+}
+
+void testBaselineRuntimeAbiRejectsInvalidLocalAccess() {
+  minijs::VM vm;
+
+  runBytecodeProgramOnVm(vm, "function id(value) { return value; }");
+
+  try {
+    vm.debugExecuteGlobalFunctionBaselineEntry("id", {minijs::Value(1.0)},
+                                               baselineAbiInvalidLocalEntry);
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: baseline runtime helper failed");
+  }
+}
+
+void testBaselineRuntimeAbiRejectsMutationAfterReturn() {
+  minijs::VM vm;
+
+  runBytecodeProgramOnVm(vm, "function value() { return 0; }");
+
+  try {
+    vm.debugExecuteGlobalFunctionBaselineEntry("value", {}, baselineAbiMutatesAfterReturnEntry);
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: baseline runtime helper failed");
+  }
+}
+
+void testJitDispatchRunsGlobalOpcodes() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  const minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+    let total = 0;
+    function bump() {
+      total = total + 2;
+      return total;
+    }
+    bump();
+    bump();
+  )");
+
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 4);
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("bump");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->callCount == 2);
+  EXPECT(feedback->baselineEntryCount == 1);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+  EXPECT(vm.debugGlobalFunctionBaselineCode("bump") != nullptr);
+}
+
+void testJitDispatchRunsArrayAndIndexOpcodes() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  const minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+    function pick(value) {
+      let values = [value, value + 1];
+      values[0] = values[1] + 2;
+      return values[0];
+    }
+    pick(3);
+    pick(4);
+  )");
+
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 7);
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("pick");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->callCount == 2);
+  EXPECT(feedback->baselineEntryCount == 1);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+}
+
+void testJitDispatchRunsObjectLiteralAndPropertyOpcodes() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  const minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+    function make(value) {
+      let object = { value: value, next: value + 1 };
+      return object.next;
+    }
+    make(1);
+    make(2);
+  )");
+
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 3);
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("make");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->callCount == 2);
+  EXPECT(feedback->baselineEntryCount == 1);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+
+  const minijs::PropertyInlineCacheStats stats = vm.debugPropertyInlineCacheStats();
+  EXPECT(stats.misses >= 1);
+  EXPECT(stats.updates >= 1);
+  EXPECT(stats.hits >= 1);
+}
+
+void testJitDispatchRunsSetPropertyOpcode() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  const minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+    let person = { age: 18 };
+    function bumpAge(person) {
+      person.age = person.age + 1;
+      return person.age;
+    }
+    bumpAge(person);
+    bumpAge(person);
+  )");
+
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 20);
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("bumpAge");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->callCount == 2);
+  EXPECT(feedback->baselineEntryCount == 1);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+
+  const minijs::PropertyInlineCacheStats stats = vm.debugPropertyInlineCacheStats();
+  EXPECT(stats.setMisses >= 1);
+  EXPECT(stats.setUpdates >= 1);
+  EXPECT(stats.setHits >= 1);
+}
+
+void testJitDispatchRunsUpvalueOpcodes() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  const minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+    function makeCounter() {
+      let value = 0;
+      function inc() {
+        value = value + 1;
+        return value;
+      }
+      return inc;
+    }
+    let inc = makeCounter();
+    inc();
+    inc();
+  )");
+
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 2);
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("inc");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->callCount == 2);
+  EXPECT(feedback->baselineEntryCount == 1);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+}
+
+void testJitDispatchEntersCompiledFunctionOnLaterCall() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  const minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+    function addOne(value) { return value + 1; }
+    addOne(1);
+    addOne(2);
+  )");
+
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 3);
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("addOne");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->callCount == 2);
+  EXPECT(feedback->baselineEntryCount == 1);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+}
+
+void testJitDispatchRespectsDisabledJit() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  runBytecodeProgramOnVm(vm, R"(
+    function addOne(value) { return value + 1; }
+    addOne(1);
+  )");
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("addOne");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+  EXPECT(feedback->baselineEntryCount == 0);
+
+  vm.setJitEnabled(false);
+  const minijs::Value result = runBytecodeProgramOnVm(vm, "addOne(2);");
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 3);
+
+  feedback = vm.debugGlobalFunctionJitFeedback("addOne");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->callCount == 1);
+  EXPECT(feedback->baselineEntryCount == 0);
+}
+
+void testJitDispatchPreservesRuntimeErrors() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  try {
+    runBytecodeProgramOnVm(vm, R"(
+      function divide(a, b) { return a / b; }
+      divide(1, 1);
+      divide(1, 0);
+    )");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: division by zero");
+  }
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("divide");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->callCount == 2);
+  EXPECT(feedback->baselineEntryCount == 1);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+}
+
+void testJitDispatchRunsAfterManualGc() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  runBytecodeProgramOnVm(vm, R"(
+    function label() { return "hot"; }
+    label();
+  )");
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("label");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+  EXPECT(feedback->baselineEntryCount == 0);
+
+  vm.collectGarbage();
+
+  const minijs::Value result = runBytecodeProgramOnVm(vm, "label();");
+  EXPECT(result.isString());
+  EXPECT(result.toString() == "hot");
+
+  feedback = vm.debugGlobalFunctionJitFeedback("label");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->baselineEntryCount == 1);
+}
+
+void testJitDispatchUsesMethodSlotStart() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  const minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+    class Box {
+      self() { return this; }
+    }
+    let box = Box();
+    box.self();
+    box.self();
+  )");
+
+  EXPECT(result.isBytecodeInstance());
+
+  const minijs::JitFeedback* feedback =
+      vm.debugGlobalClassMethodJitFeedback("Box", "self");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->callCount == 2);
+  EXPECT(feedback->baselineEntryCount == 1);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+}
+
+void testJitDispatchPreservesInitReceiverReturn() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  const minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+    class Box {
+      init() { return 999; }
+    }
+    Box();
+    Box();
+  )");
+
+  EXPECT(result.isBytecodeInstance());
+
+  const minijs::JitFeedback* feedback =
+      vm.debugGlobalClassMethodJitFeedback("Box", "init");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->callCount == 2);
+  EXPECT(feedback->baselineEntryCount == 1);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+}
 }  // namespace
 
 void runBytecodeTests() {
@@ -3149,6 +4594,12 @@ void runBytecodeTests() {
   testCompileLogicalOrShortCircuit();
   testCompileLogicalReturnsOperandValue();
   testCompileLogicalWithBuiltins();
+  testDecodeInstructionReadsFeedbackOperands();
+  testDecodeInstructionReadsSuperCallWithoutFeedbackOperand();
+  testVerifyBytecodeAcceptsCompiledChunk();
+  testVerifyBytecodeRejectsTruncatedInstruction();
+  testVerifyBytecodeRejectsMismatchedFeedbackSlotKind();
+  testVerifyBytecodeRejectsJumpIntoOperandBytes();
   testDisassembleArithmeticExpression();
   testDisassembleUnaryMinus();
   testDisassembleStringLiteral();
@@ -3319,8 +4770,17 @@ void runBytecodeTests() {
   testBytecodeShapeModeObjectPropertiesPreserveSemantics();
   testBytecodeGetPropertyInlineCacheHitsRepeatedSameShapeAccess();
   testBytecodeGetPropertyInlineCacheMissesAndUpdatesOnShapeChange();
+  testBytecodeGetPropertyInlineCacheCachesMultipleShapesAtSameAccessSite();
+  testBytecodeGetPropertyInlineCacheBecomesMegamorphicAfterCapacity();
   testBytecodeGetPropertyInlineCacheBypassesDictionaryMode();
   testBytecodeGetPropertyInlineCacheDoesNotUpdateMissingProperty();
+  testBytecodeSetPropertyInlineCacheHitsRepeatedExistingPropertyAssignment();
+  testBytecodeSetPropertyInlineCacheUpdatesAfterAddingProperty();
+  testBytecodeSetPropertyInlineCacheMissesAndUpdatesOnShapeChange();
+  testBytecodeSetPropertyInlineCacheCachesMultipleShapesAtSameAccessSite();
+  testBytecodeSetPropertyInlineCacheBecomesMegamorphicAfterCapacity();
+  testBytecodePolymorphicPropertyInlineCacheSurvivesManualGc();
+  testBytecodeSetPropertyInlineCacheBypassesDictionaryMode();
   testBytecodeShapeSetKeepsAssignedValuesDuringGcPressure();
   testBytecodeObjectDeleteFallsBackToDictionarySemantics();
   testBytecodeObjectsWithSamePropertyOrderShareShape();
@@ -3338,6 +4798,51 @@ void runBytecodeTests() {
   testBytecodeArrayPopArity();
   testBytecodeMethodCallOnNonArray();
   testBytecodeUnknownArrayMethod();
+  testBytecodeMethodCallStatsCountsClassDispatches();
+  testBytecodeMethodCallStatsCountsArrayBuiltins();
+  testBytecodeMethodCallStatsCountsDispatchErrors();
+  testBytecodeMethodCallStatsCountsInstanceArityErrors();
+  testBytecodeMethodCallStatsCountsStaticArityErrors();
+  testBytecodeMethodCallInlineCacheHitsRepeatedInstanceMethod();
+  testBytecodeMethodCallInlineCacheHitsRepeatedStaticMethod();
+  testBytecodeMethodCallInlineCacheHitSurvivesManualGc();
+  testBytecodePolymorphicMethodCallInlineCacheSurvivesManualGc();
+  testBytecodeMethodCallInlineCacheMissesAndUpdatesOnClassChange();
   testDisassembleArrayMethodCall();
   testDisassembleObjectLiteralProperty();
+  testBytecodeMethodCallInlineCacheCachesMultipleReceiverClassesAtSameCallSite();
+  testBytecodeMethodCallInlineCacheBecomesMegamorphicAfterCapacity();
+  testBytecodeMethodCallInlineCacheCachesMultipleStaticClassesAtSameCallSite();
+  testBytecodeSuperCallDoesNotPolluteMethodInlineCache();
+  testJitCallThresholdCompilesSupportedFunction();
+  testJitCallCountStaysColdBelowThreshold();
+  testJitBackedgeThresholdCompilesSupportedFunction();
+  testJitDisabledDoesNotCollectHeat();
+  testJitArityErrorDoesNotCountCall();
+  testJitUnsupportedCallOpcodeFailsAndFallsBackToVm();
+  testBaselineExecutorRunsArithmeticAndLocals();
+  testBaselineExecutorRunsSimpleLoop();
+  testBaselineExecutorPreservesArithmeticErrors();
+  testBaselineCompilerGeneratesArm64ForAddFunction();
+  testBaselineCompilerRejectsUnsupportedOpcode();
+#if defined(__aarch64__) || defined(_M_ARM64)
+  testBaselineCompilerNativeEntryRunsAddFunction();
+#endif
+  testBaselineRuntimeAbiRunsArithmeticEntry();
+  testBaselineRuntimeAbiPushesConstantsAndSetsLocals();
+  testBaselineRuntimeAbiPushesValuesByPointer();
+  testBaselineRuntimeAbiTurnsHelperErrorsIntoFailedFrame();
+  testBaselineRuntimeAbiRejectsInvalidLocalAccess();
+  testBaselineRuntimeAbiRejectsMutationAfterReturn();
+  testJitDispatchRunsGlobalOpcodes();
+  testJitDispatchRunsArrayAndIndexOpcodes();
+  testJitDispatchRunsObjectLiteralAndPropertyOpcodes();
+  testJitDispatchRunsSetPropertyOpcode();
+  testJitDispatchRunsUpvalueOpcodes();
+  testJitDispatchEntersCompiledFunctionOnLaterCall();
+  testJitDispatchRespectsDisabledJit();
+  testJitDispatchPreservesRuntimeErrors();
+  testJitDispatchRunsAfterManualGc();
+  testJitDispatchUsesMethodSlotStart();
+  testJitDispatchPreservesInitReceiverReturn();
 }

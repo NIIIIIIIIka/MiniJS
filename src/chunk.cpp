@@ -1,12 +1,26 @@
 #include "minijs/chunk.h"
 
+#include <limits>
 #include <utility>
 
 #include "minijs/runtime_error.h"
 
 namespace minijs {
 
-Chunk::Chunk(const Chunk& other) : code_(other.code_), constants_(other.constants_) {}
+namespace {
+
+void clearFeedbackSlotCache(FeedbackSlot& slot) {
+  slot.state = FeedbackState::Uninitialized;
+  slot.property = PropertyInlineCache{};
+  slot.method = MethodInlineCache{};
+}
+
+}  // namespace
+
+Chunk::Chunk(const Chunk& other)
+    : code_(other.code_), constants_(other.constants_), feedbackSlots_(other.feedbackSlots_) {
+  clearFeedbackCaches();
+}
 
 Chunk& Chunk::operator=(const Chunk& other) {
   if (this == &other) {
@@ -15,13 +29,17 @@ Chunk& Chunk::operator=(const Chunk& other) {
 
   code_ = other.code_;
   constants_ = other.constants_;
-  clearInlineCaches();
+  feedbackSlots_ = other.feedbackSlots_;
+  clearFeedbackCaches();
   return *this;
 }
 
 Chunk::Chunk(Chunk&& other) noexcept
-    : code_(std::move(other.code_)), constants_(std::move(other.constants_)) {
-  other.clearInlineCaches();
+    : code_(std::move(other.code_)),
+      constants_(std::move(other.constants_)),
+      feedbackSlots_(std::move(other.feedbackSlots_)) {
+  clearFeedbackCaches();
+  other.clearFeedbackCaches();
 }
 
 Chunk& Chunk::operator=(Chunk&& other) noexcept {
@@ -31,8 +49,9 @@ Chunk& Chunk::operator=(Chunk&& other) noexcept {
 
   code_ = std::move(other.code_);
   constants_ = std::move(other.constants_);
-  clearInlineCaches();
-  other.clearInlineCaches();
+  feedbackSlots_ = std::move(other.feedbackSlots_);
+  clearFeedbackCaches();
+  other.clearFeedbackCaches();
   return *this;
 }
 
@@ -59,15 +78,35 @@ const Value& Chunk::constant(std::size_t index) const {
   return constants_[index];
 }
 
+std::size_t Chunk::addFeedbackSlot(FeedbackKind kind) {
+  if (feedbackSlots_.size() > std::numeric_limits<std::uint8_t>::max()) {
+    throw RuntimeError("too many feedback slots");
+  }
+  feedbackSlots_.push_back(
+      FeedbackSlot{kind, FeedbackState::Uninitialized, PropertyInlineCache{}, MethodInlineCache{}});
+  return feedbackSlots_.size() - 1;
+}
+
+FeedbackSlot& Chunk::feedbackSlot(std::size_t index) const {
+  if (index >= feedbackSlots_.size()) {
+    throw RuntimeError("feedback slot index out of bounds");
+  }
+  return feedbackSlots_[index];
+}
+
+const std::vector<FeedbackSlot>& Chunk::feedbackSlots() const {
+  return feedbackSlots_;
+}
+
 const std::vector<std::uint8_t>& Chunk::code() const { return code_; }
 
 const std::vector<Value>& Chunk::constants() const { return constants_; }
 
-PropertyInlineCache& Chunk::propertyInlineCache(std::size_t opcodeOffset) const {
-  return propertyInlineCaches_[opcodeOffset];
+void Chunk::clearFeedbackCaches() const {
+  for (FeedbackSlot& slot : feedbackSlots_) {
+    clearFeedbackSlotCache(slot);
+  }
 }
-
-void Chunk::clearInlineCaches() const { propertyInlineCaches_.clear(); }
 
 std::size_t Chunk::count() const { return code_.size(); }
 
@@ -77,4 +116,5 @@ void Chunk::patchByte(std::size_t offset, std::uint8_t byte) {
   }
   code_[offset] = byte;
 }
+
 }  // namespace minijs

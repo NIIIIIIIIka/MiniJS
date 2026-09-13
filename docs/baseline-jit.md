@@ -131,6 +131,16 @@ Opcode::Loop
 
 `compileBaseline()` 会先尝试第一版 native `BaselineCompiler`。如果函数只包含 `Constant`、`GetLocal`、`Add`、`Return`，会生成 ARM64 stub、`bytecodeOffsetToNativeOffset` 映射和 `BaselineEntry`。如果 native compiler 遇到暂不支持的 opcode，会回退到现有 decoded baseline compiler；这样已经支持的 runtime helper opcode 仍能通过 decoded executor 验证语义。
 
+## 函数职责
+
+`BaselineCompiler::compile()` 是 native baseline 的唯一公开入口。它不抛出“unsupported opcode”异常，而是通过 `BaselineCompileResult::error` 返回失败原因；外层 `compileBaseline()` 可以据此回退到 decoded baseline executor。
+
+`Arm64Emitter` 目前只是 `BaselineCompiler` 私有的极小指令写入器。它负责 prologue/epilogue、helper 调用、branch placeholder 和 branch patch，不承担通用 assembler 的职责。
+
+`emitRuntimeCall()` 固定使用 Runtime ABI：把 `BaselineFrame*` 放回 `x0`，把 helper 地址装入 `x16`，通过 `blr x16` 调用。helper 的 `bool` 返回值在 `w0`，机器码随后用 `cbz w0, epilogue` 处理失败路径。
+
+`ExecutableMemory::allocate()` 负责 W^X 生命周期：先申请可写内存并复制机器码，刷新 instruction cache，然后切换为只读可执行内存。释放逻辑集中在 `ExecutableMemory::release()`，供析构和 move assignment 共用。
+
 ## 当前支持范围
 
 第四阶段先支持低风险 opcode：
