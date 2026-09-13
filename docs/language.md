@@ -1,6 +1,14 @@
 # MiniJS 语言说明
 
-MiniJS 是一个用 C++ 实现的 JavaScript-like 小语言。当前版本运行在 AST Interpreter 上，本文档记录已经支持的语言子集。
+MiniJS 是一个用 C++ 实现的 JavaScript-like 小语言。当前默认执行路径是 bytecode VM；`--interp` 仍可运行 AST Interpreter 作为对照路径。本文档记录当前主要支持的语言子集。
+
+## 代码位置
+
+- 词法与语法入口：[include/minijs/lexer.h](../include/minijs/lexer.h)、[src/lexer.cpp](../src/lexer.cpp)、[include/minijs/parser.h](../include/minijs/parser.h)、[src/parser.cpp](../src/parser.cpp)
+- AST 节点定义：[include/minijs/ast.h](../include/minijs/ast.h)
+- 语言语义的 AST Interpreter 路径：[include/minijs/interpreter.h](../include/minijs/interpreter.h)、[src/interpreter.cpp](../src/interpreter.cpp)
+- 语言语义的 bytecode VM 路径：[include/minijs/compiler.h](../include/minijs/compiler.h)、[src/compiler.cpp](../src/compiler.cpp)、[include/minijs/vm.h](../include/minijs/vm.h)、[src/vm.cpp](../src/vm.cpp)
+- 语言行为回归测试：[tests/test_interpreter.cpp](../tests/test_interpreter.cpp)、[tests/test_bytecode.cpp](../tests/test_bytecode.cpp)
 
 ## 值类型
 
@@ -14,6 +22,8 @@ MiniJS 当前支持以下运行时值：
 - array
 - object
 - function
+- class
+- instance
 - builtin
 
 ```javascript
@@ -169,7 +179,7 @@ print(a.pop());
 
 ## 对象
 
-对象支持字面量创建、属性读取和属性赋值。
+对象支持字面量创建、属性读取、属性赋值和删除。
 
 ```javascript
 let user = {
@@ -180,6 +190,54 @@ let user = {
 print(user.name);
 user.age = 20;
 print(user.age);
+
+del(user, "age");
+print(has(user, "age")); // false
+```
+
+## 类
+
+类通过 `class` 声明，调用类名可以创建实例。实例方法中的 `this` 指向接收者。
+
+```javascript
+class Box {
+  init(value) {
+    this.value = value;
+  }
+
+  get() {
+    return this.value;
+  }
+}
+
+let box = Box(42);
+print(box.get()); // 42
+```
+
+类支持静态方法、继承和 `super` 方法调用。
+
+```javascript
+class Parent {
+  value() {
+    return 1;
+  }
+}
+
+class Child < Parent {
+  static make(value) {
+    return Child(value);
+  }
+
+  init(value) {
+    this.value = value;
+  }
+
+  value() {
+    return super.value() + this.value;
+  }
+}
+
+print(Child.make(2).value()); // 3
 ```
 
 ## 内置函数
@@ -188,6 +246,7 @@ MiniJS 当前提供以下内置函数：
 
 ```javascript
 print(value);
+clock();
 has(value, "key");
 keys(value);
 del(value, "key");

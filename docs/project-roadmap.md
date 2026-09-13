@@ -1,5 +1,15 @@
 # MiniJSVM 项目规划
 
+> 说明：本文是项目早期路线规划，保留用于理解阶段设计和取舍。当前实现进度以根目录 [README](../README.md) 和各专题文档为准。
+
+## 当前代码位置
+
+- 项目当前实现导览：[README](../README.md#代码导览)
+- CLI 与工具入口：[src/main.cpp](../src/main.cpp)
+- 前端主线：[include/minijs/lexer.h](../include/minijs/lexer.h)、[include/minijs/parser.h](../include/minijs/parser.h)、[include/minijs/ast.h](../include/minijs/ast.h)
+- VM 主线：[include/minijs/compiler.h](../include/minijs/compiler.h)、[include/minijs/chunk.h](../include/minijs/chunk.h)、[include/minijs/vm.h](../include/minijs/vm.h)
+- Runtime / GC：[include/minijs/value.h](../include/minijs/value.h)、[include/minijs/gc_object.h](../include/minijs/gc_object.h)、[src/vm.cpp](../src/vm.cpp)
+
 ## 1. 项目定位
 
 本项目的目标不是简单复刻 QuickJS，而是通过亲手实现一个 Tiny JavaScript Engine，系统理解解释器、字节码虚拟机、对象系统和垃圾回收。
@@ -653,4 +663,3 @@ function calls, lexical scope, and reference-counting garbage collection.
 - QuickJS: <https://github.com/bellard/quickjs>
 - Crafting Interpreters: <https://craftinginterpreters.com/>
 - Lua 5.1: <https://www.lua.org/source/5.1/>
-

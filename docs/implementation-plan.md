@@ -1,8 +1,20 @@
 # MiniJSVM 详细实施计划
 
-本文档是 [MiniJSVM-Roadmap.md](./MiniJSVM-Roadmap.md) 的执行版。路线图回答“要做什么”，本文档回答“按什么顺序做、每一步产出什么、如何判断完成”。
+> 说明：本文是早期 12 周实施计划，保留用于回看项目拆解方式。当前功能范围已经超过本文的 V1.0 约束，实际状态以根目录 [README](../README.md) 和专题文档为准。
+
+本文档是 [项目路线图](project-roadmap.md) 的执行版。路线图回答“要做什么”，本文档回答“按什么顺序做、每一步产出什么、如何判断完成”。
 
 计划按每周 10 到 15 小时、12 个实施周设计，开始前另安排 2 到 3 天完成“第 0 周”的工程准备。如果每周投入时间更多，可以压缩到 8 到 10 周，但不要跳过测试和阶段验收。
+
+## 当前代码位置
+
+- 项目当前实现导览：[README](../README.md#代码导览)
+- 构建配置：[CMakeLists.txt](../CMakeLists.txt)
+- CLI 入口：[src/main.cpp](../src/main.cpp)
+- Lexer / Parser / AST：[include/minijs/lexer.h](../include/minijs/lexer.h)、[include/minijs/parser.h](../include/minijs/parser.h)、[include/minijs/ast.h](../include/minijs/ast.h)
+- Interpreter / Compiler / VM：[include/minijs/interpreter.h](../include/minijs/interpreter.h)、[include/minijs/compiler.h](../include/minijs/compiler.h)、[include/minijs/vm.h](../include/minijs/vm.h)
+- Runtime / GC：[include/minijs/value.h](../include/minijs/value.h)、[include/minijs/gc_object.h](../include/minijs/gc_object.h)、[src/vm.cpp](../src/vm.cpp)
+- 测试入口：[tests/test_main.cpp](../tests/test_main.cpp)、[tests/test_lexer.cpp](../tests/test_lexer.cpp)、[tests/test_parser.cpp](../tests/test_parser.cpp)、[tests/test_interpreter.cpp](../tests/test_interpreter.cpp)、[tests/test_bytecode.cpp](../tests/test_bytecode.cpp)
 
 ## 1. V1.0 范围
 
@@ -121,9 +133,9 @@ MiniJS/
 ├── CMakeLists.txt
 ├── README.md
 ├── docs/
-│   ├── MiniJSVM-Roadmap.md
-│   ├── MiniJSVM-Detailed-Plan.md
-│   └── QuickJS-Architecture-Guide.md
+│   ├── project-roadmap.md
+│   ├── implementation-plan.md
+│   └── quickjs-architecture-guide.md
 ├── include/minijs/
 │   ├── token.h
 │   ├── lexer.h
@@ -166,7 +178,7 @@ MiniJS/
     └── arrays.js
 ```
 
-在项目真正开始编码时，可以把当前根目录中的三份文档移动到 `docs/`。移动不是本计划本身的必要工作。
+当前三份规划文档已经移动到 `docs/`，根目录 README 通过文档索引引用它们。
 
 ## 5. 核心数据结构
 

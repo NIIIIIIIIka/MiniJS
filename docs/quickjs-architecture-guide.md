@@ -964,16 +964,25 @@ JS_CallInternal
 | `JSRuntime` | `Runtime` / `Heap` |
 | `JSContext` | `VM` / `GlobalEnv` |
 | `JSValue` | `Value` |
-| `JSObject` | `Object` |
+| `JSObject` | `ObjObject` / `ObjInstance` |
 | `JSAtom` | 先用 `std::string`，后续做 `AtomTable` |
-| `JSShape` | 先跳过，后续优化对象布局 |
-| `JSFunctionBytecode` | `FunctionObject + Chunk` |
-| `quickjs-opcode.h` | `opcode.h` |
-| `JS_DupValue` | `Value::retain()` |
-| `JS_FreeValue` | `Value::release()` |
+| `JSShape` | `ObjShape` |
+| `JSFunctionBytecode` | `BytecodeFunction + Chunk` / `ObjFunction` |
+| `quickjs-opcode.h` | `include/minijs/chunk.h` |
+| `JS_DupValue` / `JS_FreeValue` | 当前 VM 内部由 mark-sweep GC 管理 |
 | `qjs.c` | `main.cpp` |
 | `qjsc.c` | 后续 `minijsc` |
 | `quickjs-libc.c` | `native/` 或 `builtin/` |
+
+### MiniJS 对照代码位置
+
+- Runtime / Context 对照：[include/minijs/vm.h](../include/minijs/vm.h)、[src/vm.cpp](../src/vm.cpp)
+- Value 对照：[include/minijs/value.h](../include/minijs/value.h)、[src/value.cpp](../src/value.cpp)
+- Object / Shape 对照：[include/minijs/gc_object.h](../include/minijs/gc_object.h)、[src/gc_object.cpp](../src/gc_object.cpp)、[docs/hidden-class.md](hidden-class.md)
+- Bytecode / Opcode 对照：[include/minijs/chunk.h](../include/minijs/chunk.h)、[src/chunk.cpp](../src/chunk.cpp)、[src/disassembler.cpp](../src/disassembler.cpp)
+- Parser / Compiler 对照：[include/minijs/parser.h](../include/minijs/parser.h)、[src/parser.cpp](../src/parser.cpp)、[include/minijs/compiler.h](../include/minijs/compiler.h)、[src/compiler.cpp](../src/compiler.cpp)
+- GC 对照：[docs/gc.md](gc.md)、[src/vm.cpp](../src/vm.cpp) 中的 `collectGarbage()`、`markRoots()`、`markObjectChildren()`、`sweep()`
+- CLI 对照：[src/main.cpp](../src/main.cpp)
 
 ## 20. 你应该学习 QuickJS 的哪些设计
 
@@ -1075,4 +1084,3 @@ Source
 - QuickJS GitHub: <https://github.com/bellard/quickjs>
 - QuickJS 官方文档: <https://bellard.org/quickjs/quickjs.html>
 - QuickJS 官网: <https://bellard.org/quickjs/>
-

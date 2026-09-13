@@ -13,6 +13,16 @@
 - `collectGarbage()` 从根集合出发标记对象，再清扫不可达对象。
 - `VM::run()` 对外仍通过 `copyOutValue()` 返回旧兼容值，避免一次性改动测试和外部接口。
 
+## 代码位置
+
+- GC 对象基类和类型枚举：[include/minijs/object.h](../include/minijs/object.h)
+- VM GC 对象结构：[include/minijs/gc_object.h](../include/minijs/gc_object.h)
+- GC 对象构造函数：[src/gc_object.cpp](../src/gc_object.cpp)
+- GC 堆字段、分配模板和临时根：[include/minijs/vm.h](../include/minijs/vm.h) 中的 `allocateObject()`、`allocateInternalObject()`、`TemporaryRootScope`
+- 标记、清扫和阈值逻辑：[src/vm.cpp](../src/vm.cpp) 中的 `markRoots()`、`markValue()`、`markObject()`、`markObjectChildren()`、`sweep()`、`collectGarbage()`、`collectGarbageIfNeeded()`
+- 返回值兼容层：[src/vm.cpp](../src/vm.cpp) 中的 `copyOutValue()`、`copyOutClosure()`、`copyOutClass()`
+- GC 回归测试：[tests/test_bytecode.cpp](../tests/test_bytecode.cpp)
+
 ## GC 对象
 
 当前已经进入 GC 堆的对象包括：

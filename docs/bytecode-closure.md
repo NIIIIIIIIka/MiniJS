@@ -1,4 +1,4 @@
-# Bytecode Closure Design
+# Bytecode Closure 设计
 
 本文记录 MiniJS bytecode VM 中闭包的最小实现方案。
 
@@ -24,6 +24,16 @@ print(f()); // 3
 ```
 
 `inner` 被返回后，`outer` 的调用帧已经结束，但 `x` 不能丢失。
+
+## 代码位置
+
+- bytecode 函数模板和 upvalue 描述：[include/minijs/bytecode_function.h](../include/minijs/bytecode_function.h)
+- 对外兼容的闭包值结构：[include/minijs/bytecode_closure.h](../include/minijs/bytecode_closure.h)
+- VM 内部 GC 闭包对象：[include/minijs/gc_object.h](../include/minijs/gc_object.h) 中的 `ObjFunction`、`ObjClosure`、`ObjUpvalue`
+- 编译期闭包解析：[include/minijs/compiler.h](../include/minijs/compiler.h)、[src/compiler.cpp](../src/compiler.cpp) 中的 `resolveUpvalue()`、函数编译、`OP_CLOSURE` 元数据写入
+- VM 闭包执行：[include/minijs/vm.h](../include/minijs/vm.h)、[src/vm.cpp](../src/vm.cpp) 中的 `CallFrame`、`makeGcClosure()`、`callBytecodeClosure()`、`captureUpvalue()`、`closeUpvalues()`
+- 反汇编和字节码解码：[src/disassembler.cpp](../src/disassembler.cpp)、[include/minijs/bytecode_decoder.h](../include/minijs/bytecode_decoder.h)、[src/bytecode_decoder.cpp](../src/bytecode_decoder.cpp)
+- 闭包测试：[tests/test_bytecode.cpp](../tests/test_bytecode.cpp)、[tests/test_interpreter.cpp](../tests/test_interpreter.cpp)
 
 ## 三个运行时对象
 
