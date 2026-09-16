@@ -888,6 +888,54 @@ OP_RETURN
 | `OP_GET_PROPERTY` / `OP_SET_PROPERTY` | `opcode, nameIndex, feedbackSlot` | 属性读写 |
 | `OP_CALL` | `opcode, argc` | 普通函数调用 |
 | `OP_METHOD_CALL` | `opcode, nameIndex, argc, feedbackSlot` | 方法调用 |
-| `OP_SUPER_CALL` | `opcode, nameIndex, argc` | 当前编译器实际写入两个操作数；反汇编器显示函数仍沿用方法调用格式 |
+| `OP_CLOSURE` | `opcode, functionIndex, (isLocal, index)*` | 函数声明与闭包 |
+| `OP_CLASS` | `opcode, nameIndex` | 类声明 |
+| `OP_METHOD` / `OP_STATIC_METHOD` | `opcode, nameIndex` | 实例方法和静态方法定义 |
+| `OP_INHERIT` | `opcode` | 类继承 |
+| `OP_SUPER_CALL` | `opcode, nameIndex, argc` | `super.method(...)` |
 
-最后一行需要特别注意：`Opcode::SuperCall` 在 `disassembler.cpp` 中复用了 `methodCallInstruction()` 的显示函数，因此反汇编器会尝试显示 feedback 字段；但 `emitExpression()` 当前只为 `OP_SUPER_CALL` 写入方法名和参数数量。这是当前实现的格式差异，后续如果为 super 调用增加 inline cache，需要同步调整编码和反汇编逻辑。
+## VM 执行动作速查
+
+下表按 `src/vm.cpp` 中 `VM::run()` 的 `switch (opcode)` 整理。格式列使用 `Opcode` 枚举名；实际字节码的第一个字节都是 opcode。`offset16` 表示两个字节的无符号跳转距离，`readShort()` 会在读取后推进 `frame.ip`。
+
+| opcode 格式 | VM 执行动作 |
+| --- | --- |
+| `Constant index` | 读取 `chunk.constant(index)`；字符串常量先转成 GC 字符串 `makeGcString()`，其他值直接 `push(constant)`。 |
+| `Add` | `right = pop(); left = pop();` 如果任一操作数是 GC 字符串，则拼接 `left.toString() + right.toString()` 并压入 GC 字符串；否则压入 `left.asNumber() + right.asNumber()`。 |
+| `Sub` | `right = pop(); left = pop(); push(left.asNumber() - right.asNumber())`。 |
+| `Mul` | `right = pop(); left = pop(); push(left.asNumber() * right.asNumber())`。 |
+| `Div` | `right = pop(); left = pop();` 检查除数非 0 后压入 `left.asNumber() / divisor`。 |
+| `Mod` | `right = pop(); left = pop();` 检查除数非 0 后压入 `std::fmod(left.asNumber(), divisor)`。 |
+| `Negate` | `push(-pop().asNumber())`。 |
+| `Return` | `result = pop()`；脚本帧直接 `copyOutValue(result)` 并返回；函数帧会按需把构造器返回值替换成 `this`，执行 `closeUpvalues(slotStart)`，弹出调用帧，恢复栈到 `returnSlot`，再 `push(result)`。 |
+| `DefineGlobal nameIndex` | `name = chunk.constant(nameIndex).asString(); globals_[name] = pop()`。 |
+| `GetGlobal nameIndex` | 查找 `globals_[name]`，存在则 `push(value)`，不存在时报 `undefined variable`。 |
+| `SetGlobal nameIndex` | 查找 `globals_[name]`，存在则赋值为 `peek()`，不弹栈；不存在时报 `undefined variable`。 |
+| `GetLocal slot` | 计算 `absoluteSlot = frame.slotStart + slot`，检查边界后 `push(stack_[absoluteSlot])`。 |
+| `SetLocal slot` | 计算 `absoluteSlot = frame.slotStart + slot`，检查边界后 `stack_[absoluteSlot] = peek()`，不弹栈。 |
+| `Pop` | `pop()`。 |
+| `Not` | `push(!pop().isTruthy())`。 |
+| `Equal` | `right = pop(); left = pop(); push(left.equals(right))`。 |
+| `Greater` | `right = pop(); left = pop(); push(left.asNumber() > right.asNumber())`。 |
+| `Less` | `right = pop(); left = pop(); push(left.asNumber() < right.asNumber())`。 |
+| `JumpIfFalse offset16` | 读取 `offset`；如果 `!peek().isTruthy()`，则 `frame.ip += offset`；条件值保留在栈上。 |
+| `Jump offset16` | 读取 `offset` 后执行 `frame.ip += offset`。 |
+| `Loop offset16` | 读取 `offset`，执行 `recordLoopBackedge(*frame.closure->function)`，再 `frame.ip -= offset`。 |
+| `Call argc` | 栈形如 `[..., callee, arg0, ...]`。native function 检查 arity 后调用并用返回值替换 callee/args；class 调用会创建实例并调用 `init`；bound method 会把 callee 槽替换成 receiver；closure 走 `callBytecodeClosure()`，如果 JIT 已编译可进入 baseline code；其他值报 `value is not callable`。 |
+| `Array count` | 从栈顶弹出 `count` 个元素，按源码顺序组成 `ObjArray`，再 `push(array)`。 |
+| `GetIndex` | `index = pop(); array = pop();` 要求 array 是 GC 数组，按 `arrayIndexFromValue()` 检查索引后压入对应元素。 |
+| `SetIndex` | `value = pop(); index = pop(); array = pop();` 要求 array 是 GC 数组，写入对应元素后 `push(value)`。 |
+| `Object namesIndex` | `names = chunk.constant(namesIndex).asArray()`；读取栈顶对应数量的属性值，按 `names` 顺序调用 `objectSetProperty()` 填充新 `ObjObject`，弹出属性值后 `push(object)`。 |
+| `GetProperty nameIndex feedbackSlot` | `object = pop()`。数组/字符串只处理 `length`；实例先查 fields，再查方法并创建 `ObjBoundMethod`；class 查静态方法；普通对象走 property inline cache，miss 时调用 `objectGetProperty()` 并更新 feedback；不支持的 receiver 报 `value is not an object`。 |
+| `SetProperty nameIndex feedbackSlot` | 栈形如 `[..., object, value]`。实例写入 fields；普通对象走 set-property inline cache 或 `objectSetProperty()`；最后弹出 object/value 并 `push(value)`；非对象报 `value is not an object`。 |
+| `MethodCall nameIndex argc feedbackSlot` | 栈形如 `[..., receiver, arg0, ...]`。实例方法和 class 静态方法先查 method inline cache，miss 后查表并更新 feedback，再 `callBytecodeClosure()`；数组支持内建 `push`/`pop`；其他 receiver 或未知方法报错。 |
+| `SuperCall nameIndex argc` | 栈形如 `[..., superclass, receiver, arg0, ...]`。校验 superclass 和 receiver，沿 superclass 查找方法；把栈重排为 `[..., receiver, arg0, ...]`，再 `callBytecodeClosure(method, argc, ...)`。 |
+| `Closure functionIndex, (isLocal, index)*` | 从常量池取 `BytecodeFunction`，创建 `ObjFunction + ObjClosure` 并 `push(closure)`；随后读取每个 upvalue 元数据，校验与函数描述一致，本地捕获调用 `captureUpvalue(frame.slotStart + index)`，否则复用外层 `frame.closure->upvalues[index]`。 |
+| `GetUpvalue slot` | 读取当前 closure 的 `upvalues[slot]`；closed 状态压入 `closed`，open 状态压入 `stack_[stackIndex]`。 |
+| `SetUpvalue slot` | 把 `peek()` 写入当前 closure 的 `upvalues[slot]`；closed 状态写 `closed`，open 状态写对应栈槽。 |
+| `CloseUpvalue` | `closeUpvalues(stack_.size() - 1); pop()`，用于离开作用域前关闭被捕获的局部变量。 |
+| `GetCurrentClosure` | `push(frame.closure)`，用于返回后的局部递归函数自引用。 |
+| `Class nameIndex` | 读取类名字符串，分配 `ObjClass(name)` 并压栈。 |
+| `Method nameIndex` | `method = pop(); klass = peek(); klass.asGcClass()->methods[name] = method.asGcClosure()`；class 仍留在栈顶。 |
+| `StaticMethod nameIndex` | `method = pop(); klass = peek(); klass.asGcClass()->staticMethods[name] = method.asGcClosure()`；class 仍留在栈顶。 |
+| `Inherit` | `superclass = pop(); subclass = peek();` 校验二者都是 class 后设置 `subclass.superclass = superclass`。 |

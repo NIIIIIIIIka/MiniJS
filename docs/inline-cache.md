@@ -22,7 +22,7 @@ MiniJS 的 hidden class 让普通对象拥有稳定的 `ObjShape + slot` 布局�
 - 方法调用 cache 查找和更新：[src/vm.cpp](../src/vm.cpp) 中的 `findMethodInlineCacheEntry()`、`updateMethodFeedback()`、`Opcode::MethodCall`
 - cache 统计和调试入口：[include/minijs/vm.h](../include/minijs/vm.h)、[src/vm.cpp](../src/vm.cpp) 中的 `PropertyInlineCacheStats`、`debugPropertyInlineCacheStats()`、`setInlineCachesEnabled()`
 - GC 标记 cache 引用：[src/vm.cpp](../src/vm.cpp) 中的 `markObjectChildren(ObjFunction*)`
-- benchmark 示例：[examples/inline_cache_benchmark.js](../examples/inline_cache_benchmark.js)、[examples/property_inline_cache.js](../examples/property_inline_cache.js)
+- benchmark 示例：[examples/property_inline_cache.js](../examples/property_inline_cache.js)
 - 测试覆盖：[tests/test_bytecode.cpp](../tests/test_bytecode.cpp) 中的 property/method inline cache 测试
 
 ## 数据结构
@@ -63,7 +63,7 @@ struct FeedbackSlot {
 
 `FeedbackKind` ： `GetProperty`、`SetProperty` 和 `MethodCall`
 
-`FeedbackState` ： `Uninitialized`、`Monomorphic`、`Polymorphic` 和 `Megamorphic` 
+`FeedbackState` ： `Uninitialized`、`Monomorphic`、`Polymorphic` 和 `Megamorphic`
 
 `FeedbackSlot`：**把“运行时收集到的优化信息”搬到函数自己的 bytecode 结构旁边**。把 IC 从“VM 里的临时缓存”升级成“函数 bytecode 的运行时画像”。记录这个 bytecode 在运行时见过什么对象形态、能不能走 inline cache，以及后续 JIT 能不能基于这些信息做优化。
 

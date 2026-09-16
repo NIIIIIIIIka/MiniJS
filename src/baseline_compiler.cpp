@@ -41,6 +41,7 @@ class Arm64Emitter {
     emit32(0xD65F03C0);  // ret
   }
 
+  //把 X19 寄存器的值复制到 X0 寄存器
   void emitMovFrameToX0() {
     emit32(0xAA1303E0);  // mov x0, x19
   }

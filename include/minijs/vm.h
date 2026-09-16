@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <algorithm>
 #include <cstddef>
@@ -254,6 +254,7 @@ T* VM::allocateObject(Args&&... args) {
   collectGarbageIfNeeded();
 
   auto* object = new T(std::forward<Args>(args)...);
+    //插入到堆对象链表
   object->next = objects_;
   objects_ = object;
   ++heapObjectCount_;
