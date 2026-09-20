@@ -130,7 +130,9 @@ class Arm64Emitter {
     code_[patchOffset + 2] = static_cast<std::uint8_t>((instruction >> 16) & 0xff);
     code_[patchOffset + 3] = static_cast<std::uint8_t>((instruction >> 24) & 0xff);
   }
-
+    //Movz / Movk   是 movz 还是 movk 指令
+    //W / X    宽度 W=32 位,X=64 位
+    //发射一条 64 位的 movz 指令
   void emitMovzW(std::uint32_t reg, std::uint16_t value, std::uint32_t shift) {
     emit32(0x52800000 | ((shift & 0x1) << 21) |
            (static_cast<std::uint32_t>(value) << 5) | (reg & 0x1f));

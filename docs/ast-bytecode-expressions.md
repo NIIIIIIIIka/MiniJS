@@ -39,14 +39,14 @@ BinaryExpr(
 
 每个 opcode 占一个字节，后面可能跟一个或多个一字节操作数。操作数的常见含义如下：
 
-| 写法 | 含义 |
-| --- | --- |
-| `constant[n]` | 当前 `Chunk` 常量池下标 `n` |
-| `name[n]` | 常量池下标 `n` 中的字符串名称 |
-| `slot[n]` | 当前函数栈帧或闭包中的槽位 `n` |
-| `argc=n` | 调用参数数量 |
-| `feedback=n` | 当前 `Chunk` 的 feedback slot 下标 |
-| `jump -> target` | 编译器回填后的跳转目标，底层实际保存的是偏移量 |
+| 写法               | 含义                            |
+| ---------------- | ----------------------------- |
+| `constant[n]`    | 当前 `Chunk` 常量池下标 `n`          |
+| `name[n]`        | 常量池下标 `n` 中的字符串名称             |
+| `slot[n]`        | 当前函数栈帧或闭包中的槽位 `n`             |
+| `argc=n`         | 调用参数数量                        |
+| `feedback=n`     | 当前 `Chunk` 的 feedback slot 下标 |
+| `jump -> target` | 编译器回填后的跳转目标，底层实际保存的是偏移量       |
 
 除非特别说明，表达式编译完成后会在栈顶留下表达式结果。二元运算和比较会消费两个操作数并留下一个结果。
 
@@ -57,14 +57,17 @@ BinaryExpr(
 ### 宽度与范围
 
 - opcode 的底层类型是 `std::uint8_t`，每条指令的操作码占 1 字节。
-- 常量池下标、名称常量下标、局部槽位、upvalue 槽位、元素数量和参数数量当前都编码为 1 字节，因此范围是 `0..255`。
-- `OP_JUMP_IF_FALSE`、`OP_JUMP` 和 `OP_LOOP` 的跳转距离编码为两个字节，按高字节在前、低字节在后的顺序写入：
 
+- 常量池下标、名称常量下标、局部槽位、upvalue 槽位、元素数量和参数数量当前都编码为 1 字节，因此范围是 `0..255`。
+
+- `OP_JUMP_IF_FALSE`、`OP_JUMP` 和 `OP_LOOP` 的跳转距离编码为两个字节，按高字节在前、低字节在后的顺序写入：
+  
   ```text
   opcode highByte lowByte
   ```
 
 - 两字节跳转距离使用无符号 `uint16`，最大距离为 65535。前向跳转的目标是 `instructionEnd + distance`；循环回跳的目标是 `instructionEnd - distance`。
+
 - 当前没有宽操作数或多字节常量池索引格式。超过一字节范围的常量、局部变量、参数、数组元素、对象属性或调用参数会在编译阶段报错。
 
 ### 常量池索引
@@ -113,16 +116,16 @@ OP_GET_PROPERTY 5 age feedback=0
 
 主要栈约定如下：
 
-| 指令 | 执行前栈顶部分 | 执行后栈顶部分 |
-| --- | --- | --- |
-| `OP_ADD` 等二元运算 | `[..., left, right]` | `[..., result]` |
-| `OP_NEGATE`、`OP_NOT` | `[..., value]` | `[..., result]` |
-| `OP_GET_INDEX` | `[..., object, index]` | `[..., value]` |
-| `OP_SET_INDEX` | `[..., object, index, value]` | `[..., assignedValue]` |
-| `OP_GET_PROPERTY` | `[..., object]` | `[..., propertyValue]` |
-| `OP_SET_PROPERTY` | `[..., object, value]` | `[..., assignedValue]` |
-| `OP_ARRAY count` | `[..., element0, ..., element(count-1)]` | `[..., array]` |
-| `OP_OBJECT namesIndex` | `[..., value0, ..., value(count-1)]` | `[..., object]` |
+| 指令                     | 执行前栈顶部分                                  | 执行后栈顶部分                |
+| ---------------------- | ---------------------------------------- | ---------------------- |
+| `OP_ADD` 等二元运算         | `[..., left, right]`                     | `[..., result]`        |
+| `OP_NEGATE`、`OP_NOT`   | `[..., value]`                           | `[..., result]`        |
+| `OP_GET_INDEX`         | `[..., object, index]`                   | `[..., value]`         |
+| `OP_SET_INDEX`         | `[..., object, index, value]`            | `[..., assignedValue]` |
+| `OP_GET_PROPERTY`      | `[..., object]`                          | `[..., propertyValue]` |
+| `OP_SET_PROPERTY`      | `[..., object, value]`                   | `[..., assignedValue]` |
+| `OP_ARRAY count`       | `[..., element0, ..., element(count-1)]` | `[..., array]`         |
+| `OP_OBJECT namesIndex` | `[..., value0, ..., value(count-1)]`     | `[..., object]`        |
 
 数组和对象的元素值按源码顺序入栈；VM 组装完成后留下一个聚合值。赋值指令保留赋值结果，所以表达式 `a = b = 1` 可以继续组合使用。
 
@@ -248,22 +251,22 @@ OP_CLOSURE functionConstantIndex
 
 ## 总览
 
-| 源码类别 | AST 节点 | 主要 opcode |
-| --- | --- | --- |
-| 数字、字符串、布尔、null、undefined | `NumberExpr`、`StringExpr`、`BoolExpr`、`NullExpr`、`UndefinedExpr` | `OP_CONSTANT` |
-| 变量读取 | `VariableExpr` | `OP_GET_LOCAL`、`OP_GET_UPVALUE`、`OP_GET_GLOBAL`、`OP_GET_CURRENT_CLOSURE` |
-| 数组字面量 | `ArrayExpr` | 子表达式 opcode、`OP_ARRAY` |
-| 对象字面量 | `ObjectExpr` | 子表达式 opcode、`OP_OBJECT` |
-| 一元运算 | `UnaryExpr` | `OP_NEGATE`、`OP_NOT` |
-| 算术、比较、相等 | `BinaryExpr` | `OP_ADD` 等 |
-| 逻辑运算 | `LogicalExpr` | `OP_JUMP_IF_FALSE`、`OP_JUMP`、`OP_POP` |
-| 括号 | `GroupingExpr` | 子表达式自身的 opcode |
-| 变量赋值 | `AssignExpr` | `OP_SET_LOCAL`、`OP_SET_UPVALUE`、`OP_SET_GLOBAL` |
-| 下标读取/赋值 | `IndexExpr`、`IndexAssignExpr` | `OP_GET_INDEX`、`OP_SET_INDEX` |
-| 属性读取/赋值 | `GetExpr`、`SetExpr` | `OP_GET_PROPERTY`、`OP_SET_PROPERTY` |
-| 普通调用 | `CallExpr` | `OP_CALL` |
-| 方法调用 | `MethodCallExpr` | `OP_METHOD_CALL` |
-| `super` 方法调用 | `SuperCallExpr` | `OP_SUPER_CALL` |
+| 源码类别                     | AST 节点                                                          | 主要 opcode                                                                |
+| ------------------------ | --------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| 数字、字符串、布尔、null、undefined | `NumberExpr`、`StringExpr`、`BoolExpr`、`NullExpr`、`UndefinedExpr` | `OP_CONSTANT`                                                            |
+| 变量读取                     | `VariableExpr`                                                  | `OP_GET_LOCAL`、`OP_GET_UPVALUE`、`OP_GET_GLOBAL`、`OP_GET_CURRENT_CLOSURE` |
+| 数组字面量                    | `ArrayExpr`                                                     | 子表达式 opcode、`OP_ARRAY`                                                   |
+| 对象字面量                    | `ObjectExpr`                                                    | 子表达式 opcode、`OP_OBJECT`                                                  |
+| 一元运算                     | `UnaryExpr`                                                     | `OP_NEGATE`、`OP_NOT`                                                     |
+| 算术、比较、相等                 | `BinaryExpr`                                                    | `OP_ADD` 等                                                               |
+| 逻辑运算                     | `LogicalExpr`                                                   | `OP_JUMP_IF_FALSE`、`OP_JUMP`、`OP_POP`                                    |
+| 括号                       | `GroupingExpr`                                                  | 子表达式自身的 opcode                                                           |
+| 变量赋值                     | `AssignExpr`                                                    | `OP_SET_LOCAL`、`OP_SET_UPVALUE`、`OP_SET_GLOBAL`                          |
+| 下标读取/赋值                  | `IndexExpr`、`IndexAssignExpr`                                   | `OP_GET_INDEX`、`OP_SET_INDEX`                                            |
+| 属性读取/赋值                  | `GetExpr`、`SetExpr`                                             | `OP_GET_PROPERTY`、`OP_SET_PROPERTY`                                      |
+| 普通调用                     | `CallExpr`                                                      | `OP_CALL`                                                                |
+| 方法调用                     | `MethodCallExpr`                                                | `OP_METHOD_CALL`                                                         |
+| `super` 方法调用             | `SuperCallExpr`                                                 | `OP_SUPER_CALL`                                                          |
 
 ## 1. 字面量表达式
 
@@ -340,12 +343,12 @@ VariableExpr {
 
 例如 `x` 是 `VariableExpr("x")`。编译器按照 local、当前闭包、upvalue、global 的顺序解析名称：
 
-| 变量位置 | opcode 格式 | 说明 |
-| --- | --- | --- |
-| 当前函数局部变量/参数 | `OP_GET_LOCAL slot` | 从当前 VM 栈帧读取 |
-| 当前函数自身名称 | `OP_GET_CURRENT_CLOSURE` | 支持返回后的局部递归函数 |
-| 外层捕获变量 | `OP_GET_UPVALUE slot` | 从闭包的 upvalue 读取 |
-| 全局变量 | `OP_GET_GLOBAL nameIndex` | `nameIndex` 指向名称字符串 |
+| 变量位置        | opcode 格式                 | 说明                  |
+| ----------- | ------------------------- | ------------------- |
+| 当前函数局部变量/参数 | `OP_GET_LOCAL slot`       | 从当前 VM 栈帧读取         |
+| 当前函数自身名称    | `OP_GET_CURRENT_CLOSURE`  | 支持返回后的局部递归函数        |
+| 外层捕获变量      | `OP_GET_UPVALUE slot`     | 从闭包的 upvalue 读取     |
+| 全局变量        | `OP_GET_GLOBAL nameIndex` | `nameIndex` 指向名称字符串 |
 
 `this` 没有单独的 AST 节点，仍然是 `VariableExpr("this")`；编译器只在方法上下文中允许读取它。
 
@@ -446,10 +449,10 @@ UnaryExpr {
 
 编译器先编译右侧表达式，再根据运算符生成 opcode：
 
-| 源码 | AST 运算符 | 字节码 |
-| --- | --- | --- |
+| 源码   | AST 运算符 | 字节码            |
+| ---- | ------- | -------------- |
 | `-x` | `Minus` | `x; OP_NEGATE` |
-| `!x` | `Bang` | `x; OP_NOT` |
+| `!x` | `Bang`  | `x; OP_NOT`    |
 
 示例：
 
@@ -474,16 +477,16 @@ BinaryExpr {
 
 普通二元表达式总是先编译左操作数，再编译右操作数，最后生成一个运算 opcode：
 
-| 源码运算符 | TokenType | opcode |
-| --- | --- | --- |
-| `+` | `Plus` | `OP_ADD` |
-| `-` | `Minus` | `OP_SUB` |
-| `*` | `Star` | `OP_MUL` |
-| `/` | `Slash` | `OP_DIV` |
-| `%` | `Percent` | `OP_MOD` |
-| `==` | `EqualEqual` | `OP_EQUAL` |
-| `>` | `Greater` | `OP_GREATER` |
-| `<` | `Less` | `OP_LESS` |
+| 源码运算符 | TokenType    | opcode       |
+| ----- | ------------ | ------------ |
+| `+`   | `Plus`       | `OP_ADD`     |
+| `-`   | `Minus`      | `OP_SUB`     |
+| `*`   | `Star`       | `OP_MUL`     |
+| `/`   | `Slash`      | `OP_DIV`     |
+| `%`   | `Percent`    | `OP_MOD`     |
+| `==`  | `EqualEqual` | `OP_EQUAL`   |
+| `>`   | `Greater`    | `OP_GREATER` |
+| `<`   | `Less`       | `OP_LESS`    |
 
 示例 `1 + 2 * 3` 的 AST 体现了优先级：
 
@@ -507,10 +510,10 @@ OP_ADD
 
 以下运算没有独立 opcode，而是用已有比较和 `OP_NOT` 组合：
 
-| 源码 | 字节码尾部 |
-| --- | --- |
-| `a != b` | `OP_EQUAL; OP_NOT` |
-| `a >= b` | `OP_LESS; OP_NOT` |
+| 源码       | 字节码尾部                |
+| -------- | -------------------- |
+| `a != b` | `OP_EQUAL; OP_NOT`   |
+| `a >= b` | `OP_LESS; OP_NOT`    |
 | `a <= b` | `OP_GREATER; OP_NOT` |
 
 完整示例 `a <= b`：
@@ -614,11 +617,11 @@ AssignExpr {
 
 赋值表达式先计算右值，再根据名称解析结果写入目标。`OP_SET_*` 执行后仍保留被赋的值，因此赋值本身可以继续作为表达式使用。
 
-| 目标位置 | opcode 格式 |
-| --- | --- |
-| 当前局部变量 | `OP_SET_LOCAL slot` |
-| 捕获变量 | `OP_SET_UPVALUE slot` |
-| 全局变量 | `OP_SET_GLOBAL nameIndex` |
+| 目标位置   | opcode 格式                 |
+| ------ | ------------------------- |
+| 当前局部变量 | `OP_SET_LOCAL slot`       |
+| 捕获变量   | `OP_SET_UPVALUE slot`     |
+| 全局变量   | `OP_SET_GLOBAL nameIndex` |
 
 示例：
 
@@ -871,71 +874,59 @@ OP_RETURN
 
 ## Opcode 操作数速查
 
-| opcode | 编码结构 | 主要来源 |
-| --- | --- | --- |
-| `OP_CONSTANT` | `opcode, constantIndex` | 所有基础字面量 |
-| `OP_GET_GLOBAL` / `OP_SET_GLOBAL` | `opcode, nameIndex` | 全局变量读写 |
-| `OP_GET_LOCAL` / `OP_SET_LOCAL` | `opcode, slot` | 局部变量读写 |
-| `OP_GET_UPVALUE` / `OP_SET_UPVALUE` | `opcode, slot` | 闭包变量读写 |
-| `OP_GET_CURRENT_CLOSURE` | `opcode` | 函数自引用 |
-| `OP_NEGATE`, `OP_NOT` | `opcode` | 一元运算 |
-| `OP_ADD`、`OP_SUB`、`OP_MUL`、`OP_DIV`、`OP_MOD` | `opcode` | 算术运算 |
-| `OP_EQUAL`、`OP_GREATER`、`OP_LESS` | `opcode` | 比较运算 |
-| `OP_JUMP_IF_FALSE`、`OP_JUMP`、`OP_LOOP` | `opcode, highByte, lowByte` | 逻辑和控制流跳转 |
-| `OP_ARRAY` | `opcode, elementCount` | 数组字面量 |
-| `OP_GET_INDEX` / `OP_SET_INDEX` | `opcode` | 下标读写 |
-| `OP_OBJECT` | `opcode, propertyNamesConstantIndex` | 对象字面量 |
-| `OP_GET_PROPERTY` / `OP_SET_PROPERTY` | `opcode, nameIndex, feedbackSlot` | 属性读写 |
-| `OP_CALL` | `opcode, argc` | 普通函数调用 |
-| `OP_METHOD_CALL` | `opcode, nameIndex, argc, feedbackSlot` | 方法调用 |
-| `OP_CLOSURE` | `opcode, functionIndex, (isLocal, index)*` | 函数声明与闭包 |
-| `OP_CLASS` | `opcode, nameIndex` | 类声明 |
-| `OP_METHOD` / `OP_STATIC_METHOD` | `opcode, nameIndex` | 实例方法和静态方法定义 |
-| `OP_INHERIT` | `opcode` | 类继承 |
-| `OP_SUPER_CALL` | `opcode, nameIndex, argc` | `super.method(...)` |
+| opcode                                       | 编码结构                                    | 主要来源                             |
+| -------------------------------------------- | --------------------------------------- | -------------------------------- |
+| `OP_CONSTANT`                                | `opcode, constantIndex`                 | 所有基础字面量                          |
+| `OP_GET_GLOBAL` / `OP_SET_GLOBAL`            | `opcode, nameIndex`                     | 全局变量读写                           |
+| `OP_GET_LOCAL` / `OP_SET_LOCAL`              | `opcode, slot`                          | 局部变量读写                           |
+| `OP_GET_UPVALUE` / `OP_SET_UPVALUE`          | `opcode, slot`                          | 闭包变量读写                           |
+| `OP_GET_CURRENT_CLOSURE`                     | `opcode`                                | 函数自引用                            |
+| `OP_NEGATE`, `OP_NOT`                        | `opcode`                                | 一元运算                             |
+| `OP_ADD`、`OP_SUB`、`OP_MUL`、`OP_DIV`、`OP_MOD` | `opcode`                                | 算术运算                             |
+| `OP_EQUAL`、`OP_GREATER`、`OP_LESS`            | `opcode`                                | 比较运算                             |
+| `OP_JUMP_IF_FALSE`、`OP_JUMP`、`OP_LOOP`       | `opcode, highByte, lowByte`             | 逻辑和控制流跳转                         |
+| `OP_ARRAY`                                   | `opcode, elementCount`                  | 数组字面量                            |
+| `OP_GET_INDEX` / `OP_SET_INDEX`              | `opcode`                                | 下标读写                             |
+| `OP_OBJECT`                                  | `opcode, propertyNamesConstantIndex`    | 对象字面量                            |
+| `OP_GET_PROPERTY` / `OP_SET_PROPERTY`        | `opcode, nameIndex, feedbackSlot`       | 属性读写                             |
+| `OP_CALL`                                    | `opcode, argc`                          | 普通函数调用                           |
+| `OP_METHOD_CALL`                             | `opcode, nameIndex, argc, feedbackSlot` | 方法调用                             |
+| `OP_SUPER_CALL`                              | `opcode, nameIndex, argc`               | 当前编译器实际写入两个操作数；反汇编器显示函数仍沿用方法调用格式 |
 
-## VM 执行动作速查
+最后一行需要特别注意：`Opcode::SuperCall` 在 `disassembler.cpp` 中复用了 `methodCallInstruction()` 的显示函数，因此反汇编器会尝试显示 feedback 字段；但 `emitExpression()` 当前只为 `OP_SUPER_CALL` 写入方法名和参数数量。这是当前实现的格式差异，后续如果为 super 调用增加 inline cache，需要同步调整编码和反汇编逻辑。
 
-下表按 `src/vm.cpp` 中 `VM::run()` 的 `switch (opcode)` 整理。格式列使用 `Opcode` 枚举名；实际字节码的第一个字节都是 opcode。`offset16` 表示两个字节的无符号跳转距离，`readShort()` 会在读取后推进 `frame.ip`。
+# opcode以及对应操作
 
-| opcode 格式 | VM 执行动作 |
-| --- | --- |
-| `Constant index` | 读取 `chunk.constant(index)`；字符串常量先转成 GC 字符串 `makeGcString()`，其他值直接 `push(constant)`。 |
-| `Add` | `right = pop(); left = pop();` 如果任一操作数是 GC 字符串，则拼接 `left.toString() + right.toString()` 并压入 GC 字符串；否则压入 `left.asNumber() + right.asNumber()`。 |
-| `Sub` | `right = pop(); left = pop(); push(left.asNumber() - right.asNumber())`。 |
-| `Mul` | `right = pop(); left = pop(); push(left.asNumber() * right.asNumber())`。 |
-| `Div` | `right = pop(); left = pop();` 检查除数非 0 后压入 `left.asNumber() / divisor`。 |
-| `Mod` | `right = pop(); left = pop();` 检查除数非 0 后压入 `std::fmod(left.asNumber(), divisor)`。 |
-| `Negate` | `push(-pop().asNumber())`。 |
-| `Return` | `result = pop()`；脚本帧直接 `copyOutValue(result)` 并返回；函数帧会按需把构造器返回值替换成 `this`，执行 `closeUpvalues(slotStart)`，弹出调用帧，恢复栈到 `returnSlot`，再 `push(result)`。 |
-| `DefineGlobal nameIndex` | `name = chunk.constant(nameIndex).asString(); globals_[name] = pop()`。 |
-| `GetGlobal nameIndex` | 查找 `globals_[name]`，存在则 `push(value)`，不存在时报 `undefined variable`。 |
-| `SetGlobal nameIndex` | 查找 `globals_[name]`，存在则赋值为 `peek()`，不弹栈；不存在时报 `undefined variable`。 |
-| `GetLocal slot` | 计算 `absoluteSlot = frame.slotStart + slot`，检查边界后 `push(stack_[absoluteSlot])`。 |
-| `SetLocal slot` | 计算 `absoluteSlot = frame.slotStart + slot`，检查边界后 `stack_[absoluteSlot] = peek()`，不弹栈。 |
-| `Pop` | `pop()`。 |
-| `Not` | `push(!pop().isTruthy())`。 |
-| `Equal` | `right = pop(); left = pop(); push(left.equals(right))`。 |
-| `Greater` | `right = pop(); left = pop(); push(left.asNumber() > right.asNumber())`。 |
-| `Less` | `right = pop(); left = pop(); push(left.asNumber() < right.asNumber())`。 |
-| `JumpIfFalse offset16` | 读取 `offset`；如果 `!peek().isTruthy()`，则 `frame.ip += offset`；条件值保留在栈上。 |
-| `Jump offset16` | 读取 `offset` 后执行 `frame.ip += offset`。 |
-| `Loop offset16` | 读取 `offset`，执行 `recordLoopBackedge(*frame.closure->function)`，再 `frame.ip -= offset`。 |
-| `Call argc` | 栈形如 `[..., callee, arg0, ...]`。native function 检查 arity 后调用并用返回值替换 callee/args；class 调用会创建实例并调用 `init`；bound method 会把 callee 槽替换成 receiver；closure 走 `callBytecodeClosure()`，如果 JIT 已编译可进入 baseline code；其他值报 `value is not callable`。 |
-| `Array count` | 从栈顶弹出 `count` 个元素，按源码顺序组成 `ObjArray`，再 `push(array)`。 |
-| `GetIndex` | `index = pop(); array = pop();` 要求 array 是 GC 数组，按 `arrayIndexFromValue()` 检查索引后压入对应元素。 |
-| `SetIndex` | `value = pop(); index = pop(); array = pop();` 要求 array 是 GC 数组，写入对应元素后 `push(value)`。 |
-| `Object namesIndex` | `names = chunk.constant(namesIndex).asArray()`；读取栈顶对应数量的属性值，按 `names` 顺序调用 `objectSetProperty()` 填充新 `ObjObject`，弹出属性值后 `push(object)`。 |
-| `GetProperty nameIndex feedbackSlot` | `object = pop()`。数组/字符串只处理 `length`；实例先查 fields，再查方法并创建 `ObjBoundMethod`；class 查静态方法；普通对象走 property inline cache，miss 时调用 `objectGetProperty()` 并更新 feedback；不支持的 receiver 报 `value is not an object`。 |
-| `SetProperty nameIndex feedbackSlot` | 栈形如 `[..., object, value]`。实例写入 fields；普通对象走 set-property inline cache 或 `objectSetProperty()`；最后弹出 object/value 并 `push(value)`；非对象报 `value is not an object`。 |
-| `MethodCall nameIndex argc feedbackSlot` | 栈形如 `[..., receiver, arg0, ...]`。实例方法和 class 静态方法先查 method inline cache，miss 后查表并更新 feedback，再 `callBytecodeClosure()`；数组支持内建 `push`/`pop`；其他 receiver 或未知方法报错。 |
-| `SuperCall nameIndex argc` | 栈形如 `[..., superclass, receiver, arg0, ...]`。校验 superclass 和 receiver，沿 superclass 查找方法；把栈重排为 `[..., receiver, arg0, ...]`，再 `callBytecodeClosure(method, argc, ...)`。 |
-| `Closure functionIndex, (isLocal, index)*` | 从常量池取 `BytecodeFunction`，创建 `ObjFunction + ObjClosure` 并 `push(closure)`；随后读取每个 upvalue 元数据，校验与函数描述一致，本地捕获调用 `captureUpvalue(frame.slotStart + index)`，否则复用外层 `frame.closure->upvalues[index]`。 |
-| `GetUpvalue slot` | 读取当前 closure 的 `upvalues[slot]`；closed 状态压入 `closed`，open 状态压入 `stack_[stackIndex]`。 |
-| `SetUpvalue slot` | 把 `peek()` 写入当前 closure 的 `upvalues[slot]`；closed 状态写 `closed`，open 状态写对应栈槽。 |
-| `CloseUpvalue` | `closeUpvalues(stack_.size() - 1); pop()`，用于离开作用域前关闭被捕获的局部变量。 |
-| `GetCurrentClosure` | `push(frame.closure)`，用于返回后的局部递归函数自引用。 |
-| `Class nameIndex` | 读取类名字符串，分配 `ObjClass(name)` 并压栈。 |
-| `Method nameIndex` | `method = pop(); klass = peek(); klass.asGcClass()->methods[name] = method.asGcClosure()`；class 仍留在栈顶。 |
-| `StaticMethod nameIndex` | `method = pop(); klass = peek(); klass.asGcClass()->staticMethods[name] = method.asGcClosure()`；class 仍留在栈顶。 |
-| `Inherit` | `superclass = pop(); subclass = peek();` 校验二者都是 class 后设置 `subclass.superclass = superclass`。 |
+| opcode结构                                               | 编码结构                                    | 操作                                                                                                                                                                                                                  |
+| ------------------------------------------------------ | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Constant, index`                                      |                                         | push(constant[index]);                                                                                                                                                                                              |
+| `GetGlobal, nameIndex`                                 | `opcode, nameIndex`                     | name = chunk.constant(nameIndex);push(globals_.find(name));                                                                                                                                                         |
+| `SetGlobal, nameIndex`                                 |                                         | name = chunk.constant(nameIndex);globals_.find[name]=peek();                                                                                                                                                        |
+| `Negate`/`Not`                                         |                                         | push(-pop().asNumber()); / push(!pop().isTruthy());                                                                                                                                                                 |
+| `Return`                                               |                                         | result = pop();调节栈和栈帧push(result);                                                                                                                                                                                  |
+| `DefineGlobal, nameIndex`                              |                                         | name = chunk.constant(nameIndex);globals_[name] = pop();                                                                                                                                                            |
+| `GetLocal, slot` / `SetLocal, slot`                    | `opcode, slot`                          | absoluteSlot = frame.slotStart + slot;push(stack_[absoluteSlot]);stack_[absoluteSlot] = peek();                                                                                                                     |
+| `OP_GET_UPVALUE` / `OP_SET_UPVALUE`                    | `opcode, slot`                          | 闭包变量读写                                                                                                                                                                                                              |
+| `OP_GET_CURRENT_CLOSURE`                               | `opcode`                                | 函数自引用                                                                                                                                                                                                               |
+| `OP_NEGATE`, `OP_NOT`                                  | `opcode`                                | 一元运算                                                                                                                                                                                                                |
+| `Add`、`Sub`、`Mul`、`Div`、`Mod`、`Equal`、`Greater`、`Less` | `opcode`                                | right = pop();left = pop();push(运算结果);                                                                                                                                                                              |
+| `JumpIfFalse, highByte, lowByte`                       | `opcode`                                | offset = ((high << 8) \| low);if (!peek().isTruthy()) {<br/>          frame.ip += offset;<br/>        }                                                                                                             |
+| `Jump, highByte, lowByte`                              | `opcode, highByte, lowByte`             | offset = ((high << 8) \| low); frame.ip += offset;                                                                                                                                                                  |
+| `Loop, highByte, lowByte`                              |                                         | offset = ((high << 8) \| low);frame.ip -= offset;                                                                                                                                                                   |
+| `Array, count`                                         | `opcode, elementCount`                  | for(count)pop()逆序填充数组                                                                                                                                                                                               |
+| `GetIndex` / `SetIndex`                                | `opcode`                                | 下标读写                                                                                                                                                                                                                |
+| `OP_OBJECT`                                            | `opcode, propertyNamesConstantIndex`    | 对象字面量                                                                                                                                                                                                               |
+| `OP_GET_PROPERTY` / `OP_SET_PROPERTY`                  | `opcode, nameIndex, feedbackSlot`       | 属性读写                                                                                                                                                                                                                |
+| `Call,argCount, argc`                                  | `opcode, argc`                          | calleeIndex = stack_.size() - argCount - 1;callee = stack_[calleeIndex];for (std::size_t i = 0; i < argCount; ++i) {<br/>            arguments.push_back(stack_[calleeIndex + 1 + i]);<br/>          }push(result); |
+| `Class, nameIndex`(?)                                  |                                         | push(allocateObject<ObjClass>(chunk.constant(nameIndex)));                                                                                                                                                          |
+| `Inherit`                                              |                                         | superclass = pop();<br/>subclass = peek();subclass.asGcClass()->superclass = superclass.asGcClass();                                                                                                                |
+| `Method, nameIndex`/`StaticMethod, nameIndex`          | `opcode, nameIndex, argc, feedbackSlot` | name = chunk.constant(nameIndex).asString();method = pop();klass = peek();klass.asGcClass()->methods[name] = method.asGcClosure();                                                                                  |
+| `MethodCall`                                           |                                         |                                                                                                                                                                                                                     |
+| `SuperCall`                                            | `opcode, nameIndex, argc`               | 当前编译器实际写入两个操作数；反汇编器显示函数仍沿用方法调用格式                                                                                                                                                                                    |
+| `Closure, functionIndex`                               | (???有点难)                                | function = chunk.constant(functionIndex);closure = makeGcClosure(*function);push(closure);                                                                                                                          |
+| `SetUpvalue`                                           |                                         | upvalue = frame.closure->upvalues[slot];                                                                                                                                                                            |
+| `GetUpvalue`                                           |                                         | upvalue = frame.closure->upvalues[slot];push(upvalue->isClosed ? upvalue->closed : stack_[upvalue->stackIndex]);                                                                                                    |
+| `CloseUpvalue`                                         |                                         | closeUpvalues(stack_.size() - 1);<br/>  pop();                                                                                                                                                                      |
+| `GetCurrentClosure`                                    |                                         |                                                                                                                                                                                                                     |
+| ``                                                     |                                         |                                                                                                                                                                                                                     |
+| ``                                                     |                                         |                                                                                                                                                                                                                     |
