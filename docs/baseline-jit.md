@@ -178,12 +178,53 @@ epilogue:
 
 当前支持的 opcode 映射如下：
 
-| Opcode | 操作数 | 生成的 ARM64 stub 形态 | Runtime helper | 结果 |
-| --- | --- | --- | --- | --- |
-| `OP_CONSTANT` | `constantIndex` | `mov x0, x19`; `mov w1, constantIndex`; `mov x16, helper`; `blr x16`; `cbz w0, epilogue` | `minijsBaselinePushConstant(frame, constantIndex)` | 从常量池取值并压入 VM 栈 |
-| `OP_GET_LOCAL` | `slot` | `mov x0, x19`; `mov w1, slot`; `mov x16, helper`; `blr x16`; `cbz w0, epilogue` | `minijsBaselineGetLocal(frame, slot)` | 读取 `slotStart + slot` 的局部槽并压栈 |
-| `OP_ADD` | 无 | `mov x0, x19`; `mov x16, helper`; `blr x16`; `cbz w0, epilogue` | `minijsBaselineAdd(frame)` | 弹出两个值，执行数字加法或字符串拼接，再压回结果 |
-| `OP_RETURN` | 无 | `mov x0, x19`; `mov x16, helper`; `blr x16`; `cbz w0, epilogue`; `b epilogue` | `minijsBaselineReturn(frame)` | 弹出返回值，关闭 upvalue，把结果写回 `returnSlot`，标记 `completed` |
+| Opcode | 操作数 | Runtime helper | 结果 |
+| --- | --- | --- | --- |
+| `OP_CONSTANT` | `constantIndex` | `minijsBaselinePushConstant(frame, constantIndex)` | 从常量池取值并压入 VM 栈 |
+| `OP_GET_LOCAL` | `slot` | `minijsBaselineGetLocal(frame, slot)` | 读取 `slotStart + slot` 的局部槽并压栈 |
+| `OP_ADD` | 无 | `minijsBaselineAdd(frame)` | 弹出两个值，执行数字加法或字符串拼接，再压回结果 |
+| `OP_RETURN` | 无 | `minijsBaselineReturn(frame)` | 弹出返回值，关闭 upvalue，把结果写回 `returnSlot`，标记 `completed` |
+
+对应的 ARM64 stub 形态如下。
+
+`OP_CONSTANT constantIndex`：
+
+```text
+mov x0, x19
+mov w1, constantIndex
+mov x16, helper
+blr x16
+cbz w0, epilogue
+```
+
+`OP_GET_LOCAL slot`：
+
+```text
+mov x0, x19
+mov w1, slot
+mov x16, helper
+blr x16
+cbz w0, epilogue
+```
+
+`OP_ADD`：
+
+```text
+mov x0, x19
+mov x16, helper
+blr x16
+cbz w0, epilogue
+```
+
+`OP_RETURN`：
+
+```text
+mov x0, x19
+mov x16, helper
+blr x16
+cbz w0, epilogue
+b epilogue
+```
 
 其中 `mov x16, helper` 不是单条源码级函数，而是由 `emitLoadX16Imm64()` 生成的一组 `movz`/`movk`，把 64 位 helper 地址装入 `x16`：
 
