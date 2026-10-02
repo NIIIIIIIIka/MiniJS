@@ -17,10 +17,10 @@
 - [x] Baseline executor 已复用 VM runtime helper 支持 global、array/index、object/property、upvalue 和 current-closure opcode。
 - [x] `BaselineFrame` 和 `BaselineEntry` 已定义，第一批 `extern "C"` runtime helper 已通过稳定入口帧访问 VM。
 - [x] `BaselineCompiler` 已能为 `Constant`、`GetLocal`、`Add`、`Return` 生成 ARM64 stub，并写入 executable memory。
+- [x] VM baseline dispatch 已能在 ARM64 且存在 native `BaselineEntry` 时优先进入机器码；没有 native entry 时继续使用 decoded executor。
 
 还没有完成：
 
-- [ ] 将 VM baseline dispatch 从 decoded executor 切到 native `BaselineEntry`。
 - [ ] `Call`、`MethodCall`、`SuperCall` 的嵌套调用 frame 协议。
 - [ ] `Closure`、`Class`、`Method`、`StaticMethod`、`Inherit` 的 baseline 执行路径。
 - [ ] safepoint、deopt 或 fallback 协议。
@@ -90,6 +90,7 @@ struct BaselineFrame {
   std::size_t returnSlot = 0;
   std::size_t slotStart = 0;
 
+  bool returnsReceiver = false;
   bool completed = false;
   bool failed = false;
 };
@@ -120,7 +121,8 @@ callBytecodeClosure()
   -> verifyBytecode()
   -> cache DecodedInstruction
   -> Compiled 或 Failed
-  -> 后续调用优先进入 baseline executor
+  -> 后续调用优先进入 native BaselineEntry
+  -> 没有 native entry 时进入 decoded baseline executor
 
 Opcode::Loop
   -> recordLoopBackedge()
@@ -140,6 +142,72 @@ Opcode::Loop
 `emitRuntimeCall()` 固定使用 Runtime ABI：把 `BaselineFrame*` 放回 `x0`，把 helper 地址装入 `x16`，通过 `blr x16` 调用。helper 的 `bool` 返回值在 `w0`，机器码随后用 `cbz w0, epilogue` 处理失败路径。
 
 `ExecutableMemory::allocate()` 负责 W^X 生命周期：先申请可写内存并复制机器码，刷新 instruction cache，然后切换为只读可执行内存。释放逻辑集中在 `ExecutableMemory::release()`，供析构和 move assignment 共用。
+
+## 当前 Opcode 到 ARM64 stub 的映射
+
+第一版 native baseline compiler 没有把 `Value` 运算完全内联到机器码里。它生成的是一层很薄的 ARM64 stub：
+
+```text
+Opcode
+  -> ARM64 stub
+  -> Runtime ABI helper
+  -> helper 操作 VM stack_
+```
+
+也就是说，当前映射重点不是“`OP_ADD` 直接变成若干条加法机器指令”，而是“`OP_ADD` 生成一段调用 `minijsBaselineAdd()` 的机器码”。这样可以先验证 native entry、可执行内存、调用约定和错误返回路径，同时避免机器码直接依赖 `Value`、`std::vector<Value>` 或 GC 对象布局。
+
+每个 native baseline 函数统一包含：
+
+```text
+prologue:
+  stp x29, x30, [sp, #-16]!
+  mov x29, sp
+  stp x19, x20, [sp, #-16]!
+  mov x19, x0
+
+body:
+  按 Opcode 顺序调用 runtime helper
+
+epilogue:
+  ldp x19, x20, [sp], #16
+  ldp x29, x30, [sp], #16
+  ret
+```
+
+`x0` 是进入 native baseline 时传入的 `BaselineFrame*`。由于 helper 调用会使用 `x0` 和 `x1` 传参，prologue 会先把 frame 固定保存到 callee-saved 寄存器 `x19`。之后每次调用 helper 前，再把 `x19` 复制回 `x0`。
+
+当前支持的 opcode 映射如下：
+
+| Opcode | 操作数 | 生成的 ARM64 stub 形态 | Runtime helper | 结果 |
+| --- | --- | --- | --- | --- |
+| `OP_CONSTANT` | `constantIndex` | `mov x0, x19`; `mov w1, constantIndex`; `mov x16, helper`; `blr x16`; `cbz w0, epilogue` | `minijsBaselinePushConstant(frame, constantIndex)` | 从常量池取值并压入 VM 栈 |
+| `OP_GET_LOCAL` | `slot` | `mov x0, x19`; `mov w1, slot`; `mov x16, helper`; `blr x16`; `cbz w0, epilogue` | `minijsBaselineGetLocal(frame, slot)` | 读取 `slotStart + slot` 的局部槽并压栈 |
+| `OP_ADD` | 无 | `mov x0, x19`; `mov x16, helper`; `blr x16`; `cbz w0, epilogue` | `minijsBaselineAdd(frame)` | 弹出两个值，执行数字加法或字符串拼接，再压回结果 |
+| `OP_RETURN` | 无 | `mov x0, x19`; `mov x16, helper`; `blr x16`; `cbz w0, epilogue`; `b epilogue` | `minijsBaselineReturn(frame)` | 弹出返回值，关闭 upvalue，把结果写回 `returnSlot`，标记 `completed` |
+
+其中 `mov x16, helper` 不是单条源码级函数，而是由 `emitLoadX16Imm64()` 生成的一组 `movz`/`movk`，把 64 位 helper 地址装入 `x16`：
+
+```text
+movz x16, low16
+movk x16, next16, lsl #16
+movk x16, next16, lsl #32
+movk x16, next16, lsl #48
+blr  x16
+```
+
+如果 helper 返回 `false`，机器码通过 `cbz w0, epilogue` 直接跳到统一出口。回到 C++ 后，`VM::executeBaselineEntry()` 会检查：
+
+```cpp
+frame.failed
+frame.completed
+stack_.empty()
+```
+
+并把失败转换成 `RuntimeError`。因此 C++ 异常不会跨过 native ABI 边界。
+
+`OP_RETURN` 额外发射一条无条件跳转到 epilogue，是因为返回成功后函数已经完成，不应该继续执行后续机器码。`minijsBaselineReturn()` 会根据 `BaselineFrame::returnsReceiver` 保持构造器 `init` 的 receiver 返回语义。
+
+`BaselineCode::bytecodeOffsetToNativeOffset` 会记录每条 bytecode 指令对应的机器码起点。当前它主要用于测试和调试，后续 safepoint、deopt 或源码级 profiling 也可以从这里建立 bytecode offset 和 native offset 的关系。
 
 ## 当前支持范围
 
@@ -176,14 +244,14 @@ Baseline frame 复用 VM 的调用约定：
 - 返回值仍写回调用方期待的位置。
 - GC roots 仍来自 `stack_`、`frames_`、`openUpvalues_` 和 `temporaryRoots_`。
 
-当前 baseline executor 已接入 `callBytecodeClosure()` 的函数入口 dispatch。测试入口仍保留，用于直接验证 code object。
+当前 baseline dispatch 已接入 `callBytecodeClosure()` 的函数入口。ARM64 且 `BaselineCode::entry != nullptr` 时，VM 会优先进入 native `BaselineEntry`；否则继续进入 decoded baseline executor。测试入口仍保留，用于直接验证 code object 和 runtime helper ABI。
 
 非调用型 runtime opcode 通过 VM helper 与解释器共享语义，例如 global 读写、数组创建、对象属性读写和 upvalue 读写。baseline 只负责从 `DecodedInstruction::operands` 取操作数，不直接读取或推进 `frame.ip`。
 
 ## 下一步
 
-1. 将 `callBytecodeClosure()` 的 baseline dispatch 切到 `BaselineEntry`，没有 native entry 时继续使用 decoded executor。
-2. 设计 `Call`、`MethodCall`、`SuperCall` 的嵌套调用 frame 协议。
-3. 为 `Closure` 和 class-family opcode 增加 GC 安全的 baseline helper。
-4. 扩展 benchmark，用于对比解释执行、IC 与 baseline dispatch 路径。
-5. 设计 safepoint、deopt 和 fallback 边界。
+1. 设计 `Call`、`MethodCall`、`SuperCall` 的嵌套调用 frame 协议。
+2. 为 `Closure` 和 class-family opcode 增加 GC 安全的 baseline helper。
+3. 扩展 benchmark，用于对比解释执行、IC 与 baseline dispatch 路径。
+4. 设计 safepoint、deopt 和 fallback 边界。
+5. 逐步把更多 opcode 从 decoded executor 下沉到 native stub 或更细的 runtime helper。
