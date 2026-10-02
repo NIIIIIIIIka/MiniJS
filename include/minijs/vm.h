@@ -121,18 +121,19 @@ class VM {
 #endif
 
  private:
-  friend bool ::minijsBaselinePush(BaselineFrame* frame, const Value* value);
-  friend bool ::minijsBaselinePushConstant(BaselineFrame* frame, std::uint32_t constantIndex);
-  friend bool ::minijsBaselineGetLocal(BaselineFrame* frame, std::uint32_t slot);
-  friend bool ::minijsBaselineSetLocal(BaselineFrame* frame, std::uint32_t slot);
-  friend bool ::minijsBaselinePop(BaselineFrame* frame);
-  friend bool ::minijsBaselineAdd(BaselineFrame* frame);
-  friend bool ::minijsBaselineSub(BaselineFrame* frame);
-  friend bool ::minijsBaselineMul(BaselineFrame* frame);
-  friend bool ::minijsBaselineDiv(BaselineFrame* frame);
-  friend bool ::minijsBaselineMod(BaselineFrame* frame);
-  friend bool ::minijsBaselineNegate(BaselineFrame* frame);
-  friend bool ::minijsBaselineReturn(BaselineFrame* frame);
+  friend bool ::minijsBaselinePush(minijs::BaselineFrame* frame, const minijs::Value* value);
+  friend bool ::minijsBaselinePushConstant(minijs::BaselineFrame* frame,
+                                           std::uint32_t constantIndex);
+  friend bool ::minijsBaselineGetLocal(minijs::BaselineFrame* frame, std::uint32_t slot);
+  friend bool ::minijsBaselineSetLocal(minijs::BaselineFrame* frame, std::uint32_t slot);
+  friend bool ::minijsBaselinePop(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineAdd(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineSub(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineMul(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineDiv(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineMod(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineNegate(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineReturn(minijs::BaselineFrame* frame);
 
   class TemporaryRootScope {
    public:
@@ -208,6 +209,7 @@ class VM {
   void maybeScheduleJit(BytecodeFunction& function);
   void compileScheduledJit(BytecodeFunction& function);
   Value executeBaselineCode(const BaselineCode& code, CallFrame& frame);
+  Value executeBaselineEntry(BaselineEntry entry, CallFrame& frame);
   ObjUpvalue* captureUpvalue(std::size_t stackIndex);
   void closeUpvalues(std::size_t firstStackIndex);
   void collectGarbageIfNeeded();

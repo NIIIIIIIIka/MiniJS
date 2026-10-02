@@ -14,6 +14,7 @@ struct BaselineFrame {
   std::size_t returnSlot = 0;
   std::size_t slotStart = 0;
 
+  bool returnsReceiver = false;
   bool completed = false;
   bool failed = false;
 };

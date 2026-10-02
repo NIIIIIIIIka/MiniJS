@@ -22,6 +22,15 @@ void incrementSaturating(std::uint32_t& value) {
   }
 }
 
+bool canExecuteNativeBaselineEntry(const BaselineCode& code) {
+#if defined(__aarch64__) || defined(_M_ARM64)
+  return code.entry != nullptr;
+#else
+  (void)code;
+  return false;
+#endif
+}
+
 double checkedDivisor(const Value& value, const char* message) {
   const double divisor = value.asNumber();
   if (divisor == 0) {
@@ -1022,14 +1031,10 @@ Value VM::debugExecuteGlobalFunctionBaselineEntry(const std::string& name,
     push(argument);
   }
 
-  BaselineFrame frame;
-  frame.vm = this;
-  frame.closure = closure;
-  frame.returnSlot = 0;
-  frame.slotStart = 1;
-
+  frames_.push_back(CallFrame{closure, 0, 0, 1});
+  Value result;
   try {
-    entry(&frame);
+    result = executeBaselineEntry(entry, frames_.back());
   } catch (...) {
     stack_.clear();
     frames_.clear();
@@ -1037,28 +1042,9 @@ Value VM::debugExecuteGlobalFunctionBaselineEntry(const std::string& name,
     temporaryRoots_.clear();
     throw;
   }
+  frames_.pop_back();
 
-  if (frame.failed) {
-    stack_.clear();
-    frames_.clear();
-    openUpvalues_.clear();
-    temporaryRoots_.clear();
-    throw RuntimeError("baseline runtime helper failed");
-  }
-  if (!frame.completed) {
-    stack_.clear();
-    frames_.clear();
-    openUpvalues_.clear();
-    temporaryRoots_.clear();
-    throw RuntimeError("baseline entry did not complete");
-  }
-  if (stack_.empty()) {
-    stack_.clear();
-    temporaryRoots_.clear();
-    throw RuntimeError("baseline entry produced no result");
-  }
-
-  Value copied = copyOutValue(stack_.back());
+  Value copied = copyOutValue(result);
   stack_.clear();
   temporaryRoots_.clear();
   return copied;
@@ -1418,6 +1404,9 @@ bool VM::baselineRuntimeNegate(BaselineFrame& frame) {
 bool VM::baselineRuntimeReturn(BaselineFrame& frame) {
   validateBaselineRuntimeFrame(frame);
   Value result = pop();
+  if (frame.returnsReceiver) {
+    result = stack_[frame.slotStart];
+  }
   if (frame.returnSlot > stack_.size()) {
     throw RuntimeError("baseline return slot out of bounds");
   }
@@ -1726,18 +1715,21 @@ void VM::callBytecodeClosure(ObjClosure* closure, std::size_t argCount, std::siz
         returnsReceiver,
     });
 
-    Value result;
     try {
       incrementSaturating(function.jit.baselineEntryCount);
-      result = executeBaselineCode(*function.jit.baselineCode, frames_.back());
+      if (canExecuteNativeBaselineEntry(*function.jit.baselineCode)) {
+        executeBaselineEntry(function.jit.baselineCode->entry, frames_.back());
+      } else {
+        Value result = executeBaselineCode(*function.jit.baselineCode, frames_.back());
+        stack_.resize(returnSlot);
+        push(result);
+      }
     } catch (...) {
       frames_.pop_back();
       throw;
     }
 
     frames_.pop_back();
-    stack_.resize(returnSlot);
-    push(result);
     return;
   }
 
@@ -1798,6 +1790,33 @@ void VM::compileScheduledJit(BytecodeFunction& function) {
   jit.baselineCode.reset();
   jit.compileError = std::move(result.error);
   jit.state = JitState::Failed;
+}
+
+Value VM::executeBaselineEntry(BaselineEntry entry, CallFrame& callFrame) {
+  if (entry == nullptr) {
+    throw RuntimeError("baseline entry is null");
+  }
+
+  BaselineFrame frame;
+  frame.vm = this;
+  frame.closure = callFrame.closure;
+  frame.returnSlot = callFrame.returnSlot;
+  frame.slotStart = callFrame.slotStart;
+  frame.returnsReceiver = callFrame.returnsReceiver;
+
+  entry(&frame);
+
+  if (frame.failed) {
+    throw RuntimeError("baseline runtime helper failed");
+  }
+  if (!frame.completed) {
+    throw RuntimeError("baseline entry did not complete");
+  }
+  if (stack_.empty()) {
+    throw RuntimeError("baseline entry produced no result");
+  }
+
+  return stack_.back();
 }
 
 Value VM::executeBaselineCode(const BaselineCode& code, CallFrame& frame) {

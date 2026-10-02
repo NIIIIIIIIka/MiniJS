@@ -4181,6 +4181,30 @@ void testBaselineCompilerNativeEntryRunsAddFunction() {
   EXPECT(result.isNumber());
   EXPECT(result.asNumber() == 12);
 }
+
+void testJitDispatchRunsNativeBaselineEntryForSupportedFunction() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  const minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+    function add(a, b) { return a + b; }
+    add(1, 2);
+    add(4, 8);
+  )");
+
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 12);
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("add");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+  EXPECT(feedback->baselineEntryCount == 1);
+
+  const minijs::BaselineCode* code = vm.debugGlobalFunctionBaselineCode("add");
+  EXPECT(code != nullptr);
+  EXPECT(code->entry != nullptr);
+}
 #endif
 
 void testBaselineRuntimeAbiRunsArithmeticEntry() {
@@ -4827,6 +4851,7 @@ void runBytecodeTests() {
   testBaselineCompilerRejectsUnsupportedOpcode();
 #if defined(__aarch64__) || defined(_M_ARM64)
   testBaselineCompilerNativeEntryRunsAddFunction();
+  testJitDispatchRunsNativeBaselineEntryForSupportedFunction();
 #endif
   testBaselineRuntimeAbiRunsArithmeticEntry();
   testBaselineRuntimeAbiPushesConstantsAndSetsLocals();
