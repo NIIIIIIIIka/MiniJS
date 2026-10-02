@@ -1,6 +1,8 @@
 #include "minijs/baseline_compiler.h"
 
 #include <cstdint>
+#include <initializer_list>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -45,6 +47,18 @@ class Arm64Emitter {
   void emitMovFrameToX0() {
     emit32(0xAA1303E0);  // mov x0, x19
   }
+
+  void emitMoveFrameToFirstArg() { emitMovFrameToX0(); }
+
+  void emitMoveU32ToSecondArg(std::uint32_t value) { emitMovW1Imm32(value); }
+
+  void emitLoadHelper(std::uintptr_t value) { emitLoadX16Imm64(value); }
+
+  void emitCallHelper() { emitBlrX16(); }
+
+  std::size_t emitJumpIfFalsePlaceholder() { return emitCbzW0Placeholder(); }
+
+  std::size_t emitJumpPlaceholder() { return emitBPlaceholder(); }
 
   void emitMovW1Imm32(std::uint32_t value) {
     emitMovzW(1, static_cast<std::uint16_t>(value & 0xffff), 0);
@@ -156,18 +170,123 @@ class Arm64Emitter {
   std::vector<std::uint8_t> code_;
 };
 
+// 极小 Windows x64 emitter：同样只生成 helper-call stub。Windows x64 调用约定中，
+// 第一个整数参数在 rcx，第二个在 rdx，调用者必须预留 32 字节 shadow space。
+class WindowsX64Emitter {
+ public:
+  std::size_t offset() const { return code_.size(); }
+  const std::vector<std::uint8_t>& bytes() const { return code_; }
+
+  void emitPrologue() {
+    emit8(0x53);                    // push rbx
+    emit({0x48, 0x83, 0xEC, 0x20});  // sub rsp, 32
+    emit({0x48, 0x89, 0xCB});        // mov rbx, rcx
+  }
+
+  void emitEpilogue() {
+    emit({0x48, 0x83, 0xC4, 0x20});  // add rsp, 32
+    emit8(0x5B);                    // pop rbx
+    emit8(0xC3);                    // ret
+  }
+
+  void emitMoveFrameToFirstArg() {
+    emit({0x48, 0x89, 0xD9});  // mov rcx, rbx
+  }
+
+  void emitMoveU32ToSecondArg(std::uint32_t value) {
+    emit8(0xBA);  // mov edx, imm32
+    emit32(value);
+  }
+
+  void emitLoadHelper(std::uintptr_t value) {
+    emit({0x48, 0xB8});  // mov rax, imm64
+    emit64(static_cast<std::uint64_t>(value));
+  }
+
+  void emitCallHelper() {
+    emit({0xFF, 0xD0});  // call rax
+  }
+
+  std::size_t emitJumpIfFalsePlaceholder() {
+    emit({0x85, 0xC0});  // test eax, eax
+    const std::size_t patchOffset = offset();
+    emit({0x0F, 0x84});  // jz rel32
+    emit32(0);
+    return patchOffset;
+  }
+
+  std::size_t emitJumpPlaceholder() {
+    const std::size_t patchOffset = offset();
+    emit8(0xE9);  // jmp rel32
+    emit32(0);
+    return patchOffset;
+  }
+
+  bool patchBranchTo(std::size_t branchOffset, std::size_t targetOffset, bool conditional,
+                     std::string& error) {
+    const std::size_t immediateOffset = branchOffset + (conditional ? 2 : 1);
+    const std::size_t nextInstruction = immediateOffset + sizeof(std::int32_t);
+    if (immediateOffset + sizeof(std::int32_t) > code_.size()) {
+      error = "invalid x64 branch patch";
+      return false;
+    }
+
+    const std::int64_t displacement =
+        static_cast<std::int64_t>(targetOffset) - static_cast<std::int64_t>(nextInstruction);
+    if (displacement < std::numeric_limits<std::int32_t>::min() ||
+        displacement > std::numeric_limits<std::int32_t>::max()) {
+      error = "x64 branch target out of range";
+      return false;
+    }
+
+    write32(immediateOffset, static_cast<std::uint32_t>(
+                                 static_cast<std::int32_t>(displacement)));
+    return true;
+  }
+
+ private:
+  void emit8(std::uint8_t byte) { code_.push_back(byte); }
+
+  void emit(std::initializer_list<std::uint8_t> bytes) {
+    code_.insert(code_.end(), bytes.begin(), bytes.end());
+  }
+
+  void emit32(std::uint32_t value) {
+    code_.push_back(static_cast<std::uint8_t>(value & 0xff));
+    code_.push_back(static_cast<std::uint8_t>((value >> 8) & 0xff));
+    code_.push_back(static_cast<std::uint8_t>((value >> 16) & 0xff));
+    code_.push_back(static_cast<std::uint8_t>((value >> 24) & 0xff));
+  }
+
+  void emit64(std::uint64_t value) {
+    for (int shift = 0; shift < 64; shift += 8) {
+      code_.push_back(static_cast<std::uint8_t>((value >> shift) & 0xff));
+    }
+  }
+
+  void write32(std::size_t patchOffset, std::uint32_t value) {
+    code_[patchOffset] = static_cast<std::uint8_t>(value & 0xff);
+    code_[patchOffset + 1] = static_cast<std::uint8_t>((value >> 8) & 0xff);
+    code_[patchOffset + 2] = static_cast<std::uint8_t>((value >> 16) & 0xff);
+    code_[patchOffset + 3] = static_cast<std::uint8_t>((value >> 24) & 0xff);
+  }
+
+  std::vector<std::uint8_t> code_;
+};
+
 BaselineCompileResult failure(std::string error) {
   BaselineCompileResult result;
   result.error = std::move(error);
   return result;
 }
 
-// Runtime helper 统一返回 bool 到 w0。调用者随后发 cbz w0, epilogue，
+// Runtime helper 统一返回 bool。调用者随后检查返回值并跳到 epilogue，
 // 让 helper 内部捕获到的异常通过 frame->failed 传播回 C++ 边界。
-void emitRuntimeCall(Arm64Emitter& emitter, std::uintptr_t functionAddress) {
-  emitter.emitMovFrameToX0();
-  emitter.emitLoadX16Imm64(functionAddress);
-  emitter.emitBlrX16();
+template <typename Emitter>
+void emitRuntimeCall(Emitter& emitter, std::uintptr_t functionAddress) {
+  emitter.emitMoveFrameToFirstArg();
+  emitter.emitLoadHelper(functionAddress);
+  emitter.emitCallHelper();
 }
 
 }  // namespace
@@ -192,7 +311,13 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
     code->bytecodeOffsetToInstructionIndex[bytecodeOffset] = index;
   }
 
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+  WindowsX64Emitter emitter;
+#elif defined(__aarch64__) || defined(_M_ARM64)
   Arm64Emitter emitter;
+#else
+  return failure("baseline compiler has no native backend for this platform");
+#endif
   std::vector<BranchPatch> epiloguePatches;
   emitter.emitPrologue();
 
@@ -204,30 +329,30 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
 
     switch (instruction.opcode) {
       case Opcode::Constant:
-        emitter.emitMovFrameToX0();
-        emitter.emitMovW1Imm32(instruction.operands[0]);
-        emitter.emitLoadX16Imm64(reinterpret_cast<std::uintptr_t>(&minijsBaselinePushConstant));
-        emitter.emitBlrX16();
-        epiloguePatches.push_back({emitter.emitCbzW0Placeholder(), true});
+        emitter.emitMoveFrameToFirstArg();
+        emitter.emitMoveU32ToSecondArg(instruction.operands[0]);
+        emitter.emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselinePushConstant));
+        emitter.emitCallHelper();
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
         break;
 
       case Opcode::GetLocal:
-        emitter.emitMovFrameToX0();
-        emitter.emitMovW1Imm32(instruction.operands[0]);
-        emitter.emitLoadX16Imm64(reinterpret_cast<std::uintptr_t>(&minijsBaselineGetLocal));
-        emitter.emitBlrX16();
-        epiloguePatches.push_back({emitter.emitCbzW0Placeholder(), true});
+        emitter.emitMoveFrameToFirstArg();
+        emitter.emitMoveU32ToSecondArg(instruction.operands[0]);
+        emitter.emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselineGetLocal));
+        emitter.emitCallHelper();
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
         break;
 
       case Opcode::Add:
         emitRuntimeCall(emitter, reinterpret_cast<std::uintptr_t>(&minijsBaselineAdd));
-        epiloguePatches.push_back({emitter.emitCbzW0Placeholder(), true});
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
         break;
 
       case Opcode::Return:
         emitRuntimeCall(emitter, reinterpret_cast<std::uintptr_t>(&minijsBaselineReturn));
-        epiloguePatches.push_back({emitter.emitCbzW0Placeholder(), true});
-        epiloguePatches.push_back({emitter.emitBPlaceholder(), false});
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        epiloguePatches.push_back({emitter.emitJumpPlaceholder(), false});
         break;
 
       default:

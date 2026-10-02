@@ -18,6 +18,15 @@
 
 namespace {
 
+bool nativeBaselineBackendAvailable() {
+#if defined(__aarch64__) || defined(_M_ARM64) || \
+    (defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__)))
+  return true;
+#else
+  return false;
+#endif
+}
+
 minijs::Value runBytecode(std::string_view source) {
   minijs::Parser parser(source);
   minijs::ExprPtr expression = parser.parse();
@@ -4116,13 +4125,19 @@ void testBaselineExecutorPreservesArithmeticErrors() {
   }
 }
 
-void testBaselineCompilerGeneratesArm64ForAddFunction() {
+void testBaselineCompilerGeneratesNativeStubForAddFunction() {
   const minijs::Chunk chunk = compileProgram("function addOne(value) { return value + 1; }");
   const auto function = lastBytecodeFunctionNamed(chunk, "addOne");
   EXPECT(function != nullptr);
 
   minijs::BaselineCompiler compiler;
   const minijs::BaselineCompileResult result = compiler.compile(*function);
+  if (!nativeBaselineBackendAvailable()) {
+    EXPECT(!result.succeeded());
+    EXPECT(result.code == nullptr);
+    return;
+  }
+
   EXPECT(result.succeeded());
   EXPECT(result.error.empty());
   EXPECT(result.code != nullptr);
@@ -4157,10 +4172,14 @@ void testBaselineCompilerRejectsUnsupportedOpcode() {
   const minijs::BaselineCompileResult result = compiler.compile(*function);
   EXPECT(!result.succeeded());
   EXPECT(result.code == nullptr);
+  if (!nativeBaselineBackendAvailable()) {
+    return;
+  }
   EXPECT(result.error.find("OP_SUB") != std::string::npos);
 }
 
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined(__aarch64__) || defined(_M_ARM64) || \
+    (defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__)))
 void testBaselineCompilerNativeEntryRunsAddFunction() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -4847,9 +4866,10 @@ void runBytecodeTests() {
   testBaselineExecutorRunsArithmeticAndLocals();
   testBaselineExecutorRunsSimpleLoop();
   testBaselineExecutorPreservesArithmeticErrors();
-  testBaselineCompilerGeneratesArm64ForAddFunction();
+  testBaselineCompilerGeneratesNativeStubForAddFunction();
   testBaselineCompilerRejectsUnsupportedOpcode();
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined(__aarch64__) || defined(_M_ARM64) || \
+    (defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__)))
   testBaselineCompilerNativeEntryRunsAddFunction();
   testJitDispatchRunsNativeBaselineEntryForSupportedFunction();
 #endif

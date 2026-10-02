@@ -1,6 +1,6 @@
 # Baseline JIT 设计
 
-本文档基于当前 MiniJS bytecode VM 进度，整理 Baseline JIT 的近期实现方案。当前代码已经具备 JIT 热度计数、调度状态、baseline 编译入口、函数入口 dispatch、稳定 Runtime ABI、第一版 ARM64 stub compiler，以及一个可复用 VM runtime helper 的 decoded bytecode baseline executor。
+本文档基于当前 MiniJS bytecode VM 进度，整理 Baseline JIT 的近期实现方案。当前代码已经具备 JIT 热度计数、调度状态、baseline 编译入口、函数入口 dispatch、稳定 Runtime ABI、第一版 ARM64 / Windows x64 stub compiler，以及一个可复用 VM runtime helper 的 decoded bytecode baseline executor。
 
 ## 当前状态
 
@@ -16,8 +16,8 @@
 - [x] VM 调用 compiled code 的入口已接入 `callBytecodeClosure()`。
 - [x] Baseline executor 已复用 VM runtime helper 支持 global、array/index、object/property、upvalue 和 current-closure opcode。
 - [x] `BaselineFrame` 和 `BaselineEntry` 已定义，第一批 `extern "C"` runtime helper 已通过稳定入口帧访问 VM。
-- [x] `BaselineCompiler` 已能为 `Constant`、`GetLocal`、`Add`、`Return` 生成 ARM64 stub，并写入 executable memory。
-- [x] VM baseline dispatch 已能在 ARM64 且存在 native `BaselineEntry` 时优先进入机器码；没有 native entry 时继续使用 decoded executor。
+- [x] `BaselineCompiler` 已能为 `Constant`、`GetLocal`、`Add`、`Return` 生成 ARM64 和 Windows x64 stub，并写入 executable memory。
+- [x] VM baseline dispatch 已能在支持 native backend 且存在 native `BaselineEntry` 时优先进入机器码；没有 native entry 时继续使用 decoded executor。
 
 还没有完成：
 
@@ -98,7 +98,7 @@ struct BaselineFrame {
 using BaselineEntry = void (*)(BaselineFrame*);
 ```
 
-ARM64 下 `BaselineFrame*` 会作为第一个参数通过 `x0` 传入。机器码需要读写局部变量、压栈、算术或返回时，必须调用 Runtime ABI helper，例如：
+机器码需要读写局部变量、压栈、算术或返回时，必须调用 Runtime ABI helper，例如：
 
 ```cpp
 extern "C" bool minijsBaselineGetLocal(BaselineFrame* frame, std::uint32_t slot);
@@ -131,32 +131,79 @@ Opcode::Loop
 
 `Scheduled` 是瞬时状态。支持的函数会进入 `Compiled` 并挂上 `BaselineCode`；不支持的 opcode 或 verifier 失败会进入 `Failed`，之后继续走 VM。达到阈值的那次调用只负责安装 code object，下一次调用才进入 baseline executor。JIT disabled 时即使已有 `BaselineCode` 也继续走 VM。
 
-`compileBaseline()` 会先尝试第一版 native `BaselineCompiler`。如果函数只包含 `Constant`、`GetLocal`、`Add`、`Return`，会生成 ARM64 stub、`bytecodeOffsetToNativeOffset` 映射和 `BaselineEntry`。如果 native compiler 遇到暂不支持的 opcode，会回退到现有 decoded baseline compiler；这样已经支持的 runtime helper opcode 仍能通过 decoded executor 验证语义。
+`compileBaseline()` 会先尝试第一版 native `BaselineCompiler`。如果函数只包含 `Constant`、`GetLocal`、`Add`、`Return`，会在当前平台生成 native stub、`bytecodeOffsetToNativeOffset` 映射和 `BaselineEntry`。如果 native compiler 遇到暂不支持的 opcode 或当前平台没有 native backend，会回退到现有 decoded baseline compiler；这样已经支持的 runtime helper opcode 仍能通过 decoded executor 验证语义。
 
 ## 函数职责
 
 `BaselineCompiler::compile()` 是 native baseline 的唯一公开入口。它不抛出“unsupported opcode”异常，而是通过 `BaselineCompileResult::error` 返回失败原因；外层 `compileBaseline()` 可以据此回退到 decoded baseline executor。
 
-`Arm64Emitter` 目前只是 `BaselineCompiler` 私有的极小指令写入器。它负责 prologue/epilogue、helper 调用、branch placeholder 和 branch patch，不承担通用 assembler 的职责。
+`Arm64Emitter` 和 `WindowsX64Emitter` 目前只是 `BaselineCompiler` 私有的极小指令写入器。它们负责各自平台的 prologue/epilogue、helper 调用、branch placeholder 和 branch patch，不承担通用 assembler 的职责。
 
-`emitRuntimeCall()` 固定使用 Runtime ABI：把 `BaselineFrame*` 放回 `x0`，把 helper 地址装入 `x16`，通过 `blr x16` 调用。helper 的 `bool` 返回值在 `w0`，机器码随后用 `cbz w0, epilogue` 处理失败路径。
+`emitRuntimeCall()` 固定使用 Runtime ABI，但具体寄存器由后端决定。ARM64 会把 `BaselineFrame*` 放回 `x0`，把 helper 地址装入 `x16`，通过 `blr x16` 调用；Windows x64 会把 `BaselineFrame*` 放回 `rcx`，把 helper 地址装入 `rax`，通过 `call rax` 调用。helper 的 `bool` 返回值随后由平台对应的条件跳转检查，失败时进入 epilogue。
 
 `ExecutableMemory::allocate()` 负责 W^X 生命周期：先申请可写内存并复制机器码，刷新 instruction cache，然后切换为只读可执行内存。释放逻辑集中在 `ExecutableMemory::release()`，供析构和 move assignment 共用。
 
-## 当前 Opcode 到 ARM64 stub 的映射
+## 平台后端边界
 
-第一版 native baseline compiler 没有把 `Value` 运算完全内联到机器码里。它生成的是一层很薄的 ARM64 stub：
+当前代码已有第一版 ARM64 和 Windows x64 native stub backend，但 Baseline JIT 的上层设计不应该绑定到某一种机器码。稳定边界应该是：
+
+```text
+Bytecode / DecodedInstruction
+  -> BaselineCompiler
+  -> 平台相关 codegen backend
+  -> BaselineEntry
+```
+
+不同平台可以生成不同机器码，但都应该遵守同一套 Runtime ABI 和 `BaselineFrame` 入口协议：
+
+```cpp
+using BaselineEntry = void (*)(BaselineFrame*);
+```
+
+因此未来可以继续增加：
+
+| 后端 | 目标 | 当前状态 |
+| --- | --- | --- |
+| ARM64 | Apple Silicon、Windows/Linux ARM64 | 已有第一版 stub compiler |
+| Windows x64 / x86-64 | Windows 桌面平台 | 已有第一版 stub compiler |
+| SysV x64 / x86-64 | Linux/macOS x64 平台 | 未实现 |
+| RISC-V 64 | 教学或实验平台 | 未实现 |
+| 其它后端 | 例如 WASM、解释型 threaded code | 未实现 |
+
+后端之间可以共享：
+
+- bytecode decoder 和 verifier
+- `BaselineCode`、`DecodedInstruction` 和 offset 映射结构
+- Runtime ABI helper，例如 `minijsBaselineAdd()`
+- VM dispatch 规则：有 native `BaselineEntry` 就进机器码，否则回退 decoded executor
+
+后端之间必须各自实现：
+
+- prologue / epilogue
+- 参数寄存器或调用约定
+- helper 地址加载方式
+- helper 返回值检查
+- 分支 patch 和 native offset 映射
+- executable memory 的平台细节
+
+也就是说，文档里的某个平台指令只是“这个后端怎么做”的具体例子，不代表 MiniJS 只能生成一种机器码。`OP_ADD` 在 ARM64 和 Windows x64 后端都映射到 `minijsBaselineAdd(frame)`，只是机器码分别使用 ARM64 的 `mov`/`blr`/`cbz` 和 Windows x64 的 `mov`/`call`/`test`/`jz`。
+
+## 当前 Opcode 到 native stub 的映射
+
+第一版 native baseline compiler 没有把 `Value` 运算完全内联到机器码里。它生成的是一层很薄的平台 stub：
 
 ```text
 Opcode
-  -> ARM64 stub
+  -> native stub
   -> Runtime ABI helper
   -> helper 操作 VM stack_
 ```
 
 也就是说，当前映射重点不是“`OP_ADD` 直接变成若干条加法机器指令”，而是“`OP_ADD` 生成一段调用 `minijsBaselineAdd()` 的机器码”。这样可以先验证 native entry、可执行内存、调用约定和错误返回路径，同时避免机器码直接依赖 `Value`、`std::vector<Value>` 或 GC 对象布局。
 
-每个 native baseline 函数统一包含：
+### ARM64 stub 形态
+
+ARM64 下 `BaselineFrame*` 会作为第一个参数通过 `x0` 传入。每个 native baseline 函数统一包含：
 
 ```text
 prologue:
@@ -250,6 +297,74 @@ stack_.empty()
 
 `BaselineCode::bytecodeOffsetToNativeOffset` 会记录每条 bytecode 指令对应的机器码起点。当前它主要用于测试和调试，后续 safepoint、deopt 或源码级 profiling 也可以从这里建立 bytecode offset 和 native offset 的关系。
 
+### Windows x64 stub 形态
+
+Windows x64 下 `BaselineFrame*` 会作为第一个参数通过 `rcx` 传入，第二个整数参数使用 `rdx` / `edx`。Windows x64 调用约定要求 caller 为被调用函数预留 32 字节 shadow space，因此 prologue 会保存 `rbx` 并分配 shadow space：
+
+```text
+prologue:
+  push rbx
+  sub rsp, 32
+  mov rbx, rcx
+
+body:
+  按 Opcode 顺序调用 runtime helper
+
+epilogue:
+  add rsp, 32
+  pop rbx
+  ret
+```
+
+`rcx` 是进入 native baseline 时传入的 `BaselineFrame*`。由于 helper 调用会使用 `rcx` 和 `rdx` 传参，prologue 会先把 frame 固定保存到 callee-saved 寄存器 `rbx`。之后每次调用 helper 前，再把 `rbx` 复制回 `rcx`。
+
+Windows x64 使用同一张 opcode/helper 映射表，但 stub 指令形态不同。
+
+`OP_CONSTANT constantIndex`：
+
+```text
+mov rcx, rbx
+mov edx, constantIndex
+mov rax, helper
+call rax
+test eax, eax
+jz epilogue
+```
+
+`OP_GET_LOCAL slot`：
+
+```text
+mov rcx, rbx
+mov edx, slot
+mov rax, helper
+call rax
+test eax, eax
+jz epilogue
+```
+
+`OP_ADD`：
+
+```text
+mov rcx, rbx
+mov rax, helper
+call rax
+test eax, eax
+jz epilogue
+```
+
+`OP_RETURN`：
+
+```text
+mov rcx, rbx
+mov rax, helper
+call rax
+test eax, eax
+jz epilogue
+jmp epilogue
+```
+
+其中 `mov rax, helper` 由 `WindowsX64Emitter::emitLoadHelper()` 写入 `mov rax, imm64`。helper 返回值位于 `eax`；机器码通过 `test eax, eax` 和 `jz epilogue` 处理失败路径。`OP_RETURN` 成功后额外发射无条件跳转，避免继续执行后续机器码。
+
 ## 当前支持范围
 
 第四阶段先支持低风险 opcode：
@@ -266,7 +381,7 @@ stack_.empty()
 
 函数调用、方法调用、类定义、闭包创建、继承和 `super` 暂时编译失败并回退 VM。后续扩展时优先直接为现有 `Opcode` 增加执行路径或 runtime helper 路径，不新增平行 opcode。
 
-第七阶段 native compiler 的第一版 ARM64 switch 只覆盖：
+第七阶段 native compiler 的第一版平台 backend switch 只覆盖：
 
 - `Constant`
 - `GetLocal`
@@ -285,7 +400,7 @@ Baseline frame 复用 VM 的调用约定：
 - 返回值仍写回调用方期待的位置。
 - GC roots 仍来自 `stack_`、`frames_`、`openUpvalues_` 和 `temporaryRoots_`。
 
-当前 baseline dispatch 已接入 `callBytecodeClosure()` 的函数入口。ARM64 且 `BaselineCode::entry != nullptr` 时，VM 会优先进入 native `BaselineEntry`；否则继续进入 decoded baseline executor。测试入口仍保留，用于直接验证 code object 和 runtime helper ABI。
+当前 baseline dispatch 已接入 `callBytecodeClosure()` 的函数入口。当前平台支持 native backend 且 `BaselineCode::entry != nullptr` 时，VM 会优先进入 native `BaselineEntry`；否则继续进入 decoded baseline executor。测试入口仍保留，用于直接验证 code object 和 runtime helper ABI。
 
 非调用型 runtime opcode 通过 VM helper 与解释器共享语义，例如 global 读写、数组创建、对象属性读写和 upvalue 读写。baseline 只负责从 `DecodedInstruction::operands` 取操作数，不直接读取或推进 `frame.ip`。
 

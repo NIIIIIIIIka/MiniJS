@@ -23,7 +23,8 @@ void incrementSaturating(std::uint32_t& value) {
 }
 
 bool canExecuteNativeBaselineEntry(const BaselineCode& code) {
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined(__aarch64__) || defined(_M_ARM64) || \
+    (defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__)))
   return code.entry != nullptr;
 #else
   (void)code;
