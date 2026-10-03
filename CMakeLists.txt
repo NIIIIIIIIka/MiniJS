@@ -26,6 +26,30 @@ function(minijs_enable_warnings target)
     endif()
 endfunction()
 
+function(minijs_copy_mingw_runtime_dlls target)
+    if(NOT WIN32 OR NOT MINGW)
+        return()
+    endif()
+
+    get_filename_component(MINIJS_MINGW_RUNTIME_DIR "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    foreach(MINIJS_MINGW_DLL
+            libstdc++-6.dll
+            libgcc_s_seh-1.dll
+            libwinpthread-1.dll
+    )
+        if(EXISTS "${MINIJS_MINGW_RUNTIME_DIR}/${MINIJS_MINGW_DLL}")
+            add_custom_command(
+                TARGET ${target}
+                POST_BUILD
+                COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                    "${MINIJS_MINGW_RUNTIME_DIR}/${MINIJS_MINGW_DLL}"
+                    "$<TARGET_FILE_DIR:${target}>/${MINIJS_MINGW_DLL}"
+                VERBATIM
+            )
+        endif()
+    endforeach()
+endfunction()
+
 # Core sources are discovered while the project is still small. Headers are
 # listed as target sources as well so IDE project trees display them.
 file(GLOB_RECURSE MINIJS_CORE_SOURCES CONFIGURE_DEPENDS
@@ -72,6 +96,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
             MINIJS_VERSION="${PROJECT_VERSION}"
     )
     minijs_enable_warnings(minijs)
+    minijs_copy_mingw_runtime_dlls(minijs)
 endif()
 
 if(MINIJS_BUILD_TESTS)
