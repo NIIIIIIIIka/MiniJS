@@ -26,19 +26,136 @@
 - [ ] safepoint、deopt 或 fallback 协议。
 - [ ] 平台相关 codegen 后端。
 
-## 代码位置
+## Baseline JIT 的运行过程与代码位置
 
-- JIT 状态和热度数据：[include/minijs/bytecode_function.h](../include/minijs/bytecode_function.h) 中的 `JitState`、`JitFeedback`、`BytecodeFunction::jit`
-- JIT 选项和调试入口：[include/minijs/vm.h](../include/minijs/vm.h) 中的 `JitOptions`、`setJitEnabled()`、`debugGlobalFunctionJitFeedback()`
-- 热度计数和调度：[src/vm.cpp](../src/vm.cpp) 中的 `recordFunctionCall()`、`recordLoopBackedge()`、`maybeScheduleJit()`
-- 字节码解码和校验：[include/minijs/bytecode_decoder.h](../include/minijs/bytecode_decoder.h)、[src/bytecode_decoder.cpp](../src/bytecode_decoder.cpp)
-- Baseline code object：[include/minijs/baseline_code.h](../include/minijs/baseline_code.h)
-- Runtime ABI：[include/minijs/baseline_frame.h](../include/minijs/baseline_frame.h)、[include/minijs/baseline_runtime.h](../include/minijs/baseline_runtime.h)、[src/baseline_runtime.cpp](../src/baseline_runtime.cpp)
-- Baseline native compiler：[include/minijs/baseline_compiler.h](../include/minijs/baseline_compiler.h)、[src/baseline_compiler.cpp](../src/baseline_compiler.cpp)
-- Executable memory：[include/minijs/executable_memory.h](../include/minijs/executable_memory.h)、[src/executable_memory.cpp](../src/executable_memory.cpp)
-- Baseline 编译入口：[include/minijs/baseline_jit.h](../include/minijs/baseline_jit.h)、[src/baseline_jit.cpp](../src/baseline_jit.cpp)
-- inline cache 反馈：[include/minijs/chunk.h](../include/minijs/chunk.h)、[docs/inline-cache.md](inline-cache.md)
-- 当前测试：[tests/test_bytecode.cpp](../tests/test_bytecode.cpp) 中的 JIT、baseline executor 和 runtime helper dispatch 测试
+一次函数调用从普通 VM 进入 Baseline JIT，大致经过下面几步：
+
+```text
+函数调用或循环回边
+  -> 累加热度
+  -> 达到阈值，状态 Cold -> Scheduled
+  -> 校验并解码 bytecode
+  -> 尝试生成 native stub
+       -> 成功：保存机器码入口
+       -> 失败：构建 decoded baseline code
+  -> 状态 Scheduled -> Compiled
+  -> 下一次函数调用进入 native stub 或 decoded executor
+  -> runtime helper 复用 VM 语义完成具体操作
+```
+
+### 1. 收集函数和循环热度
+
+字节码函数在 `JitFeedback` 中保存 `callCount`、`backedgeCount`、`baselineEntryCount`、当前 `JitState`、编译结果和失败原因。函数调用进入 `recordFunctionCall()`，循环执行 `Loop` opcode 时进入 `recordLoopBackedge()`；两者都会使用饱和计数并调用 `maybeScheduleJit()`。
+
+相关代码：
+
+- [include/minijs/bytecode_function.h](../include/minijs/bytecode_function.h)：`JitState`、`JitFeedback`、`BytecodeFunction::jit`
+- [include/minijs/vm.h](../include/minijs/vm.h)：`JitOptions`、`setJitEnabled()`、各项阈值设置和调试入口
+- [src/vm.cpp](../src/vm.cpp)：`recordFunctionCall()`、`recordLoopBackedge()`
+
+### 2. 达到阈值并触发编译
+
+`maybeScheduleJit()` 只处理 `Cold` 函数。当调用次数或循环回边次数达到阈值时，它先把状态改成 `Scheduled`，再立即调用 `compileScheduledJit()`。编译成功后状态变为 `Compiled` 并保存 `BaselineCode`；两条 baseline 编译路径都失败时，状态变为 `Failed` 并记录 `compileError`，后续继续由普通 VM 执行。
+
+需要注意，`callBytecodeClosure()` 在调用 `recordFunctionCall()` 之前就计算了本次调用是否可以进入 baseline。因此，达到阈值的这一次调用只安装编译结果，下一次调用才会进入 baseline。
+
+相关代码：
+
+- [src/vm.cpp](../src/vm.cpp)：`callBytecodeClosure()`、`maybeScheduleJit()`、`compileScheduledJit()`
+- [include/minijs/bytecode_function.h](../include/minijs/bytecode_function.h)：`Cold`、`Scheduled`、`Compiled`、`Failed` 状态及 `compileError`
+
+### 3. 校验并解码 bytecode
+
+`compileBaseline()` 不从 AST 重新生成代码，而是直接复用已经存在的 bytecode。native compiler 和 decoded compiler 都先调用 `verifyBytecode()`，确认指令边界、操作数和跳转目标合法，再通过 `decodeInstruction()` 得到结构化的 `DecodedInstruction`。这样 bytecode 仍然是 VM 与 Baseline JIT 共享的唯一语义来源。
+
+相关代码：
+
+- [include/minijs/bytecode_decoder.h](../include/minijs/bytecode_decoder.h)：`DecodedInstruction`、`BytecodeVerificationResult`、解码和校验接口
+- [src/bytecode_decoder.cpp](../src/bytecode_decoder.cpp)：`decodeInstruction()`、`verifyBytecode()`
+- [src/baseline_jit.cpp](../src/baseline_jit.cpp)：`compileDecodedBaseline()`、baseline 支持的 opcode 集合
+
+### 4. 优先生成 native stub，失败时使用 decoded baseline
+
+#### Native 路径
+
+`compileBaseline()` 首先调用 `BaselineCompiler::compile()`。当前 ARM64 和 Windows x64 后端按 opcode 发射调用 Runtime ABI helper 的机器码，并记录 bytecode offset 到 native offset 的映射。机器码写入完成后，`ExecutableMemory::allocate()` 负责分配内存、复制代码、切换为可执行权限并刷新指令缓存。
+
+具体 `BaselineCompiler::compile()` 大致按以下顺序执行：
+
+1. 校验 bytecode：verifyBytecode(function.chunk);
+2. 创建 `BaselineCode`。
+3. 初始化两张映射表：
+
+```
+bytecodeOffsetToInstructionIndex
+bytecodeOffsetToNativeOffset
+```
+
+4. 根据 verifier 得到的指令起点，填写：bytecodeOffsetToInstructionIndex
+5. 遍历字节码指令，对每条指令调用：decodeInstruction(...)
+6. 在发射该指令前记录：
+
+```
+bytecode offset → 当前机器码 offset
+```
+
+7. 根据 opcode 发射机器码。
+8. 所有机器码发射完成后回填分支。
+9. 调用`ExecutableMemory::allocate(emitter.bytes(), ...)`分配可执行内存并复制机器码。
+10. 设置机器码入口：
+
+```cpp
+code->entry =
+    reinterpret_cast<BaselineEntry>(code->executableMemory->data());
+```
+
+#### Decoded 路径：
+
+如果当前平台没有 native backend，或者函数包含 native compiler 尚未支持的 opcode，`compileBaseline()` 会继续尝试 `compileDecodedBaseline()`。decoded 路径缓存校验后的指令和跳转映射，由 C++ executor 执行；只有 decoded 路径也不支持该函数时，整个 baseline 编译才失败。
+
+1. `verifyBytecode()`。
+2. 创建 `BaselineCode`。
+3. 初始化 `bytecodeOffsetToInstructionIndex`。
+4. 填写 bytecode offset 到指令数组下标的映射。
+5. 逐条调用 `decodeInstruction()`。
+6. 把结果放入 `BaselineCode::instructions`，供 `executeBaselineCode()` 按指令下标执行。
+
+相关代码：
+
+- [include/minijs/baseline_jit.h](../include/minijs/baseline_jit.h)、[src/baseline_jit.cpp](../src/baseline_jit.cpp)：`compileBaseline()` 和 native 到 decoded 的回退顺序
+- [include/minijs/baseline_compiler.h](../include/minijs/baseline_compiler.h)、[src/baseline_compiler.cpp](../src/baseline_compiler.cpp)：`BaselineCompiler::compile()`、ARM64 和 Windows x64 emitter
+- [include/minijs/executable_memory.h](../include/minijs/executable_memory.h)、[src/executable_memory.cpp](../src/executable_memory.cpp)：`ExecutableMemory::allocate()` 和平台内存管理
+- [include/minijs/baseline_code.h](../include/minijs/baseline_code.h)：decoded 指令、offset 映射、可执行内存和 `BaselineEntry`
+
+### 5. 下一次调用进入 baseline
+
+函数处于 `Compiled` 状态且 JIT 开启时，`callBytecodeClosure()` 会增加 `baselineEntryCount`。如果 `BaselineCode::entry` 是当前平台可执行的 native 入口，就调用 `executeBaselineEntry()`；否则调用 `executeBaselineCode()` 解释缓存的 decoded 指令。关闭 JIT 后，即使函数已经编译，也会继续走普通 VM。
+
+相关代码：
+
+- [src/vm.cpp](../src/vm.cpp)：`callBytecodeClosure()`、`canExecuteNativeBaselineEntry()`、`executeBaselineEntry()`、`executeBaselineCode()`
+- [include/minijs/baseline_code.h](../include/minijs/baseline_code.h)：`BaselineCode::entry` 和两类 offset 映射
+
+### 6. native stub 通过 Runtime ABI 复用 VM 语义
+
+native 入口接收一个 `BaselineFrame*`。frame 保存 VM、当前闭包、局部槽起点、返回槽和执行结果状态。stub 不直接访问 `std::vector<Value>` 或 GC 对象布局，而是调用 `extern "C"` helper；helper 再转发到 `VM::baselineRuntime*()`，完成压栈、局部变量访问、算术和返回等操作。
+
+helper 用 `bool` 表示成功或失败，并通过 `BaselineFrame::failed`、`completed` 把状态带回 C++。这样异常和复杂 C++ 对象都不会跨越 native ABI 边界。
+
+相关代码：
+
+- [include/minijs/baseline_frame.h](../include/minijs/baseline_frame.h)：`BaselineFrame`、`BaselineEntry`
+- [include/minijs/baseline_runtime.h](../include/minijs/baseline_runtime.h)、[src/baseline_runtime.cpp](../src/baseline_runtime.cpp)：稳定的 C ABI helper
+- [include/minijs/vm.h](../include/minijs/vm.h)、[src/vm.cpp](../src/vm.cpp)：`baselineRuntimePushConstant()`、`baselineRuntimeGetLocal()`、`baselineRuntimeAdd()`、`baselineRuntimeReturn()` 等 VM 实现
+
+### 7. 反馈信息和测试
+
+属性访问、属性写入和方法调用产生的 inline cache 信息保存在 `Chunk` 的 `FeedbackSlot` 中。目前 native stub 还没有据此做类型特化，但这些反馈可以作为后续 Optimize JIT 的输入。现有测试覆盖热度阈值、状态转换、native code object、decoded executor、Runtime ABI helper dispatch、失败回退和 JIT 开关行为。
+
+相关代码：
+
+- [include/minijs/chunk.h](../include/minijs/chunk.h)、[inline-cache.md](inline-cache.md)：`FeedbackSlot` 和 inline cache 设计
+- [tests/test_bytecode.cpp](../tests/test_bytecode.cpp)：JIT、baseline executor、native entry 和 runtime helper 测试
 
 ## 核心原则
 
@@ -207,18 +324,18 @@ ARM64 下 `BaselineFrame*` 会作为第一个参数通过 `x0` 传入。每个 n
 
 ```text
 prologue:
-  stp x29, x30, [sp, #-16]!
-  mov x29, sp
-  stp x19, x20, [sp, #-16]!
-  mov x19, x0
+  stp x29, x30, [sp, #-16]!  // 保存帧指针和返回地址，同时分配 16 字节栈空间
+  mov x29, sp                 // 建立当前 native stub 的栈帧
+  stp x19, x20, [sp, #-16]!  // 保存 callee-saved 寄存器，并保持栈 16 字节对齐
+  mov x19, x0                 // 将 BaselineFrame* 固定保存在 x19，供后续 helper 复用
 
 body:
   按 Opcode 顺序调用 runtime helper
 
 epilogue:
-  ldp x19, x20, [sp], #16
-  ldp x29, x30, [sp], #16
-  ret
+  ldp x19, x20, [sp], #16    // 恢复 callee-saved 寄存器并回收对应栈空间
+  ldp x29, x30, [sp], #16    // 恢复帧指针和返回地址
+  ret                         // 返回 VM 的 C++ 调用入口
 ```
 
 `x0` 是进入 native baseline 时传入的 `BaselineFrame*`。由于 helper 调用会使用 `x0` 和 `x1` 传参，prologue 会先把 frame 固定保存到 callee-saved 寄存器 `x19`。之后每次调用 helper 前，再把 `x19` 复制回 `x0`。
@@ -237,50 +354,50 @@ epilogue:
 `OP_CONSTANT constantIndex`：
 
 ```text
-mov x0, x19
-mov w1, constantIndex
-mov x16, helper
-blr x16
-cbz w0, epilogue
+mov x0, x19                 // 第一个参数：BaselineFrame*
+mov w1, constantIndex       // 第二个参数：32 位常量池索引
+mov x16, helper             // 将 minijsBaselinePushConstant 地址装入临时寄存器
+blr x16                     // 间接调用 helper，返回地址写入 x30
+cbz w0, epilogue            // bool 返回值为 false 时跳到统一出口
 ```
 
 `OP_GET_LOCAL slot`：
 
 ```text
-mov x0, x19
-mov w1, slot
-mov x16, helper
-blr x16
-cbz w0, epilogue
+mov x0, x19                 // 第一个参数：BaselineFrame*
+mov w1, slot                // 第二个参数：32 位局部变量槽索引
+mov x16, helper             // 将 minijsBaselineGetLocal 地址装入临时寄存器
+blr x16                     // 调用 helper，将局部变量值压入 VM 栈
+cbz w0, epilogue            // helper 失败时立即退出 native stub
 ```
 
 `OP_ADD`：
 
 ```text
-mov x0, x19
-mov x16, helper
-blr x16
-cbz w0, epilogue
+mov x0, x19                 // 唯一参数：BaselineFrame*
+mov x16, helper             // 将 minijsBaselineAdd 地址装入临时寄存器
+blr x16                     // helper 完成出栈、相加或拼接、结果入栈
+cbz w0, epilogue            // helper 返回 false 表示 frame 中已记录失败
 ```
 
 `OP_RETURN`：
 
 ```text
-mov x0, x19
-mov x16, helper
-blr x16
-cbz w0, epilogue
-b epilogue
+mov x0, x19                 // 唯一参数：BaselineFrame*
+mov x16, helper             // 将 minijsBaselineReturn 地址装入临时寄存器
+blr x16                     // 写回返回值并把 frame 标记为 completed
+cbz w0, epilogue            // 失败时退出
+b epilogue                  // 成功返回后也结束 stub，不再执行后续 bytecode
 ```
 
 其中 `mov x16, helper` 不是单条源码级函数，而是由 `emitLoadX16Imm64()` 生成的一组 `movz`/`movk`，把 64 位 helper 地址装入 `x16`：
 
 ```text
-movz x16, low16
-movk x16, next16, lsl #16
-movk x16, next16, lsl #32
-movk x16, next16, lsl #48
-blr  x16
+movz x16, low16             // 写入地址的最低 16 位，并将其余位清零
+movk x16, next16, lsl #16   // 保留已有位，补入地址的第 16..31 位
+movk x16, next16, lsl #32   // 补入地址的第 32..47 位
+movk x16, next16, lsl #48   // 补入地址的第 48..63 位
+blr  x16                    // 跳转到完整的 64 位 helper 地址并保存返回地址
 ```
 
 如果 helper 返回 `false`，机器码通过 `cbz w0, epilogue` 直接跳到统一出口。回到 C++ 后，`VM::executeBaselineEntry()` 会检查：
@@ -303,17 +420,17 @@ Windows x64 下 `BaselineFrame*` 会作为第一个参数通过 `rcx` 传入，�
 
 ```text
 prologue:
-  push rbx
-  sub rsp, 32
-  mov rbx, rcx
+  push rbx                   ; 保存 callee-saved rbx
+  sub rsp, 32                ; 为被调用 helper 预留 Windows x64 shadow space
+  mov rbx, rcx               ; 将 BaselineFrame* 固定保存在 rbx
 
 body:
   按 Opcode 顺序调用 runtime helper
 
 epilogue:
-  add rsp, 32
-  pop rbx
-  ret
+  add rsp, 32                ; 回收 shadow space
+  pop rbx                    ; 恢复调用者的 rbx
+  ret                        ; 返回 VM 的 C++ 调用入口
 ```
 
 `rcx` 是进入 native baseline 时传入的 `BaselineFrame*`。由于 helper 调用会使用 `rcx` 和 `rdx` 传参，prologue 会先把 frame 固定保存到 callee-saved 寄存器 `rbx`。之后每次调用 helper 前，再把 `rbx` 复制回 `rcx`。
@@ -323,44 +440,44 @@ Windows x64 使用同一张 opcode/helper 映射表，但 stub 指令形态不�
 `OP_CONSTANT constantIndex`：
 
 ```text
-mov rcx, rbx
-mov edx, constantIndex
-mov rax, helper
-call rax
-test eax, eax
-jz epilogue
+mov rcx, rbx                 ; 第一个参数：BaselineFrame*
+mov edx, constantIndex       ; 第二个参数：32 位常量池索引
+mov rax, helper              ; 将 minijsBaselinePushConstant 的 64 位地址装入 rax
+call rax                     ; 间接调用 helper
+test eax, eax                ; 检查 bool 返回值是否为零
+jz epilogue                  ; false 表示失败，跳到统一出口
 ```
 
 `OP_GET_LOCAL slot`：
 
 ```text
-mov rcx, rbx
-mov edx, slot
-mov rax, helper
-call rax
-test eax, eax
-jz epilogue
+mov rcx, rbx                 ; 第一个参数：BaselineFrame*
+mov edx, slot                ; 第二个参数：32 位局部变量槽索引
+mov rax, helper              ; 将 minijsBaselineGetLocal 的地址装入 rax
+call rax                     ; 调用 helper，将局部变量值压入 VM 栈
+test eax, eax                ; 检查 helper 的 bool 返回值
+jz epilogue                  ; helper 失败时退出 native stub
 ```
 
 `OP_ADD`：
 
 ```text
-mov rcx, rbx
-mov rax, helper
-call rax
-test eax, eax
-jz epilogue
+mov rcx, rbx                 ; 唯一参数：BaselineFrame*
+mov rax, helper              ; 将 minijsBaselineAdd 的地址装入 rax
+call rax                     ; helper 完成出栈、相加或拼接、结果入栈
+test eax, eax                ; 检查 helper 的 bool 返回值
+jz epilogue                  ; false 表示 frame 中已记录失败
 ```
 
 `OP_RETURN`：
 
 ```text
-mov rcx, rbx
-mov rax, helper
-call rax
-test eax, eax
-jz epilogue
-jmp epilogue
+mov rcx, rbx                 ; 唯一参数：BaselineFrame*
+mov rax, helper              ; 将 minijsBaselineReturn 的地址装入 rax
+call rax                     ; 写回返回值并把 frame 标记为 completed
+test eax, eax                ; 检查 helper 的 bool 返回值
+jz epilogue                  ; 失败时退出
+jmp epilogue                 ; 成功返回后也结束 stub，不再执行后续 bytecode
 ```
 
 其中 `mov rax, helper` 由 `WindowsX64Emitter::emitLoadHelper()` 写入 `mov rax, imm64`。helper 返回值位于 `eax`；机器码通过 `test eax, eax` 和 `jz epilogue` 处理失败路径。`OP_RETURN` 成功后额外发射无条件跳转，避免继续执行后续机器码。

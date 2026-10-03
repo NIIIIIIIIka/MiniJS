@@ -20,10 +20,10 @@ struct UpvalueDescriptor {
 };
 
 enum class JitState : std::uint8_t {
-  Cold,
-  Scheduled,
-  Compiled,
-  Failed,
+  Cold,       // 尚未达到热点阈值
+  Scheduled,  // 已经决定编译，是当前同步实现中的瞬时状态
+  Compiled,   // Baseline 编译成功
+  Failed,     // native 和 decoded 两条编译路径都失败。
 };
 
 struct JitFeedback {
