@@ -320,6 +320,68 @@ Opcode
 
 Windows x64 的 `OP_NEGATE` 已经开始走更靠近真正机器码的路径：stub 先读取 `BaselineFrame` 中缓存的 VM 栈地址和栈深度，检查栈顶 `Value` 的类型标签是否为 `Number`；命中时直接翻转 double 载荷的符号位，未命中时再回退到 `minijsBaselineNegate(frame)`。这是第一条“number fast path + helper fallback”的 native opcode。
 
+### Helper-call stub 和 fast path 的区别
+
+目前 native baseline 里有两种机器码形态。
+
+第一种是 helper-call stub。它确实会发射机器码，但这段机器码只负责按平台 ABI 设置参数、调用 C ABI helper、检查 helper 的 `bool` 返回值。例如 `OP_ADD` 当前在 Windows x64 上大致生成：
+
+```text
+mov rcx, rbx      ; BaselineFrame*
+mov rax, helper   ; minijsBaselineAdd
+call rax
+test eax, eax
+jz epilogue
+```
+
+这不是“没有生成机器码”，而是“生成了调用 runtime helper 的机器码”。优点是语义复用 VM，能安全处理字符串拼接、GC 字符串分配、错误传播和栈变化；缺点是每个 opcode 仍有一次 C++ helper 调用成本。
+
+第二种是 native fast path。它把某个高频、容易验证的子场景直接写进机器码，只在 guard 失败时回退 helper。当前唯一的 fast path 是 Windows x64 的 `OP_NEGATE` number 路径：
+
+```text
+读取 frame.stackSize
+  -> 栈为空：fallback
+定位 frame.stackData[stackSize - 1]
+检查 Value::type 是否为 Number
+  -> 不是 Number：fallback
+xor 栈顶 number 的符号位
+返回成功
+fallback:
+  call minijsBaselineNegate(frame)
+```
+
+也就是说，`-value` 有两条路径：
+
+- `value` 是 number：机器码直接修改栈顶 `Value::number_`。
+- `value` 不是 number：进入 `minijsBaselineNegate(frame)`，继续由 VM 语义产生 `RuntimeError: value is not a number`。
+
+这就是后续优化的模板：每次只内联一个足够简单的 number-only fast path，并保留 helper fallback 作为语义兜底。
+
+### BaselineFrame 的栈快照
+
+`BaselineFrame` 除了保存 VM、闭包、`returnSlot`、`slotStart` 等调用信息外，现在还保存：
+
+```cpp
+Value* stackData;
+std::size_t stackSize;
+```
+
+这两个字段不是新的 VM 栈，也不拥有任何值；它们只是当前 `VM::stack_` 的快照，供 native fast path 用固定偏移访问栈顶。因为 helper 可能 `push()` / `pop()`，导致 `std::vector<Value>` 重新分配，所以每个 baseline runtime helper 成功修改栈后都会调用 `refreshBaselineFrameStack(frame)` 更新快照。
+
+这样 native fast path 不需要直接理解 `std::vector<Value>` 的内部布局，只需要读 `BaselineFrame` 中已经刷新过的 `stackData` 和 `stackSize`。
+
+### Value 布局 offset
+
+Windows x64 `OP_NEGATE` fast path 需要判断栈顶 `Value` 是否为 number，并直接修改 number 载荷。因此 `Value` 暴露了几个只读 codegen 辅助接口：
+
+```cpp
+Value::typeOffset()
+Value::numberOffset()
+Value::numberTypeTag()
+```
+
+这些接口只用于 native baseline codegen。普通 VM 和 runtime helper 仍然应该通过 `isNumber()`、`asNumber()`、`Value(double)` 等正常接口访问 `Value`。如果未来 `Value` 布局变化，fast path 通过这些 offset 自动拿到新位置，而不是在机器码生成器里散落硬编码偏移。
+
 ### ARM64 stub 形态
 
 ARM64 下 `BaselineFrame*` 会作为第一个参数通过 `x0` 传入。每个 native baseline 函数统一包含：
