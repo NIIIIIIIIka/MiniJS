@@ -212,5 +212,13 @@ if(MINIJS_BUILD_TESTS)
         set_tests_properties(minijs_cli_benchmark_compare_reports_ic_on_and_off PROPERTIES
             PASS_REGULAR_EXPRESSION "without_ic:"
         )
+
+        add_test(
+            NAME minijs_cli_benchmark_compare_reports_jit_on_and_off
+            COMMAND minijs --benchmark-compare-jit "${CMAKE_CURRENT_SOURCE_DIR}/examples/baseline_jit_benchmark.js"
+        )
+        set_tests_properties(minijs_cli_benchmark_compare_reports_jit_on_and_off PROPERTIES
+            PASS_REGULAR_EXPRESSION "with_jit_run_us: [0-9]+"
+        )
     endif()
 endif()

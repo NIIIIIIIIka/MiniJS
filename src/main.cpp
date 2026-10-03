@@ -32,6 +32,7 @@ void printUsage(std::ostream& output) {
          << "       minijs --ic-stats <file>\n"
          << "       minijs --benchmark <file>\n"
          << "       minijs --benchmark-compare <file>\n"
+         << "       minijs --benchmark-compare-jit <file>\n"
          << "       minijs --help\n"
          << "       minijs --version\n";
 }
@@ -153,7 +154,8 @@ struct BenchmarkResult {
   minijs::PropertyInlineCacheStats stats;
 };
 
-BenchmarkResult runBenchmark(const minijs::Program& program, bool inlineCachesEnabled) {
+BenchmarkResult runBenchmark(const minijs::Program& program, bool inlineCachesEnabled,
+                             bool jitEnabled) {
   const auto compileStart = std::chrono::steady_clock::now();
   minijs::Compiler compiler;
   const minijs::Chunk chunk = compiler.compileProgram(program);
@@ -161,6 +163,9 @@ BenchmarkResult runBenchmark(const minijs::Program& program, bool inlineCachesEn
 
   minijs::VM vm;
   vm.setInlineCachesEnabled(inlineCachesEnabled);
+  vm.setJitEnabled(jitEnabled);
+  vm.setJitCallThreshold(1);
+  vm.setJitBackedgeThreshold(1'000'000);
   const auto runStart = std::chrono::steady_clock::now();
   const minijs::Value result = vm.run(chunk);
   const auto runEnd = std::chrono::steady_clock::now();
@@ -212,7 +217,7 @@ bool benchmarkVmProgram(std::string_view source) {
     return false;
   }
 
-  const BenchmarkResult benchmark = runBenchmark(program, true);
+  const BenchmarkResult benchmark = runBenchmark(program, true, false);
 
   if (!benchmark.result.isNull()) {
     std::cout << "result: " << benchmark.result.toString() << '\n';
@@ -236,8 +241,8 @@ bool benchmarkCompareVmProgram(std::string_view source) {
     return false;
   }
 
-  const BenchmarkResult withIc = runBenchmark(program, true);
-  const BenchmarkResult withoutIc = runBenchmark(program, false);
+  const BenchmarkResult withIc = runBenchmark(program, true, false);
+  const BenchmarkResult withoutIc = runBenchmark(program, false, false);
 
   if (!withIc.result.equals(withoutIc.result)) {
     std::cerr << "error: benchmark result changed when inline caches were disabled\n";
@@ -264,6 +269,50 @@ bool benchmarkCompareVmProgram(std::string_view source) {
   printInlineCacheStats(withIc.stats);
   std::cout << "without_ic:\n";
   printInlineCacheStats(withoutIc.stats);
+  return true;
+}
+
+bool benchmarkCompareJitProgram(std::string_view source) {
+  minijs::Parser parser(source);
+  minijs::Program program = parser.parseProgram();
+
+  for (const minijs::Diagnostic& diagnostic : parser.diagnostics()) {
+    std::cerr << diagnostic.location.line << ':' << diagnostic.location.column
+              << ": error: " << diagnostic.message << '\n';
+  }
+
+  if (!parser.diagnostics().empty()) {
+    return false;
+  }
+
+  const BenchmarkResult withoutJit = runBenchmark(program, true, false);
+  const BenchmarkResult withJit = runBenchmark(program, true, true);
+
+  if (!withJit.result.equals(withoutJit.result)) {
+    std::cerr << "error: benchmark result changed when JIT was enabled\n";
+    return false;
+  }
+
+  if (!withJit.result.isNull()) {
+    std::cout << "result: " << withJit.result.toString() << '\n';
+  }
+
+  std::cout << "without_jit_compile_us: " << withoutJit.compileMicros << '\n'
+            << "without_jit_run_us: " << withoutJit.runMicros << '\n'
+            << "with_jit_compile_us: " << withJit.compileMicros << '\n'
+            << "with_jit_run_us: " << withJit.runMicros << '\n';
+  if (withJit.runMicros > 0 && withoutJit.runMicros > 0) {
+    const double speedup =
+        static_cast<double>(withoutJit.runMicros) / static_cast<double>(withJit.runMicros);
+    std::cout << "speedup: " << speedup << "x\n";
+  } else {
+    std::cout << "speedup: n/a\n";
+  }
+
+  std::cout << "without_jit:\n";
+  printInlineCacheStats(withoutJit.stats);
+  std::cout << "with_jit:\n";
+  printInlineCacheStats(withJit.stats);
   return true;
 }
 
@@ -300,7 +349,8 @@ int main(int argc, char* argv[]) {
 
   if (argc == 3 && argument != "--tokens" && argument != "--ast" && argument != "--run" &&
       argument != "--interp" && argument != "--bytecode" && argument != "--ic-stats" &&
-      argument != "--benchmark" && argument != "--benchmark-compare") {
+      argument != "--benchmark" && argument != "--benchmark-compare" &&
+      argument != "--benchmark-compare-jit") {
     std::cerr << "error: unknown two-argument command: " << argument << '\n';
     printUsage(std::cerr);
     return ExitUsageError;
@@ -431,6 +481,21 @@ int main(int argc, char* argv[]) {
 
     try {
       return benchmarkCompareVmProgram(readFile(argv[2])) ? 0 : ExitInputError;
+    } catch (const std::exception& error) {
+      std::cerr << "error: " << error.what() << '\n';
+      return ExitInputError;
+    }
+  }
+
+  if (argument == "--benchmark-compare-jit") {
+    if (argc != 3) {
+      std::cerr << "error: --benchmark-compare-jit expects a file\n";
+      printUsage(std::cerr);
+      return ExitUsageError;
+    }
+
+    try {
+      return benchmarkCompareJitProgram(readFile(argv[2])) ? 0 : ExitInputError;
     } catch (const std::exception& error) {
       std::cerr << "error: " << error.what() << '\n';
       return ExitInputError;
