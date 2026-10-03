@@ -4163,9 +4163,41 @@ void testBaselineCompilerGeneratesNativeStubForAddFunction() {
          result.code->executableMemory->size());
 }
 
+void testBaselineCompilerGeneratesNativeStubForArithmeticFunction() {
+  const minijs::Chunk chunk =
+      compileProgram("function calc(a, b, c, d, e) { return -(((a - b) * c) / d % e); }");
+  const auto function = lastBytecodeFunctionNamed(chunk, "calc");
+  EXPECT(function != nullptr);
+
+  minijs::BaselineCompiler compiler;
+  const minijs::BaselineCompileResult result = compiler.compile(*function);
+  if (!nativeBaselineBackendAvailable()) {
+    EXPECT(!result.succeeded());
+    EXPECT(result.code == nullptr);
+    return;
+  }
+
+  EXPECT(result.succeeded());
+  EXPECT(result.error.empty());
+  EXPECT(result.code != nullptr);
+  EXPECT(result.code->entry != nullptr);
+  EXPECT(result.code->executableMemory != nullptr);
+  EXPECT(result.code->executableMemory->size() > 0);
+  EXPECT(findDecodedInstruction(function->chunk, minijs::Opcode::Sub).opcode ==
+         minijs::Opcode::Sub);
+  EXPECT(findDecodedInstruction(function->chunk, minijs::Opcode::Mul).opcode ==
+         minijs::Opcode::Mul);
+  EXPECT(findDecodedInstruction(function->chunk, minijs::Opcode::Div).opcode ==
+         minijs::Opcode::Div);
+  EXPECT(findDecodedInstruction(function->chunk, minijs::Opcode::Mod).opcode ==
+         minijs::Opcode::Mod);
+  EXPECT(findDecodedInstruction(function->chunk, minijs::Opcode::Negate).opcode ==
+         minijs::Opcode::Negate);
+}
+
 void testBaselineCompilerRejectsUnsupportedOpcode() {
-  const minijs::Chunk chunk = compileProgram("function sub(a, b) { return a - b; }");
-  const auto function = lastBytecodeFunctionNamed(chunk, "sub");
+  const minijs::Chunk chunk = compileProgram("function equal(a, b) { return a == b; }");
+  const auto function = lastBytecodeFunctionNamed(chunk, "equal");
   EXPECT(function != nullptr);
 
   minijs::BaselineCompiler compiler;
@@ -4175,7 +4207,7 @@ void testBaselineCompilerRejectsUnsupportedOpcode() {
   if (!nativeBaselineBackendAvailable()) {
     return;
   }
-  EXPECT(result.error.find("OP_SUB") != std::string::npos);
+  EXPECT(result.error.find("OP_EQUAL") != std::string::npos);
 }
 
 #if defined(__aarch64__) || defined(_M_ARM64) || \
@@ -4199,6 +4231,31 @@ void testBaselineCompilerNativeEntryRunsAddFunction() {
                                                  code->entry);
   EXPECT(result.isNumber());
   EXPECT(result.asNumber() == 12);
+}
+
+void testBaselineCompilerNativeEntryRunsArithmeticFunction() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  runBytecodeProgramOnVm(vm, R"(
+    function calc(a, b, c, d, e) {
+      return -(((a - b) * c) / d % e);
+    }
+    calc(10, 4, 3, 2, 4);
+  )");
+
+  const minijs::BaselineCode* code = vm.debugGlobalFunctionBaselineCode("calc");
+  EXPECT(code != nullptr);
+  EXPECT(code->entry != nullptr);
+
+  const minijs::Value result = vm.debugExecuteGlobalFunctionBaselineEntry(
+      "calc",
+      {minijs::Value(10.0), minijs::Value(4.0), minijs::Value(3.0), minijs::Value(2.0),
+       minijs::Value(4.0)},
+      code->entry);
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == -1);
 }
 
 void testJitDispatchRunsNativeBaselineEntryForSupportedFunction() {
@@ -4270,7 +4327,7 @@ void testBaselineRuntimeAbiTurnsHelperErrorsIntoFailedFrame() {
         "divide", {minijs::Value(1.0), minijs::Value(0.0)}, baselineAbiDivisionByZeroEntry);
     EXPECT(false);
   } catch (const minijs::RuntimeError& error) {
-    EXPECT(std::string_view(error.what()) == "RuntimeError: baseline runtime helper failed");
+    EXPECT(std::string_view(error.what()) == "RuntimeError: division by zero");
   }
 }
 
@@ -4284,7 +4341,7 @@ void testBaselineRuntimeAbiRejectsInvalidLocalAccess() {
                                                baselineAbiInvalidLocalEntry);
     EXPECT(false);
   } catch (const minijs::RuntimeError& error) {
-    EXPECT(std::string_view(error.what()) == "RuntimeError: baseline runtime helper failed");
+    EXPECT(std::string_view(error.what()) == "RuntimeError: local slot out of bounds");
   }
 }
 
@@ -4867,10 +4924,12 @@ void runBytecodeTests() {
   testBaselineExecutorRunsSimpleLoop();
   testBaselineExecutorPreservesArithmeticErrors();
   testBaselineCompilerGeneratesNativeStubForAddFunction();
+  testBaselineCompilerGeneratesNativeStubForArithmeticFunction();
   testBaselineCompilerRejectsUnsupportedOpcode();
 #if defined(__aarch64__) || defined(_M_ARM64) || \
     (defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__)))
   testBaselineCompilerNativeEntryRunsAddFunction();
+  testBaselineCompilerNativeEntryRunsArithmeticFunction();
   testJitDispatchRunsNativeBaselineEntryForSupportedFunction();
 #endif
   testBaselineRuntimeAbiRunsArithmeticEntry();

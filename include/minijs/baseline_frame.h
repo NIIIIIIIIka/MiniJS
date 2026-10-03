@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <string>
 
 namespace minijs {
 
@@ -17,6 +18,7 @@ struct BaselineFrame {
   bool returnsReceiver = false;
   bool completed = false;
   bool failed = false;
+  std::string errorMessage;
 };
 
 using BaselineEntry = void (*)(BaselineFrame*);

@@ -1,5 +1,11 @@
 #include "minijs/baseline_runtime.h"
 
+#include <exception>
+#include <string>
+#include <string_view>
+#include <utility>
+
+#include "minijs/runtime_error.h"
 #include "minijs/vm.h"
 
 namespace {
@@ -22,6 +28,31 @@ bool markFailed(minijs::BaselineFrame* frame) {
   return false;
 }
 
+bool markFailed(minijs::BaselineFrame* frame, std::string message) {
+  if (frame != nullptr) {
+    frame->failed = true;
+    frame->errorMessage = std::move(message);
+  }
+  return false;
+}
+
+std::string runtimeMessage(const minijs::RuntimeError& error) {
+  constexpr std::string_view prefix = "RuntimeError: ";
+  const std::string_view message = error.what();
+  if (message.substr(0, prefix.size()) == prefix) {
+    return std::string(message.substr(prefix.size()));
+  }
+  return std::string(message);
+}
+
+bool markFailedFromException(minijs::BaselineFrame* frame, const minijs::RuntimeError& error) {
+  return markFailed(frame, runtimeMessage(error));
+}
+
+bool markFailedFromException(minijs::BaselineFrame* frame, const std::exception& error) {
+  return markFailed(frame, error.what());
+}
+
 }  // namespace
 
 extern "C" bool minijsBaselinePush(minijs::BaselineFrame* frame, const minijs::Value* value) {
@@ -31,6 +62,10 @@ extern "C" bool minijsBaselinePush(minijs::BaselineFrame* frame, const minijs::V
 
   try {
     return frame->vm->baselineRuntimePush(*frame, *value);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
   } catch (...) {
     return markFailed(frame);
   }
@@ -44,6 +79,10 @@ extern "C" bool minijsBaselinePushConstant(minijs::BaselineFrame* frame,
 
   try {
     return frame->vm->baselineRuntimePushConstant(*frame, constantIndex);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
   } catch (...) {
     return markFailed(frame);
   }
@@ -56,6 +95,10 @@ extern "C" bool minijsBaselineGetLocal(minijs::BaselineFrame* frame, std::uint32
 
   try {
     return frame->vm->baselineRuntimeGetLocal(*frame, slot);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
   } catch (...) {
     return markFailed(frame);
   }
@@ -68,6 +111,10 @@ extern "C" bool minijsBaselineSetLocal(minijs::BaselineFrame* frame, std::uint32
 
   try {
     return frame->vm->baselineRuntimeSetLocal(*frame, slot);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
   } catch (...) {
     return markFailed(frame);
   }
@@ -80,6 +127,10 @@ extern "C" bool minijsBaselinePop(minijs::BaselineFrame* frame) {
 
   try {
     return frame->vm->baselineRuntimePop(*frame);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
   } catch (...) {
     return markFailed(frame);
   }
@@ -92,6 +143,10 @@ extern "C" bool minijsBaselineAdd(minijs::BaselineFrame* frame) {
 
   try {
     return frame->vm->baselineRuntimeAdd(*frame);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
   } catch (...) {
     return markFailed(frame);
   }
@@ -104,6 +159,10 @@ extern "C" bool minijsBaselineSub(minijs::BaselineFrame* frame) {
 
   try {
     return frame->vm->baselineRuntimeSub(*frame);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
   } catch (...) {
     return markFailed(frame);
   }
@@ -116,6 +175,10 @@ extern "C" bool minijsBaselineMul(minijs::BaselineFrame* frame) {
 
   try {
     return frame->vm->baselineRuntimeMul(*frame);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
   } catch (...) {
     return markFailed(frame);
   }
@@ -128,6 +191,10 @@ extern "C" bool minijsBaselineDiv(minijs::BaselineFrame* frame) {
 
   try {
     return frame->vm->baselineRuntimeDiv(*frame);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
   } catch (...) {
     return markFailed(frame);
   }
@@ -140,6 +207,10 @@ extern "C" bool minijsBaselineMod(minijs::BaselineFrame* frame) {
 
   try {
     return frame->vm->baselineRuntimeMod(*frame);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
   } catch (...) {
     return markFailed(frame);
   }
@@ -152,6 +223,10 @@ extern "C" bool minijsBaselineNegate(minijs::BaselineFrame* frame) {
 
   try {
     return frame->vm->baselineRuntimeNegate(*frame);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
   } catch (...) {
     return markFailed(frame);
   }
@@ -164,6 +239,10 @@ extern "C" bool minijsBaselineReturn(minijs::BaselineFrame* frame) {
 
   try {
     return frame->vm->baselineRuntimeReturn(*frame);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
   } catch (...) {
     return markFailed(frame);
   }

@@ -1808,6 +1808,9 @@ Value VM::executeBaselineEntry(BaselineEntry entry, CallFrame& callFrame) {
   entry(&frame);
 
   if (frame.failed) {
+    if (!frame.errorMessage.empty()) {
+      throw RuntimeError(frame.errorMessage);
+    }
     throw RuntimeError("baseline runtime helper failed");
   }
   if (!frame.completed) {

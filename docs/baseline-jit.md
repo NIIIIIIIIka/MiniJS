@@ -16,7 +16,7 @@
 - [x] VM 调用 compiled code 的入口已接入 `callBytecodeClosure()`。
 - [x] Baseline executor 已复用 VM runtime helper 支持 global、array/index、object/property、upvalue 和 current-closure opcode。
 - [x] `BaselineFrame` 和 `BaselineEntry` 已定义，第一批 `extern "C"` runtime helper 已通过稳定入口帧访问 VM。
-- [x] `BaselineCompiler` 已能为 `Constant`、`GetLocal`、`Add`、`Return` 生成 ARM64 和 Windows x64 stub，并写入 executable memory。
+- [x] `BaselineCompiler` 已能为 `Constant`、`GetLocal`、算术 opcode 和 `Return` 生成 ARM64 和 Windows x64 stub，并写入 executable memory。
 - [x] VM baseline dispatch 已能在支持 native backend 且存在 native `BaselineEntry` 时优先进入机器码；没有 native entry 时继续使用 decoded executor。
 
 还没有完成：
@@ -146,7 +146,7 @@ helper 用 `bool` 表示成功或失败，并通过 `BaselineFrame::failed`、`c
 
 - [include/minijs/baseline_frame.h](../include/minijs/baseline_frame.h)：`BaselineFrame`、`BaselineEntry`
 - [include/minijs/baseline_runtime.h](../include/minijs/baseline_runtime.h)、[src/baseline_runtime.cpp](../src/baseline_runtime.cpp)：稳定的 C ABI helper
-- [include/minijs/vm.h](../include/minijs/vm.h)、[src/vm.cpp](../src/vm.cpp)：`baselineRuntimePushConstant()`、`baselineRuntimeGetLocal()`、`baselineRuntimeAdd()`、`baselineRuntimeReturn()` 等 VM 实现
+- [include/minijs/vm.h](../include/minijs/vm.h)、[src/vm.cpp](../src/vm.cpp)：`baselineRuntimePushConstant()`、`baselineRuntimeGetLocal()`、算术 helper、`baselineRuntimeReturn()` 等 VM 实现
 
 ### 7. 反馈信息和测试
 
@@ -248,7 +248,7 @@ Opcode::Loop
 
 `Scheduled` 是瞬时状态。支持的函数会进入 `Compiled` 并挂上 `BaselineCode`；不支持的 opcode 或 verifier 失败会进入 `Failed`，之后继续走 VM。达到阈值的那次调用只负责安装 code object，下一次调用才进入 baseline executor。JIT disabled 时即使已有 `BaselineCode` 也继续走 VM。
 
-`compileBaseline()` 会先尝试第一版 native `BaselineCompiler`。如果函数只包含 `Constant`、`GetLocal`、`Add`、`Return`，会在当前平台生成 native stub、`bytecodeOffsetToNativeOffset` 映射和 `BaselineEntry`。如果 native compiler 遇到暂不支持的 opcode 或当前平台没有 native backend，会回退到现有 decoded baseline compiler；这样已经支持的 runtime helper opcode 仍能通过 decoded executor 验证语义。
+`compileBaseline()` 会先尝试第一版 native `BaselineCompiler`。如果函数只包含 `Constant`、`GetLocal`、算术 opcode 和 `Return`，会在当前平台生成 native stub、`bytecodeOffsetToNativeOffset` 映射和 `BaselineEntry`。如果 native compiler 遇到暂不支持的 opcode 或当前平台没有 native backend，会回退到现有 decoded baseline compiler；这样已经支持的 runtime helper opcode 仍能通过 decoded executor 验证语义。
 
 ## 函数职责
 
@@ -283,9 +283,9 @@ using BaselineEntry = void (*)(BaselineFrame*);
 | --- | --- | --- |
 | ARM64 | Apple Silicon、Windows/Linux ARM64 | 已有第一版 stub compiler |
 | Windows x64 / x86-64 | Windows 桌面平台 | 已有第一版 stub compiler |
-| SysV x64 / x86-64 | Linux/macOS x64 平台 | 未实现 |
-| RISC-V 64 | 教学或实验平台 | 未实现 |
-| 其它后端 | 例如 WASM、解释型 threaded code | 未实现 |
+| SysV x64 / x86-64 | Linux/macOS x64 平台 | 不实现                   |
+| RISC-V 64 | 教学或实验平台 | 不实现                   |
+| 其它后端 | 例如 WASM、解释型 threaded code | 不实现 |
 
 后端之间可以共享：
 
@@ -347,6 +347,11 @@ epilogue:
 | `OP_CONSTANT` | `constantIndex` | `minijsBaselinePushConstant(frame, constantIndex)` | 从常量池取值并压入 VM 栈 |
 | `OP_GET_LOCAL` | `slot` | `minijsBaselineGetLocal(frame, slot)` | 读取 `slotStart + slot` 的局部槽并压栈 |
 | `OP_ADD` | 无 | `minijsBaselineAdd(frame)` | 弹出两个值，执行数字加法或字符串拼接，再压回结果 |
+| `OP_SUB` | 无 | `minijsBaselineSub(frame)` | 弹出两个值，执行数字减法，再压回结果 |
+| `OP_MUL` | 无 | `minijsBaselineMul(frame)` | 弹出两个值，执行数字乘法，再压回结果 |
+| `OP_DIV` | 无 | `minijsBaselineDiv(frame)` | 弹出两个值，检查除数并执行数字除法，再压回结果 |
+| `OP_MOD` | 无 | `minijsBaselineMod(frame)` | 弹出两个值，检查除数并执行取模，再压回结果 |
+| `OP_NEGATE` | 无 | `minijsBaselineNegate(frame)` | 弹出一个数字值，取负后压回结果 |
 | `OP_RETURN` | 无 | `minijsBaselineReturn(frame)` | 弹出返回值，关闭 upvalue，把结果写回 `returnSlot`，标记 `completed` |
 
 对应的 ARM64 stub 形态如下。
@@ -502,7 +507,7 @@ jmp epilogue                 ; 成功返回后也结束 stub，不再执行后�
 
 - `Constant`
 - `GetLocal`
-- `Add`
+- `Add`、`Sub`、`Mul`、`Div`、`Mod`、`Negate`
 - `Return`
 
 这些指令不会内联访问 `VM::stack_` 或 `std::vector<Value>` 内部地址，而是统一通过 Runtime ABI helper 完成语义。每条 helper 调用后的 `false` 返回值都会被修补成跳转到 epilogue，`Return` 成功后也跳到 epilogue。
