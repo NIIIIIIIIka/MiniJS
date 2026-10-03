@@ -1,5 +1,6 @@
 #include "minijs/baseline_compiler.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
@@ -10,6 +11,7 @@
 
 #include "minijs/baseline_runtime.h"
 #include "minijs/bytecode_decoder.h"
+#include "minijs/value.h"
 
 namespace minijs {
 namespace {
@@ -222,6 +224,52 @@ class WindowsX64Emitter {
     return patchOffset;
   }
 
+  bool emitInlineNumberNegateOrRuntimeCall(std::uintptr_t functionAddress, std::string& error) {
+    constexpr std::uint64_t signMask = 0x8000000000000000ULL;
+    if (sizeof(Value) > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
+      error = "Value size is too large for x64 inline negate";
+      return false;
+    }
+
+    emit({0x48, 0x8B, 0x83});  // mov rax, [rbx + BaselineFrame::stackSize]
+    emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackSize)));
+    emit({0x48, 0x85, 0xC0});  // test rax, rax
+    const std::size_t emptyStackFallback = emitJzPlaceholder();
+    emit({0x48, 0xFF, 0xC8});  // dec rax
+    emit({0x48, 0x69, 0xC0});  // imul rax, rax, sizeof(Value)
+    emit32(static_cast<std::uint32_t>(sizeof(Value)));
+    emit({0x48, 0x8B, 0x8B});  // mov rcx, [rbx + BaselineFrame::stackData]
+    emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackData)));
+    emit({0x48, 0x8D, 0x0C, 0x01});  // lea rcx, [rcx + rax]
+    emit({0x81, 0xB9});              // cmp dword ptr [rcx + Value::typeOffset], Number
+    emit32(static_cast<std::uint32_t>(Value::typeOffset()));
+    emit32(Value::numberTypeTag());
+    const std::size_t nonNumberFallback = emitJnePlaceholder();
+    emit({0x48, 0xBA});  // mov rdx, signMask
+    emit64(signMask);
+    emit({0x48, 0x31, 0x91});  // xor qword ptr [rcx + Value::numberOffset], rdx
+    emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+    emit({0xB8, 0x01, 0x00, 0x00, 0x00});  // mov eax, 1
+    const std::size_t done = emitJumpPlaceholder();
+
+    const std::size_t fallback = offset();
+    patchBranchTo(emptyStackFallback, fallback, true, error);
+    if (!error.empty()) {
+      return false;
+    }
+    patchBranchTo(nonNumberFallback, fallback, true, error);
+    if (!error.empty()) {
+      return false;
+    }
+    emitMoveFrameToFirstArg();
+    emitLoadHelper(functionAddress);
+    emitCallHelper();
+
+    const std::size_t doneOffset = offset();
+    patchBranchTo(done, doneOffset, false, error);
+    return error.empty();
+  }
+
   bool patchBranchTo(std::size_t branchOffset, std::size_t targetOffset, bool conditional,
                      std::string& error) {
     const std::size_t immediateOffset = branchOffset + (conditional ? 2 : 1);
@@ -262,6 +310,20 @@ class WindowsX64Emitter {
     for (int shift = 0; shift < 64; shift += 8) {
       code_.push_back(static_cast<std::uint8_t>((value >> shift) & 0xff));
     }
+  }
+
+  std::size_t emitJzPlaceholder() {
+    const std::size_t patchOffset = offset();
+    emit({0x0F, 0x84});  // jz rel32
+    emit32(0);
+    return patchOffset;
+  }
+
+  std::size_t emitJnePlaceholder() {
+    const std::size_t patchOffset = offset();
+    emit({0x0F, 0x85});  // jne rel32
+    emit32(0);
+    return patchOffset;
   }
 
   void write32(std::size_t patchOffset, std::uint32_t value) {
@@ -370,9 +432,21 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
         break;
 
       case Opcode::Negate:
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+      {
+        std::string inlineError;
+        if (!emitter.emitInlineNumberNegateOrRuntimeCall(
+                reinterpret_cast<std::uintptr_t>(&minijsBaselineNegate), inlineError)) {
+          return failure(inlineError);
+        }
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        break;
+      }
+#else
         emitRuntimeCall(emitter, reinterpret_cast<std::uintptr_t>(&minijsBaselineNegate));
         epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
         break;
+#endif
 
       case Opcode::Return:
         emitRuntimeCall(emitter, reinterpret_cast<std::uintptr_t>(&minijsBaselineReturn));

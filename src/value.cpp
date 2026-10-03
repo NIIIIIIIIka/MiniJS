@@ -1,6 +1,7 @@
 ﻿#include "minijs/value.h"
 
 #include <cmath>
+#include <cstdint>
 #include <sstream>
 #include <utility>
 
@@ -504,5 +505,13 @@ bool Value::equals(const Value& other) const {
   }
 
   return false;
+}
+
+std::size_t Value::typeOffset() { return offsetof(Value, value_type_); }
+
+std::size_t Value::numberOffset() { return offsetof(Value, number_); }
+
+std::uint32_t Value::numberTypeTag() {
+  return static_cast<std::uint32_t>(ValueType::Number);
 }
 }  // namespace minijs

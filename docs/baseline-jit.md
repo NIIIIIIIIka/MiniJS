@@ -16,7 +16,7 @@
 - [x] VM 调用 compiled code 的入口已接入 `callBytecodeClosure()`。
 - [x] Baseline executor 已复用 VM runtime helper 支持 global、array/index、object/property、upvalue 和 current-closure opcode。
 - [x] `BaselineFrame` 和 `BaselineEntry` 已定义，第一批 `extern "C"` runtime helper 已通过稳定入口帧访问 VM。
-- [x] `BaselineCompiler` 已能为 `Constant`、`GetLocal`、算术 opcode 和 `Return` 生成 ARM64 和 Windows x64 stub，并写入 executable memory。
+- [x] `BaselineCompiler` 已能为 `Constant`、`GetLocal`、算术 opcode 和 `Return` 生成 ARM64 和 Windows x64 stub，并写入 executable memory；Windows x64 的 `Negate` 已有 number fast path。
 - [x] VM baseline dispatch 已能在支持 native backend 且存在 native `BaselineEntry` 时优先进入机器码；没有 native entry 时继续使用 decoded executor。
 
 还没有完成：
@@ -307,7 +307,7 @@ using BaselineEntry = void (*)(BaselineFrame*);
 
 ## 当前 Opcode 到 native stub 的映射
 
-第一版 native baseline compiler 没有把 `Value` 运算完全内联到机器码里。它生成的是一层很薄的平台 stub：
+第一版 native baseline compiler 大部分 opcode 还没有把 `Value` 运算完全内联到机器码里。它主要生成一层很薄的平台 stub：
 
 ```text
 Opcode
@@ -317,6 +317,8 @@ Opcode
 ```
 
 也就是说，当前映射重点不是“`OP_ADD` 直接变成若干条加法机器指令”，而是“`OP_ADD` 生成一段调用 `minijsBaselineAdd()` 的机器码”。这样可以先验证 native entry、可执行内存、调用约定和错误返回路径，同时避免机器码直接依赖 `Value`、`std::vector<Value>` 或 GC 对象布局。
+
+Windows x64 的 `OP_NEGATE` 已经开始走更靠近真正机器码的路径：stub 先读取 `BaselineFrame` 中缓存的 VM 栈地址和栈深度，检查栈顶 `Value` 的类型标签是否为 `Number`；命中时直接翻转 double 载荷的符号位，未命中时再回退到 `minijsBaselineNegate(frame)`。这是第一条“number fast path + helper fallback”的 native opcode。
 
 ### ARM64 stub 形态
 
@@ -351,7 +353,7 @@ epilogue:
 | `OP_MUL` | 无 | `minijsBaselineMul(frame)` | 弹出两个值，执行数字乘法，再压回结果 |
 | `OP_DIV` | 无 | `minijsBaselineDiv(frame)` | 弹出两个值，检查除数并执行数字除法，再压回结果 |
 | `OP_MOD` | 无 | `minijsBaselineMod(frame)` | 弹出两个值，检查除数并执行取模，再压回结果 |
-| `OP_NEGATE` | 无 | `minijsBaselineNegate(frame)` | 弹出一个数字值，取负后压回结果 |
+| `OP_NEGATE` | 无 | Windows x64 number fast path，否则 `minijsBaselineNegate(frame)` | 栈顶是数字时直接翻转符号位；否则回退 helper 保留 VM 语义 |
 | `OP_RETURN` | 无 | `minijsBaselineReturn(frame)` | 弹出返回值，关闭 upvalue，把结果写回 `returnSlot`，标记 `completed` |
 
 对应的 ARM64 stub 形态如下。

@@ -1294,6 +1294,11 @@ const Value& VM::peek() const {
   return stack_.back();
 }
 
+void VM::refreshBaselineFrameStack(BaselineFrame& frame) {
+  frame.stackData = stack_.empty() ? nullptr : stack_.data();
+  frame.stackSize = stack_.size();
+}
+
 void VM::validateBaselineRuntimeFrame(const BaselineFrame& frame) const {
   if (frame.vm != this || frame.closure == nullptr) {
     throw RuntimeError("invalid baseline frame");
@@ -1309,6 +1314,7 @@ void VM::validateBaselineRuntimeFrame(const BaselineFrame& frame) const {
 bool VM::baselineRuntimePush(BaselineFrame& frame, const Value& value) {
   validateBaselineRuntimeFrame(frame);
   push(value);
+  refreshBaselineFrameStack(frame);
   return true;
 }
 
@@ -1321,6 +1327,7 @@ bool VM::baselineRuntimePushConstant(BaselineFrame& frame, std::uint32_t constan
   } else {
     push(constant);
   }
+  refreshBaselineFrameStack(frame);
   return true;
 }
 
@@ -1331,6 +1338,7 @@ bool VM::baselineRuntimeGetLocal(BaselineFrame& frame, std::uint32_t slot) {
     throw RuntimeError("local slot out of bounds");
   }
   push(stack_[absoluteSlot]);
+  refreshBaselineFrameStack(frame);
   return true;
 }
 
@@ -1341,12 +1349,14 @@ bool VM::baselineRuntimeSetLocal(BaselineFrame& frame, std::uint32_t slot) {
     throw RuntimeError("local slot out of bounds");
   }
   stack_[absoluteSlot] = peek();
+  refreshBaselineFrameStack(frame);
   return true;
 }
 
 bool VM::baselineRuntimePop(BaselineFrame& frame) {
   validateBaselineRuntimeFrame(frame);
   pop();
+  refreshBaselineFrameStack(frame);
   return true;
 }
 
@@ -1359,6 +1369,7 @@ bool VM::baselineRuntimeAdd(BaselineFrame& frame) {
   } else {
     push(Value(left.asNumber() + right.asNumber()));
   }
+  refreshBaselineFrameStack(frame);
   return true;
 }
 
@@ -1367,6 +1378,7 @@ bool VM::baselineRuntimeSub(BaselineFrame& frame) {
   Value right = pop();
   Value left = pop();
   push(Value(left.asNumber() - right.asNumber()));
+  refreshBaselineFrameStack(frame);
   return true;
 }
 
@@ -1375,6 +1387,7 @@ bool VM::baselineRuntimeMul(BaselineFrame& frame) {
   Value right = pop();
   Value left = pop();
   push(Value(left.asNumber() * right.asNumber()));
+  refreshBaselineFrameStack(frame);
   return true;
 }
 
@@ -1384,6 +1397,7 @@ bool VM::baselineRuntimeDiv(BaselineFrame& frame) {
   Value left = pop();
   const double divisor = checkedDivisor(right, "division by zero");
   push(Value(left.asNumber() / divisor));
+  refreshBaselineFrameStack(frame);
   return true;
 }
 
@@ -1393,12 +1407,14 @@ bool VM::baselineRuntimeMod(BaselineFrame& frame) {
   Value left = pop();
   const double divisor = checkedDivisor(right, "modulo by zero");
   push(Value(std::fmod(left.asNumber(), divisor)));
+  refreshBaselineFrameStack(frame);
   return true;
 }
 
 bool VM::baselineRuntimeNegate(BaselineFrame& frame) {
   validateBaselineRuntimeFrame(frame);
   push(Value(-pop().asNumber()));
+  refreshBaselineFrameStack(frame);
   return true;
 }
 
@@ -1415,6 +1431,7 @@ bool VM::baselineRuntimeReturn(BaselineFrame& frame) {
   stack_.resize(frame.returnSlot);
   push(result);
   frame.completed = true;
+  refreshBaselineFrameStack(frame);
   return true;
 }
 
@@ -1804,6 +1821,7 @@ Value VM::executeBaselineEntry(BaselineEntry entry, CallFrame& callFrame) {
   frame.returnSlot = callFrame.returnSlot;
   frame.slotStart = callFrame.slotStart;
   frame.returnsReceiver = callFrame.returnsReceiver;
+  refreshBaselineFrameStack(frame);
 
   entry(&frame);
 

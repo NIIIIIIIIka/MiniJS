@@ -4567,6 +4567,29 @@ void testJitDispatchPreservesRuntimeErrors() {
   EXPECT(feedback->state == minijs::JitState::Compiled);
 }
 
+void testJitDispatchInlineNegateFallbackPreservesTypeError() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  try {
+    runBytecodeProgramOnVm(vm, R"(
+      function neg(value) { return -value; }
+      neg(1);
+      neg("x");
+    )");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: value is not a number");
+  }
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("neg");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->callCount == 2);
+  EXPECT(feedback->baselineEntryCount == 1);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+}
+
 void testJitDispatchRunsAfterManualGc() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -4946,6 +4969,7 @@ void runBytecodeTests() {
   testJitDispatchEntersCompiledFunctionOnLaterCall();
   testJitDispatchRespectsDisabledJit();
   testJitDispatchPreservesRuntimeErrors();
+  testJitDispatchInlineNegateFallbackPreservesTypeError();
   testJitDispatchRunsAfterManualGc();
   testJitDispatchUsesMethodSlotStart();
   testJitDispatchPreservesInitReceiverReturn();

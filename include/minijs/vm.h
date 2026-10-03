@@ -173,6 +173,7 @@ class VM {
   void push(Value value);
   Value pop();
   const Value& peek() const;
+  void refreshBaselineFrameStack(BaselineFrame& frame);
   void validateBaselineRuntimeFrame(const BaselineFrame& frame) const;
   bool baselineRuntimePush(BaselineFrame& frame, const Value& value);
   bool baselineRuntimePushConstant(BaselineFrame& frame, std::uint32_t constantIndex);
