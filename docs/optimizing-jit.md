@@ -249,7 +249,7 @@ CallDirect(cachedMethodClosure)
 
 ## 数值运算优化
 
-当前 baseline JIT 已经在 Windows x64 的 `OP_NEGATE` 和 `OP_SUB` 上做了很小的 number fast path：命中 number 时直接修改栈上 `Value` 的 double 载荷，失败时回退 runtime helper。它验证的是“guard + inline machine code + helper fallback”这条路径；Optimize JIT 仍需要基于 profile、IR 和 deopt state 做更系统的 number-only 专门化。
+当前 baseline JIT 已经在 Windows x64 的 `OP_NEGATE` 上做了一个很小的 number fast path：命中 number 时直接修改栈顶 `Value` 的 double 载荷，失败时回退 runtime helper。它验证的是“guard + inline machine code + helper fallback”这条路径；Optimize JIT 仍需要基于 profile、IR 和 deopt state 做更系统的 number-only 专门化。
 
 如果 profile 显示某个 `Add/Sub/Mul/Div/Mod` 访问点长期只看到 number：
 
