@@ -225,33 +225,34 @@ class WindowsX64Emitter {
     return patchOffset;
   }
 
-  // 如果栈顶是数字，就直接翻转 double 符号位；否则回退到 runtime helper。
+  // 如果栈顶是个数字，就把它变成负数；否则，回退到运行时。
   bool emitInlineNumberNegateOrRuntimeCall(std::uintptr_t functionAddress, std::string& error) {
-    // double 的最高位是符号位，异或 signMask 即可在 +x 和 -x 之间切换。
+    // 准备一个“符号位掩码”。double 的最高位就是符号位，异或 signMask = 取负。
     constexpr std::uint64_t signMask = 0x8000000000000000ULL;
-    // imul r64, r64, imm32 要求 sizeof(Value) 能放进 32 位立即数。
+    // 防御检查：下面有个 imul rax, rax, sizeof(Value) 用的是 32 位立即数，sizeof(Value) 必须塞得下。
     if (sizeof(Value) > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
       error = "Value size is too large for x64 inline negate";
       return false;
     }
 
-    emit({0x48, 0x8B, 0x83});  // mov rax, [rbx + BaselineFrame::stackSize]
+    emit({0x48, 0x8B, 0x83});  // mov rax, [rbx + BaselineFrame::stackSize]：rax = rbx(当前 BaselineFrame)->stackSize;
     emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackSize)));
     emit({0x48, 0x85, 0xC0});  // test rax, rax
-    const std::size_t emptyStackFallback = emitJzPlaceholder();
-    emit({0x48, 0xFF, 0xC8});  // dec rax
+    const std::size_t emptyStackFallback = emitJzPlaceholder();  // test rax, rax + jz：if (rax == 0)（栈空），跳到回退。
+    emit({0x48, 0xFF, 0xC8});  // dec rax：rax = rax - 1;
     emit({0x48, 0x69, 0xC0});  // imul rax, rax, sizeof(Value)
-    emit32(static_cast<std::uint32_t>(sizeof(Value)));
-    emit({0x48, 0x8B, 0x8B});  // mov rcx, [rbx + BaselineFrame::stackData]
+    emit32(static_cast<std::uint32_t>(sizeof(Value)));  // 计算栈顶元素的字节偏移：rax = rax * sizeof(Value);
+    emit({0x48, 0x8B, 0x8B});  // mov rcx, [rbx + BaselineFrame::stackData]：Value* rcx = rbx->stackData;
     emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackData)));
 
-    emit({0x48, 0x8D, 0x0C, 0x01});  // lea rcx, [rcx + rax]
-    emit({0x81, 0xB9});              // cmp dword ptr [rcx + Value::typeOffset], Number
+    emit({0x48, 0x8D, 0x0C, 0x01});  // lea rcx, [rcx + rax]：rcx = rcx + rax，即栈顶指针
+    emit({0x81, 0xB9});              // cmp dword ptr [rcx + Value::typeOffset], Number：if (rcx->type != Number) goto 回退;
     emit32(static_cast<std::uint32_t>(Value::typeOffset()));
     emit32(Value::numberTypeTag());
     const std::size_t nonNumberFallback = emitJnePlaceholder();
 
-    emit({0x48, 0xBA});  // mov rdx, signMask
+    // 栈顶 = -栈顶。
+    emit({0x48, 0xBA});  // mov rdx, signMask：rcx->number ^= rdx;
     emit64(signMask);
     emit({0x48, 0x31, 0x91});  // xor qword ptr [rcx + Value::numberOffset], rdx
     emit32(static_cast<std::uint32_t>(Value::numberOffset()));
