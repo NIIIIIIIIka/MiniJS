@@ -16,7 +16,7 @@
 - [x] VM 调用 compiled code 的入口已接入 `callBytecodeClosure()`。
 - [x] Baseline executor 已复用 VM runtime helper 支持 global、array/index、object/property、upvalue 和 current-closure opcode。
 - [x] `BaselineFrame` 和 `BaselineEntry` 已定义，第一批 `extern "C"` runtime helper 已通过稳定入口帧访问 VM。
-- [x] `BaselineCompiler` 已能为 `Constant`、`GetLocal`、算术 opcode 和 `Return` 生成 ARM64 和 Windows x64 stub，并写入 executable memory；Windows x64 的 `Negate` 和 `Sub` 已有 number fast path。
+- [x] `BaselineCompiler` 已能为 `Constant`、`GetLocal`、算术 opcode 和 `Return` 生成 ARM64 和 Windows x64 stub，并写入 executable memory；Windows x64 的 `Negate`、`Sub` 和 `Mul` 已有 number fast path。
 - [x] VM baseline dispatch 已能在支持 native backend 且存在 native `BaselineEntry` 时优先进入机器码；没有 native entry 时继续使用 decoded executor。
 
 还没有完成：
@@ -318,7 +318,7 @@ Opcode
 
 也就是说，当前映射重点不是“`OP_ADD` 直接变成若干条加法机器指令”，而是“`OP_ADD` 生成一段调用 `minijsBaselineAdd()` 的机器码”。这样可以先验证 native entry、可执行内存、调用约定和错误返回路径，同时避免机器码直接依赖 `Value`、`std::vector<Value>` 或 GC 对象布局。
 
-Windows x64 的 `OP_NEGATE` 和 `OP_SUB` 已经开始走更靠近真正机器码的路径：stub 先读取 `BaselineFrame` 中缓存的 VM 栈地址和栈深度，检查相关 `Value` 的类型标签是否为 `Number`；命中时直接修改 double 载荷，未命中时再回退到对应 runtime helper。这是第一批“number fast path + helper fallback”的 native opcode。
+Windows x64 的 `OP_NEGATE`、`OP_SUB` 和 `OP_MUL` 已经开始走更靠近真正机器码的路径：stub 先读取 `BaselineFrame` 中缓存的 VM 栈地址和栈深度，检查相关 `Value` 的类型标签是否为 `Number`；命中时直接修改 double 载荷，未命中时再回退到对应 runtime helper。这是第一批“number fast path + helper fallback”的 native opcode。
 
 ### Helper-call stub 和 fast path 的区别
 
@@ -355,7 +355,7 @@ fallback:
 - `value` 是 number：机器码直接修改栈顶 `Value::number_`。
 - `value` 不是 number：进入 `minijsBaselineNegate(frame)`，继续由 VM 语义产生 `RuntimeError: value is not a number`。
 
-Windows x64 的 `OP_SUB` number 路径会多做一步栈高度同步：
+Windows x64 的 `OP_SUB` / `OP_MUL` number 路径会多做一步栈高度同步：
 
 ```text
 读取 frame.stackSize
@@ -364,14 +364,14 @@ Windows x64 的 `OP_SUB` number 路径会多做一步栈高度同步：
 定位 right = frame.stackData[stackSize - 1]
 检查 left/right 的 Value::type 是否都是 Number
   -> 任意一个不是 Number：fallback
-left.number = left.number - right.number
+left.number = left.number <op> right.number
 frame.stackSize--
 call minijsBaselineSyncStackSize(frame)
 fallback:
-  call minijsBaselineSub(frame)
+  call minijsBaselineSub(frame) 或 minijsBaselineMul(frame)
 ```
 
-`OP_NEGATE` 只改栈顶值，不改变栈高度；`OP_SUB` 会把两个操作数合成一个结果，所以 native 代码先递减 `frame.stackSize`，再调用 `minijsBaselineSyncStackSize(frame)` 让真实的 `VM::stack_` resize 到同一个长度。这个 helper 不负责做减法，只负责把 native fast path 已经完成的栈形状同步回 VM。
+`OP_NEGATE` 只改栈顶值，不改变栈高度；`OP_SUB` 和 `OP_MUL` 会把两个操作数合成一个结果，所以 native 代码先递减 `frame.stackSize`，再调用 `minijsBaselineSyncStackSize(frame)` 让真实的 `VM::stack_` resize 到同一个长度。这个 helper 不负责做算术，只负责把 native fast path 已经完成的栈形状同步回 VM。
 
 这就是后续优化的模板：每次只内联一个足够简单的 number-only fast path，并保留 helper fallback 作为语义兜底。
 
@@ -384,7 +384,7 @@ Value* stackData;
 std::size_t stackSize;
 ```
 
-这两个字段不是新的 VM 栈，也不拥有任何值；它们只是当前 `VM::stack_` 的快照，供 native fast path 用固定偏移访问栈顶。因为 helper 可能 `push()` / `pop()`，导致 `std::vector<Value>` 重新分配，所以每个 baseline runtime helper 成功修改栈后都会调用 `refreshBaselineFrameStack(frame)` 更新快照。对于 `OP_SUB` 这种会在 native fast path 里改变栈高度的 opcode，还会调用 `minijsBaselineSyncStackSize(frame)` 把 `frame.stackSize` 同步回真实的 `VM::stack_`。
+这两个字段不是新的 VM 栈，也不拥有任何值；它们只是当前 `VM::stack_` 的快照，供 native fast path 用固定偏移访问栈顶。因为 helper 可能 `push()` / `pop()`，导致 `std::vector<Value>` 重新分配，所以每个 baseline runtime helper 成功修改栈后都会调用 `refreshBaselineFrameStack(frame)` 更新快照。对于 `OP_SUB` / `OP_MUL` 这种会在 native fast path 里改变栈高度的 opcode，还会调用 `minijsBaselineSyncStackSize(frame)` 把 `frame.stackSize` 同步回真实的 `VM::stack_`。
 
 这样 native fast path 不需要直接理解 `std::vector<Value>` 的内部布局，只需要读 `BaselineFrame` 中已经刷新过的 `stackData` 和 `stackSize`。
 
@@ -430,7 +430,7 @@ epilogue:
 | `OP_GET_LOCAL` | `slot` | `minijsBaselineGetLocal(frame, slot)` | 读取 `slotStart + slot` 的局部槽并压栈 |
 | `OP_ADD` | 无 | `minijsBaselineAdd(frame)` | 弹出两个值，执行数字加法或字符串拼接，再压回结果 |
 | `OP_SUB` | 无 | Windows x64 number fast path，否则 `minijsBaselineSub(frame)` | 两个操作数都是数字时直接执行 double 减法并同步栈高度；否则回退 helper 保留 VM 语义 |
-| `OP_MUL` | 无 | `minijsBaselineMul(frame)` | 弹出两个值，执行数字乘法，再压回结果 |
+| `OP_MUL` | 无 | Windows x64 number fast path，否则 `minijsBaselineMul(frame)` | 两个操作数都是数字时直接执行 double 乘法并同步栈高度；否则回退 helper 保留 VM 语义 |
 | `OP_DIV` | 无 | `minijsBaselineDiv(frame)` | 弹出两个值，检查除数并执行数字除法，再压回结果 |
 | `OP_MOD` | 无 | `minijsBaselineMod(frame)` | 弹出两个值，检查除数并执行取模，再压回结果 |
 | `OP_NEGATE` | 无 | Windows x64 number fast path，否则 `minijsBaselineNegate(frame)` | 栈顶是数字时直接翻转符号位；否则回退 helper 保留 VM 语义 |

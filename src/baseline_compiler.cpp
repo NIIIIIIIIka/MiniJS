@@ -6,6 +6,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -277,13 +278,15 @@ class WindowsX64Emitter {
     return error.empty();
   }
 
-  // 如果栈顶两个值都是数字，就直接做 double 减法；否则回退到 runtime helper。
-  bool emitInlineNumberSubOrRuntimeCall(std::uintptr_t functionAddress,
-                                        std::uintptr_t syncStackSizeAddress,
-                                        std::string& error) {
+  // 如果栈顶两个值都是数字，就直接做二元 double 运算；否则回退到 runtime helper。
+  bool emitInlineNumberBinaryOrRuntimeCall(std::uintptr_t functionAddress,
+                                           std::uintptr_t syncStackSizeAddress,
+                                           std::uint8_t sseOpcode,
+                                           std::string_view operationName,
+                                           std::string& error) {
     // imul r64, r64, imm32 要求 sizeof(Value) 能放进 32 位立即数。
     if (sizeof(Value) > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
-      error = "Value size is too large for x64 inline sub";
+      error = std::string("Value size is too large for x64 inline ") + std::string(operationName);
       return false;
     }
 
@@ -318,7 +321,7 @@ class WindowsX64Emitter {
 
     emit({0xF2, 0x0F, 0x10, 0x82});  // movsd xmm0, [rdx + Value::numberOffset]
     emit32(static_cast<std::uint32_t>(Value::numberOffset()));
-    emit({0xF2, 0x0F, 0x5C, 0x81});  // subsd xmm0, [rcx + Value::numberOffset]
+    emit({0xF2, 0x0F, sseOpcode, 0x81});  // <op>sd xmm0, [rcx + Value::numberOffset]
     emit32(static_cast<std::uint32_t>(Value::numberOffset()));
     emit({0xF2, 0x0F, 0x11, 0x82});  // movsd [rdx + Value::numberOffset], xmm0
     emit32(static_cast<std::uint32_t>(Value::numberOffset()));
@@ -507,9 +510,10 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
 #if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
       {
         std::string inlineError;
-        if (!emitter.emitInlineNumberSubOrRuntimeCall(
+        if (!emitter.emitInlineNumberBinaryOrRuntimeCall(
                 reinterpret_cast<std::uintptr_t>(&minijsBaselineSub),
-                reinterpret_cast<std::uintptr_t>(&minijsBaselineSyncStackSize), inlineError)) {
+                reinterpret_cast<std::uintptr_t>(&minijsBaselineSyncStackSize),
+                0x5C, "sub", inlineError)) {
           return failure(inlineError);
         }
         epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
@@ -522,9 +526,23 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
 #endif
 
       case Opcode::Mul:
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+      {
+        std::string inlineError;
+        if (!emitter.emitInlineNumberBinaryOrRuntimeCall(
+                reinterpret_cast<std::uintptr_t>(&minijsBaselineMul),
+                reinterpret_cast<std::uintptr_t>(&minijsBaselineSyncStackSize),
+                0x59, "mul", inlineError)) {
+          return failure(inlineError);
+        }
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        break;
+      }
+#else
         emitRuntimeCall(emitter, reinterpret_cast<std::uintptr_t>(&minijsBaselineMul));
         epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
         break;
+#endif
 
       case Opcode::Div:
         emitRuntimeCall(emitter, reinterpret_cast<std::uintptr_t>(&minijsBaselineDiv));
