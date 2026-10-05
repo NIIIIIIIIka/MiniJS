@@ -4590,6 +4590,50 @@ void testJitDispatchInlineNegateFallbackPreservesTypeError() {
   EXPECT(feedback->state == minijs::JitState::Compiled);
 }
 
+void testJitDispatchInlineSubRunsNumberFastPath() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  const minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+    function sub(left, right) { return left - right; }
+    sub(5, 2);
+    sub(10, 3);
+  )");
+
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 7);
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("sub");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->callCount == 2);
+  EXPECT(feedback->baselineEntryCount == 1);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+}
+
+void testJitDispatchInlineSubFallbackPreservesTypeError() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  try {
+    runBytecodeProgramOnVm(vm, R"(
+      function sub(left, right) { return left - right; }
+      sub(5, 2);
+      sub("x", 1);
+    )");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: value is not a number");
+  }
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("sub");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->callCount == 2);
+  EXPECT(feedback->baselineEntryCount == 1);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+}
+
 void testJitDispatchRunsAfterManualGc() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -4970,6 +5014,8 @@ void runBytecodeTests() {
   testJitDispatchRespectsDisabledJit();
   testJitDispatchPreservesRuntimeErrors();
   testJitDispatchInlineNegateFallbackPreservesTypeError();
+  testJitDispatchInlineSubRunsNumberFastPath();
+  testJitDispatchInlineSubFallbackPreservesTypeError();
   testJitDispatchRunsAfterManualGc();
   testJitDispatchUsesMethodSlotStart();
   testJitDispatchPreservesInitReceiverReturn();

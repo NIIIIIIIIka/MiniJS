@@ -1418,6 +1418,16 @@ bool VM::baselineRuntimeNegate(BaselineFrame& frame) {
   return true;
 }
 
+bool VM::baselineRuntimeSyncStackSize(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  if (frame.stackSize > stack_.size()) {
+    throw RuntimeError("baseline stack size out of bounds");
+  }
+  stack_.resize(frame.stackSize);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
 bool VM::baselineRuntimeReturn(BaselineFrame& frame) {
   validateBaselineRuntimeFrame(frame);
   Value result = pop();

@@ -232,6 +232,22 @@ extern "C" bool minijsBaselineNegate(minijs::BaselineFrame* frame) {
   }
 }
 
+extern "C" bool minijsBaselineSyncStackSize(minijs::BaselineFrame* frame) {
+  if (!frameCanRun(frame)) {
+    return false;
+  }
+
+  try {
+    return frame->vm->baselineRuntimeSyncStackSize(*frame);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
+  } catch (...) {
+    return markFailed(frame);
+  }
+}
+
 extern "C" bool minijsBaselineReturn(minijs::BaselineFrame* frame) {
   if (!frameCanRun(frame)) {
     return false;

@@ -217,6 +217,7 @@ class WindowsX64Emitter {
     return patchOffset;
   }
 
+  // 生成无条件前向跳转占位符，目标地址在 epilogue offset 确定后回填。
   std::size_t emitJumpPlaceholder() {
     const std::size_t patchOffset = offset();
     emit8(0xE9);  // jmp rel32
@@ -224,8 +225,11 @@ class WindowsX64Emitter {
     return patchOffset;
   }
 
+  // 如果栈顶是数字，就直接翻转 double 符号位；否则回退到 runtime helper。
   bool emitInlineNumberNegateOrRuntimeCall(std::uintptr_t functionAddress, std::string& error) {
+    // double 的最高位是符号位，异或 signMask 即可在 +x 和 -x 之间切换。
     constexpr std::uint64_t signMask = 0x8000000000000000ULL;
+    // imul r64, r64, imm32 要求 sizeof(Value) 能放进 32 位立即数。
     if (sizeof(Value) > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
       error = "Value size is too large for x64 inline negate";
       return false;
@@ -240,11 +244,13 @@ class WindowsX64Emitter {
     emit32(static_cast<std::uint32_t>(sizeof(Value)));
     emit({0x48, 0x8B, 0x8B});  // mov rcx, [rbx + BaselineFrame::stackData]
     emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackData)));
+
     emit({0x48, 0x8D, 0x0C, 0x01});  // lea rcx, [rcx + rax]
     emit({0x81, 0xB9});              // cmp dword ptr [rcx + Value::typeOffset], Number
     emit32(static_cast<std::uint32_t>(Value::typeOffset()));
     emit32(Value::numberTypeTag());
     const std::size_t nonNumberFallback = emitJnePlaceholder();
+
     emit({0x48, 0xBA});  // mov rdx, signMask
     emit64(signMask);
     emit({0x48, 0x31, 0x91});  // xor qword ptr [rcx + Value::numberOffset], rdx
@@ -258,6 +264,81 @@ class WindowsX64Emitter {
       return false;
     }
     patchBranchTo(nonNumberFallback, fallback, true, error);
+    if (!error.empty()) {
+      return false;
+    }
+    emitMoveFrameToFirstArg();
+    emitLoadHelper(functionAddress);
+    emitCallHelper();
+
+    const std::size_t doneOffset = offset();
+    patchBranchTo(done, doneOffset, false, error);
+    return error.empty();
+  }
+
+  // 如果栈顶两个值都是数字，就直接做 double 减法；否则回退到 runtime helper。
+  bool emitInlineNumberSubOrRuntimeCall(std::uintptr_t functionAddress,
+                                        std::uintptr_t syncStackSizeAddress,
+                                        std::string& error) {
+    // imul r64, r64, imm32 要求 sizeof(Value) 能放进 32 位立即数。
+    if (sizeof(Value) > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
+      error = "Value size is too large for x64 inline sub";
+      return false;
+    }
+
+    emit({0x48, 0x8B, 0x83});  // mov rax, [rbx + BaselineFrame::stackSize]
+    emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackSize)));
+    emit({0x48, 0x83, 0xF8, 0x02});  // cmp rax, 2
+    const std::size_t notEnoughValuesFallback = emitJbPlaceholder();
+
+    emit({0x48, 0x8B, 0x8B});  // mov rcx, [rbx + BaselineFrame::stackData]
+    emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackData)));
+
+    emit({0x48, 0x89, 0xC2});  // mov rdx, rax
+    emit({0x48, 0x83, 0xEA, 0x02});  // sub rdx, 2
+    emit({0x48, 0x69, 0xD2});  // imul rdx, rdx, sizeof(Value)
+    emit32(static_cast<std::uint32_t>(sizeof(Value)));
+    emit({0x48, 0x8D, 0x14, 0x11});  // lea rdx, [rcx + rdx]
+
+    emit({0x48, 0xFF, 0xC8});  // dec rax
+    emit({0x48, 0x69, 0xC0});  // imul rax, rax, sizeof(Value)
+    emit32(static_cast<std::uint32_t>(sizeof(Value)));
+    emit({0x48, 0x8D, 0x0C, 0x01});  // lea rcx, [rcx + rax]
+
+    emit({0x81, 0xBA});  // cmp dword ptr [rdx + Value::typeOffset], Number
+    emit32(static_cast<std::uint32_t>(Value::typeOffset()));
+    emit32(Value::numberTypeTag());
+    const std::size_t leftNonNumberFallback = emitJnePlaceholder();
+
+    emit({0x81, 0xB9});  // cmp dword ptr [rcx + Value::typeOffset], Number
+    emit32(static_cast<std::uint32_t>(Value::typeOffset()));
+    emit32(Value::numberTypeTag());
+    const std::size_t rightNonNumberFallback = emitJnePlaceholder();
+
+    emit({0xF2, 0x0F, 0x10, 0x82});  // movsd xmm0, [rdx + Value::numberOffset]
+    emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+    emit({0xF2, 0x0F, 0x5C, 0x81});  // subsd xmm0, [rcx + Value::numberOffset]
+    emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+    emit({0xF2, 0x0F, 0x11, 0x82});  // movsd [rdx + Value::numberOffset], xmm0
+    emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+
+    emit({0x48, 0xFF, 0x8B});  // dec qword ptr [rbx + BaselineFrame::stackSize]
+    emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackSize)));
+    emitMoveFrameToFirstArg();
+    emitLoadHelper(syncStackSizeAddress);
+    emitCallHelper();
+    const std::size_t done = emitJumpPlaceholder();
+
+    const std::size_t fallback = offset();
+    patchBranchTo(notEnoughValuesFallback, fallback, true, error);
+    if (!error.empty()) {
+      return false;
+    }
+    patchBranchTo(leftNonNumberFallback, fallback, true, error);
+    if (!error.empty()) {
+      return false;
+    }
+    patchBranchTo(rightNonNumberFallback, fallback, true, error);
     if (!error.empty()) {
       return false;
     }
@@ -312,6 +393,7 @@ class WindowsX64Emitter {
     }
   }
 
+  // 生成 ZF=1 时跳转的占位符。
   std::size_t emitJzPlaceholder() {
     const std::size_t patchOffset = offset();
     emit({0x0F, 0x84});  // jz rel32
@@ -319,9 +401,18 @@ class WindowsX64Emitter {
     return patchOffset;
   }
 
+  // 生成 ZF=0 时跳转的占位符。
   std::size_t emitJnePlaceholder() {
     const std::size_t patchOffset = offset();
     emit({0x0F, 0x85});  // jne rel32
+    emit32(0);
+    return patchOffset;
+  }
+
+  // 生成 CF=1 时跳转的占位符，用于无符号比较后的 below 分支。
+  std::size_t emitJbPlaceholder() {
+    const std::size_t patchOffset = offset();
+    emit({0x0F, 0x82});  // jb rel32
     emit32(0);
     return patchOffset;
   }
@@ -412,9 +503,22 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
         break;
 
       case Opcode::Sub:
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+      {
+        std::string inlineError;
+        if (!emitter.emitInlineNumberSubOrRuntimeCall(
+                reinterpret_cast<std::uintptr_t>(&minijsBaselineSub),
+                reinterpret_cast<std::uintptr_t>(&minijsBaselineSyncStackSize), inlineError)) {
+          return failure(inlineError);
+        }
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        break;
+      }
+#else
         emitRuntimeCall(emitter, reinterpret_cast<std::uintptr_t>(&minijsBaselineSub));
         epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
         break;
+#endif
 
       case Opcode::Mul:
         emitRuntimeCall(emitter, reinterpret_cast<std::uintptr_t>(&minijsBaselineMul));
