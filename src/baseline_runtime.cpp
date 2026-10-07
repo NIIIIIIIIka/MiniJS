@@ -216,6 +216,22 @@ extern "C" bool minijsBaselineMod(minijs::BaselineFrame* frame) {
   }
 }
 
+extern "C" bool minijsBaselineModNumber(minijs::BaselineFrame* frame) {
+  if (!frameCanRun(frame)) {
+    return false;
+  }
+
+  try {
+    return frame->vm->baselineRuntimeModNumber(*frame);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
+  } catch (...) {
+    return markFailed(frame);
+  }
+}
+
 extern "C" bool minijsBaselineNegate(minijs::BaselineFrame* frame) {
   if (!frameCanRun(frame)) {
     return false;

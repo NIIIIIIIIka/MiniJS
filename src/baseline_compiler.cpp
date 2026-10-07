@@ -380,6 +380,99 @@ class WindowsX64Emitter {
     return error.empty();
   }
 
+  // 如果栈顶两个值都是数字，并且需要时确认右操作数非 0，就调用窄 helper；
+  // 否则回退到完整 runtime helper，保留类型错误和除零错误语义。
+  bool emitGuardedNumberBinaryRuntimeCall(std::uintptr_t guardedFunctionAddress,
+                                          std::uintptr_t fallbackFunctionAddress,
+                                          std::string_view operationName,
+                                          bool fallbackOnRightZero,
+                                          std::string& error) {
+    if (sizeof(Value) > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
+      error = std::string("Value size is too large for x64 guarded ") +
+              std::string(operationName);
+      return false;
+    }
+
+    emit({0x48, 0x8B, 0x83});  // mov rax, [rbx + BaselineFrame::stackSize]
+    emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackSize)));
+    emit({0x48, 0x83, 0xF8, 0x02});  // cmp rax, 2
+    const std::size_t notEnoughValuesFallback = emitJbPlaceholder();
+
+    emit({0x48, 0x8B, 0x8B});  // mov rcx, [rbx + BaselineFrame::stackData]
+    emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackData)));
+
+    emit({0x48, 0x89, 0xC2});  // mov rdx, rax
+    emit({0x48, 0x83, 0xEA, 0x02});  // sub rdx, 2
+    emit({0x48, 0x69, 0xD2});  // imul rdx, rdx, sizeof(Value)
+    emit32(static_cast<std::uint32_t>(sizeof(Value)));
+    emit({0x48, 0x8D, 0x14, 0x11});  // lea rdx, [rcx + rdx]
+
+    emit({0x48, 0xFF, 0xC8});  // dec rax
+    emit({0x48, 0x69, 0xC0});  // imul rax, rax, sizeof(Value)
+    emit32(static_cast<std::uint32_t>(sizeof(Value)));
+    emit({0x48, 0x8D, 0x0C, 0x01});  // lea rcx, [rcx + rax]
+
+    emit({0x81, 0xBA});  // cmp dword ptr [rdx + Value::typeOffset], Number
+    emit32(static_cast<std::uint32_t>(Value::typeOffset()));
+    emit32(Value::numberTypeTag());
+    const std::size_t leftNonNumberFallback = emitJnePlaceholder();
+
+    emit({0x81, 0xB9});  // cmp dword ptr [rcx + Value::typeOffset], Number
+    emit32(static_cast<std::uint32_t>(Value::typeOffset()));
+    emit32(Value::numberTypeTag());
+    const std::size_t rightNonNumberFallback = emitJnePlaceholder();
+
+    std::size_t rightZeroFallback = 0;
+    bool hasRightZeroFallback = false;
+    if (fallbackOnRightZero) {
+      // 取模和除法一样需要保留除零错误：右操作数是 0 时回退到通用 helper。
+      // NaN 走 unordered 分支，不会被当作 0。
+      emit({0xF2, 0x0F, 0x10, 0x89});  // movsd xmm1, [rcx + Value::numberOffset]
+      emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+      emit({0x66, 0x0F, 0x57, 0xD2});  // xorpd xmm2, xmm2
+      emit({0x66, 0x0F, 0x2E, 0xCA});  // ucomisd xmm1, xmm2
+      const std::size_t unorderedContinue = emitJpPlaceholder();
+      rightZeroFallback = emitJzPlaceholder();
+      hasRightZeroFallback = true;
+      patchBranchTo(unorderedContinue, offset(), true, error);
+      if (!error.empty()) {
+        return false;
+      }
+    }
+
+    emitMoveFrameToFirstArg();
+    emitLoadHelper(guardedFunctionAddress);
+    emitCallHelper();
+    const std::size_t done = emitJumpPlaceholder();
+
+    const std::size_t fallback = offset();
+    patchBranchTo(notEnoughValuesFallback, fallback, true, error);
+    if (!error.empty()) {
+      return false;
+    }
+    patchBranchTo(leftNonNumberFallback, fallback, true, error);
+    if (!error.empty()) {
+      return false;
+    }
+    patchBranchTo(rightNonNumberFallback, fallback, true, error);
+    if (!error.empty()) {
+      return false;
+    }
+    if (hasRightZeroFallback) {
+      patchBranchTo(rightZeroFallback, fallback, true, error);
+      if (!error.empty()) {
+        return false;
+      }
+    }
+    emitMoveFrameToFirstArg();
+    emitLoadHelper(fallbackFunctionAddress);
+    emitCallHelper();
+
+    const std::size_t doneOffset = offset();
+    patchBranchTo(done, doneOffset, false, error);
+    return error.empty();
+  }
+
   bool patchBranchTo(std::size_t branchOffset, std::size_t targetOffset, bool conditional,
                      std::string& error) {
     const std::size_t immediateOffset = branchOffset + (conditional ? 2 : 1);
@@ -597,9 +690,23 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
 #endif
 
       case Opcode::Mod:
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+      {
+        std::string inlineError;
+        if (!emitter.emitGuardedNumberBinaryRuntimeCall(
+                reinterpret_cast<std::uintptr_t>(&minijsBaselineModNumber),
+                reinterpret_cast<std::uintptr_t>(&minijsBaselineMod),
+                "mod", true, inlineError)) {
+          return failure(inlineError);
+        }
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        break;
+      }
+#else
         emitRuntimeCall(emitter, reinterpret_cast<std::uintptr_t>(&minijsBaselineMod));
         epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
         break;
+#endif
 
       case Opcode::Negate:
 #if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))

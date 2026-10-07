@@ -1411,6 +1411,15 @@ bool VM::baselineRuntimeMod(BaselineFrame& frame) {
   return true;
 }
 
+bool VM::baselineRuntimeModNumber(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  Value right = pop();
+  Value left = pop();
+  push(Value(std::fmod(left.asNumber(), right.asNumber())));
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
 bool VM::baselineRuntimeNegate(BaselineFrame& frame) {
   validateBaselineRuntimeFrame(frame);
   push(Value(-pop().asNumber()));

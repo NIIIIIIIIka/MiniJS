@@ -28,6 +28,7 @@ extern "C" bool minijsBaselineSub(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineMul(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineDiv(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineMod(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineModNumber(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineNegate(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineSyncStackSize(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineReturn(minijs::BaselineFrame* frame);
@@ -133,6 +134,7 @@ class VM {
   friend bool ::minijsBaselineMul(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineDiv(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineMod(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineModNumber(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineNegate(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineSyncStackSize(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineReturn(minijs::BaselineFrame* frame);
@@ -187,6 +189,7 @@ class VM {
   bool baselineRuntimeMul(BaselineFrame& frame);
   bool baselineRuntimeDiv(BaselineFrame& frame);
   bool baselineRuntimeMod(BaselineFrame& frame);
+  bool baselineRuntimeModNumber(BaselineFrame& frame);
   bool baselineRuntimeNegate(BaselineFrame& frame);
   bool baselineRuntimeSyncStackSize(BaselineFrame& frame);
   bool baselineRuntimeReturn(BaselineFrame& frame);

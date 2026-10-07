@@ -4745,6 +4745,73 @@ void testJitDispatchInlineDivFallbackPreservesTypeError() {
   EXPECT(feedback->state == minijs::JitState::Compiled);
 }
 
+void testJitDispatchGuardedModRunsNumberHelper() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  const minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+    function mod(left, right) { return left % right; }
+    mod(20, 6);
+    mod(22, 5);
+  )");
+
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 2);
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("mod");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->callCount == 2);
+  EXPECT(feedback->baselineEntryCount == 1);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+}
+
+void testJitDispatchGuardedModFallbackPreservesModuloByZero() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  try {
+    runBytecodeProgramOnVm(vm, R"(
+      function mod(left, right) { return left % right; }
+      mod(20, 6);
+      mod(1, 0);
+    )");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: modulo by zero");
+  }
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("mod");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->callCount == 2);
+  EXPECT(feedback->baselineEntryCount == 1);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+}
+
+void testJitDispatchGuardedModFallbackPreservesTypeError() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  try {
+    runBytecodeProgramOnVm(vm, R"(
+      function mod(left, right) { return left % right; }
+      mod(20, 6);
+      mod("x", 1);
+    )");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: value is not a number");
+  }
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("mod");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->callCount == 2);
+  EXPECT(feedback->baselineEntryCount == 1);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+}
+
 void testJitDispatchRunsAfterManualGc() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -5132,6 +5199,9 @@ void runBytecodeTests() {
   testJitDispatchInlineDivRunsNumberFastPath();
   testJitDispatchInlineDivFallbackPreservesDivisionByZero();
   testJitDispatchInlineDivFallbackPreservesTypeError();
+  testJitDispatchGuardedModRunsNumberHelper();
+  testJitDispatchGuardedModFallbackPreservesModuloByZero();
+  testJitDispatchGuardedModFallbackPreservesTypeError();
   testJitDispatchRunsAfterManualGc();
   testJitDispatchUsesMethodSlotStart();
   testJitDispatchPreservesInitReceiverReturn();
