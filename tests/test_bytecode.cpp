@@ -4678,6 +4678,73 @@ void testJitDispatchInlineMulFallbackPreservesTypeError() {
   EXPECT(feedback->state == minijs::JitState::Compiled);
 }
 
+void testJitDispatchInlineDivRunsNumberFastPath() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  const minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+    function div(left, right) { return left / right; }
+    div(20, 2);
+    div(21, 3);
+  )");
+
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 7);
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("div");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->callCount == 2);
+  EXPECT(feedback->baselineEntryCount == 1);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+}
+
+void testJitDispatchInlineDivFallbackPreservesDivisionByZero() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  try {
+    runBytecodeProgramOnVm(vm, R"(
+      function div(left, right) { return left / right; }
+      div(20, 2);
+      div(1, 0);
+    )");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: division by zero");
+  }
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("div");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->callCount == 2);
+  EXPECT(feedback->baselineEntryCount == 1);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+}
+
+void testJitDispatchInlineDivFallbackPreservesTypeError() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  try {
+    runBytecodeProgramOnVm(vm, R"(
+      function div(left, right) { return left / right; }
+      div(20, 2);
+      div("x", 1);
+    )");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: value is not a number");
+  }
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("div");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->callCount == 2);
+  EXPECT(feedback->baselineEntryCount == 1);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+}
+
 void testJitDispatchRunsAfterManualGc() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -5062,6 +5129,9 @@ void runBytecodeTests() {
   testJitDispatchInlineSubFallbackPreservesTypeError();
   testJitDispatchInlineMulRunsNumberFastPath();
   testJitDispatchInlineMulFallbackPreservesTypeError();
+  testJitDispatchInlineDivRunsNumberFastPath();
+  testJitDispatchInlineDivFallbackPreservesDivisionByZero();
+  testJitDispatchInlineDivFallbackPreservesTypeError();
   testJitDispatchRunsAfterManualGc();
   testJitDispatchUsesMethodSlotStart();
   testJitDispatchPreservesInitReceiverReturn();

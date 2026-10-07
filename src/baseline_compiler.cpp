@@ -283,6 +283,7 @@ class WindowsX64Emitter {
                                            std::uintptr_t syncStackSizeAddress,
                                            std::uint8_t sseOpcode,
                                            std::string_view operationName,
+                                           bool fallbackOnRightZero,
                                            std::string& error) {
     // imul r64, r64, imm32 要求 sizeof(Value) 能放进 32 位立即数。
     if (sizeof(Value) > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
@@ -319,6 +320,24 @@ class WindowsX64Emitter {
     emit32(Value::numberTypeTag());
     const std::size_t rightNonNumberFallback = emitJnePlaceholder();
 
+    std::size_t rightZeroFallback = 0;
+    bool hasRightZeroFallback = false;
+    if (fallbackOnRightZero) {
+      // 除法需要保留 VM 的 division by zero 语义：除数是 0 时回退到 helper。
+      // ucomisd 遇到 NaN 会设置 PF，所以先用 jp 跳过 jz，避免把 NaN 误判为 0。
+      emit({0xF2, 0x0F, 0x10, 0x89});  // movsd xmm1, [rcx + Value::numberOffset]
+      emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+      emit({0x66, 0x0F, 0x57, 0xD2});  // xorpd xmm2, xmm2
+      emit({0x66, 0x0F, 0x2E, 0xCA});  // ucomisd xmm1, xmm2
+      const std::size_t unorderedContinue = emitJpPlaceholder();
+      rightZeroFallback = emitJzPlaceholder();
+      hasRightZeroFallback = true;
+      patchBranchTo(unorderedContinue, offset(), true, error);
+      if (!error.empty()) {
+        return false;
+      }
+    }
+
     emit({0xF2, 0x0F, 0x10, 0x82});  // movsd xmm0, [rdx + Value::numberOffset]
     emit32(static_cast<std::uint32_t>(Value::numberOffset()));
     emit({0xF2, 0x0F, sseOpcode, 0x81});  // <op>sd xmm0, [rcx + Value::numberOffset]
@@ -345,6 +364,12 @@ class WindowsX64Emitter {
     patchBranchTo(rightNonNumberFallback, fallback, true, error);
     if (!error.empty()) {
       return false;
+    }
+    if (hasRightZeroFallback) {
+      patchBranchTo(rightZeroFallback, fallback, true, error);
+      if (!error.empty()) {
+        return false;
+      }
     }
     emitMoveFrameToFirstArg();
     emitLoadHelper(functionAddress);
@@ -409,6 +434,14 @@ class WindowsX64Emitter {
   std::size_t emitJnePlaceholder() {
     const std::size_t patchOffset = offset();
     emit({0x0F, 0x85});  // jne rel32
+    emit32(0);
+    return patchOffset;
+  }
+
+  // 生成 PF=1 时跳转的占位符，用于跳过 NaN 的除零 fallback。
+  std::size_t emitJpPlaceholder() {
+    const std::size_t patchOffset = offset();
+    emit({0x0F, 0x8A});  // jp rel32
     emit32(0);
     return patchOffset;
   }
@@ -513,7 +546,7 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
         if (!emitter.emitInlineNumberBinaryOrRuntimeCall(
                 reinterpret_cast<std::uintptr_t>(&minijsBaselineSub),
                 reinterpret_cast<std::uintptr_t>(&minijsBaselineSyncStackSize),
-                0x5C, "sub", inlineError)) {
+                0x5C, "sub", false, inlineError)) {
           return failure(inlineError);
         }
         epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
@@ -532,7 +565,7 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
         if (!emitter.emitInlineNumberBinaryOrRuntimeCall(
                 reinterpret_cast<std::uintptr_t>(&minijsBaselineMul),
                 reinterpret_cast<std::uintptr_t>(&minijsBaselineSyncStackSize),
-                0x59, "mul", inlineError)) {
+                0x59, "mul", false, inlineError)) {
           return failure(inlineError);
         }
         epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
@@ -545,9 +578,23 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
 #endif
 
       case Opcode::Div:
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+      {
+        std::string inlineError;
+        if (!emitter.emitInlineNumberBinaryOrRuntimeCall(
+                reinterpret_cast<std::uintptr_t>(&minijsBaselineDiv),
+                reinterpret_cast<std::uintptr_t>(&minijsBaselineSyncStackSize),
+                0x5E, "div", true, inlineError)) {
+          return failure(inlineError);
+        }
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        break;
+      }
+#else
         emitRuntimeCall(emitter, reinterpret_cast<std::uintptr_t>(&minijsBaselineDiv));
         epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
         break;
+#endif
 
       case Opcode::Mod:
         emitRuntimeCall(emitter, reinterpret_cast<std::uintptr_t>(&minijsBaselineMod));
