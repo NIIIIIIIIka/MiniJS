@@ -1436,6 +1436,24 @@ bool VM::baselineRuntimeEqual(BaselineFrame& frame) {
   return true;
 }
 
+bool VM::baselineRuntimeGreater(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  Value right = pop();
+  Value left = pop();
+  push(Value(left.asNumber() > right.asNumber()));
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeLess(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  Value right = pop();
+  Value left = pop();
+  push(Value(left.asNumber() < right.asNumber()));
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
 bool VM::baselineRuntimeSyncStackSize(BaselineFrame& frame) {
   validateBaselineRuntimeFrame(frame);
   if (frame.stackSize > stack_.size()) {

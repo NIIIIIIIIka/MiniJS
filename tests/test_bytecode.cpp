@@ -4292,6 +4292,45 @@ void testBaselineCompilerNativeEntryRunsEqualFunction() {
   EXPECT(result.equals(minijs::Value(true)));
 }
 
+void testBaselineCompilerNativeEntryRunsComparisonFunctions() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  runBytecodeProgramOnVm(vm, R"(
+    function greater(a, b) { return a > b; }
+    function less(a, b) { return a < b; }
+    greater(2, 1);
+    less(1, 2);
+  )");
+
+  const minijs::BaselineCode* greaterCode = vm.debugGlobalFunctionBaselineCode("greater");
+  EXPECT(greaterCode != nullptr);
+  EXPECT(greaterCode->entry != nullptr);
+  minijs::Value result = vm.debugExecuteGlobalFunctionBaselineEntry(
+      "greater", {minijs::Value(4.0), minijs::Value(3.0)}, greaterCode->entry);
+  EXPECT(result.isBoolean());
+  EXPECT(result.equals(minijs::Value(true)));
+
+  result = vm.debugExecuteGlobalFunctionBaselineEntry(
+      "greater", {minijs::Value(3.0), minijs::Value(4.0)}, greaterCode->entry);
+  EXPECT(result.isBoolean());
+  EXPECT(result.equals(minijs::Value(false)));
+
+  const minijs::BaselineCode* lessCode = vm.debugGlobalFunctionBaselineCode("less");
+  EXPECT(lessCode != nullptr);
+  EXPECT(lessCode->entry != nullptr);
+  result = vm.debugExecuteGlobalFunctionBaselineEntry(
+      "less", {minijs::Value(3.0), minijs::Value(4.0)}, lessCode->entry);
+  EXPECT(result.isBoolean());
+  EXPECT(result.equals(minijs::Value(true)));
+
+  result = vm.debugExecuteGlobalFunctionBaselineEntry(
+      "less", {minijs::Value(4.0), minijs::Value(3.0)}, lessCode->entry);
+  EXPECT(result.isBoolean());
+  EXPECT(result.equals(minijs::Value(false)));
+}
+
 void testJitDispatchRunsNativeBaselineEntryForSupportedFunction() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -4338,6 +4377,40 @@ void testJitDispatchRunsNativeBaselineEntryForEqualFunction() {
   const minijs::BaselineCode* code = vm.debugGlobalFunctionBaselineCode("equal");
   EXPECT(code != nullptr);
   EXPECT(code->entry != nullptr);
+}
+
+void testJitDispatchRunsNativeBaselineEntryForComparisonFunctions() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+    function greater(a, b) { return a > b; }
+    greater(1, 2);
+    greater(5, 3);
+  )");
+
+  EXPECT(result.isBoolean());
+  EXPECT(result.equals(minijs::Value(true)));
+
+  const minijs::JitFeedback* greaterFeedback = vm.debugGlobalFunctionJitFeedback("greater");
+  EXPECT(greaterFeedback != nullptr);
+  EXPECT(greaterFeedback->state == minijs::JitState::Compiled);
+  EXPECT(greaterFeedback->baselineEntryCount == 1);
+
+  result = runBytecodeProgramOnVm(vm, R"(
+    function less(a, b) { return a < b; }
+    less(2, 1);
+    less(3, 5);
+  )");
+
+  EXPECT(result.isBoolean());
+  EXPECT(result.equals(minijs::Value(true)));
+
+  const minijs::JitFeedback* lessFeedback = vm.debugGlobalFunctionJitFeedback("less");
+  EXPECT(lessFeedback != nullptr);
+  EXPECT(lessFeedback->state == minijs::JitState::Compiled);
+  EXPECT(lessFeedback->baselineEntryCount == 1);
 }
 #endif
 
@@ -4623,6 +4696,46 @@ void testJitDispatchPreservesRuntimeErrors() {
   EXPECT(feedback->callCount == 2);
   EXPECT(feedback->baselineEntryCount == 1);
   EXPECT(feedback->state == minijs::JitState::Compiled);
+}
+
+void testJitDispatchComparisonHelpersPreserveTypeErrors() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  try {
+    runBytecodeProgramOnVm(vm, R"(
+      function greater(a, b) { return a > b; }
+      greater(2, 1);
+      greater("x", 1);
+    )");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: value is not a number");
+  }
+
+  const minijs::JitFeedback* greaterFeedback = vm.debugGlobalFunctionJitFeedback("greater");
+  EXPECT(greaterFeedback != nullptr);
+  EXPECT(greaterFeedback->callCount == 2);
+  EXPECT(greaterFeedback->baselineEntryCount == 1);
+  EXPECT(greaterFeedback->state == minijs::JitState::Compiled);
+
+  try {
+    runBytecodeProgramOnVm(vm, R"(
+      function less(a, b) { return a < b; }
+      less(1, 2);
+      less("x", 1);
+    )");
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: value is not a number");
+  }
+
+  const minijs::JitFeedback* lessFeedback = vm.debugGlobalFunctionJitFeedback("less");
+  EXPECT(lessFeedback != nullptr);
+  EXPECT(lessFeedback->callCount == 2);
+  EXPECT(lessFeedback->baselineEntryCount == 1);
+  EXPECT(lessFeedback->state == minijs::JitState::Compiled);
 }
 
 void testJitDispatchInlineNegateFallbackPreservesTypeError() {
@@ -5283,8 +5396,10 @@ void runBytecodeTests() {
   testBaselineCompilerNativeEntryRunsAddFunction();
   testBaselineCompilerNativeEntryRunsArithmeticFunction();
   testBaselineCompilerNativeEntryRunsEqualFunction();
+  testBaselineCompilerNativeEntryRunsComparisonFunctions();
   testJitDispatchRunsNativeBaselineEntryForSupportedFunction();
   testJitDispatchRunsNativeBaselineEntryForEqualFunction();
+  testJitDispatchRunsNativeBaselineEntryForComparisonFunctions();
 #endif
   testBaselineRuntimeAbiRunsArithmeticEntry();
   testBaselineRuntimeAbiPushesConstantsAndSetsLocals();
@@ -5300,6 +5415,7 @@ void runBytecodeTests() {
   testJitDispatchEntersCompiledFunctionOnLaterCall();
   testJitDispatchRespectsDisabledJit();
   testJitDispatchPreservesRuntimeErrors();
+  testJitDispatchComparisonHelpersPreserveTypeErrors();
   testJitDispatchInlineNegateFallbackPreservesTypeError();
   testJitDispatchInlineAddRunsNumberFastPath();
   testJitDispatchInlineAddFallbackPreservesStringConcat();

@@ -264,6 +264,38 @@ extern "C" bool minijsBaselineEqual(minijs::BaselineFrame* frame) {
   }
 }
 
+extern "C" bool minijsBaselineGreater(minijs::BaselineFrame* frame) {
+  if (!frameCanRun(frame)) {
+    return false;
+  }
+
+  try {
+    return frame->vm->baselineRuntimeGreater(*frame);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
+  } catch (...) {
+    return markFailed(frame);
+  }
+}
+
+extern "C" bool minijsBaselineLess(minijs::BaselineFrame* frame) {
+  if (!frameCanRun(frame)) {
+    return false;
+  }
+
+  try {
+    return frame->vm->baselineRuntimeLess(*frame);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
+  } catch (...) {
+    return markFailed(frame);
+  }
+}
+
 extern "C" bool minijsBaselineSyncStackSize(minijs::BaselineFrame* frame) {
   if (!frameCanRun(frame)) {
     return false;

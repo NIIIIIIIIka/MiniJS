@@ -721,6 +721,16 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
         epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
         break;
 
+      case Opcode::Greater:
+        emitRuntimeCall(emitter, reinterpret_cast<std::uintptr_t>(&minijsBaselineGreater));
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        break;
+
+      case Opcode::Less:
+        emitRuntimeCall(emitter, reinterpret_cast<std::uintptr_t>(&minijsBaselineLess));
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        break;
+
       case Opcode::Return:
         emitRuntimeCall(emitter, reinterpret_cast<std::uintptr_t>(&minijsBaselineReturn));
         epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});

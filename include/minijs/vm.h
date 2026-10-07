@@ -31,6 +31,8 @@ extern "C" bool minijsBaselineMod(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineModNumber(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineNegate(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineEqual(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineGreater(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineLess(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineSyncStackSize(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineReturn(minijs::BaselineFrame* frame);
 
@@ -138,6 +140,8 @@ class VM {
   friend bool ::minijsBaselineModNumber(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineNegate(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineEqual(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineGreater(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineLess(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineSyncStackSize(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineReturn(minijs::BaselineFrame* frame);
 
@@ -194,6 +198,8 @@ class VM {
   bool baselineRuntimeModNumber(BaselineFrame& frame);
   bool baselineRuntimeNegate(BaselineFrame& frame);
   bool baselineRuntimeEqual(BaselineFrame& frame);
+  bool baselineRuntimeGreater(BaselineFrame& frame);
+  bool baselineRuntimeLess(BaselineFrame& frame);
   bool baselineRuntimeSyncStackSize(BaselineFrame& frame);
   bool baselineRuntimeReturn(BaselineFrame& frame);
   void executeDefineGlobal(const Chunk& chunk, std::size_t nameIndex);
