@@ -441,6 +441,7 @@ epilogue:
 | `OP_EQUAL` | 无 | `minijsBaselineEqual(frame)` | 弹出两个值，通过 `Value::equals()` 比较后压入布尔结果 |
 | `OP_GREATER` | 无 | `minijsBaselineGreater(frame)` | 弹出两个值，执行数字大于比较后压入布尔结果 |
 | `OP_LESS` | 无 | `minijsBaselineLess(frame)` | 弹出两个值，执行数字小于比较后压入布尔结果 |
+| `OP_NOT` | 无 | `minijsBaselineNot(frame)` | 弹出一个值，通过 `isTruthy()` 取反后压入布尔结果 |
 | `OP_RETURN` | 无 | `minijsBaselineReturn(frame)` | 弹出返回值，关闭 upvalue，把结果写回 `returnSlot`，标记 `completed` |
 
 对应的 ARM64 stub 形态如下。

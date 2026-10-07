@@ -4331,6 +4331,37 @@ void testBaselineCompilerNativeEntryRunsComparisonFunctions() {
   EXPECT(result.equals(minijs::Value(false)));
 }
 
+void testBaselineCompilerNativeEntryRunsNotFunction() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  runBytecodeProgramOnVm(vm, R"(
+    function logicalNot(value) { return !value; }
+    logicalNot(false);
+  )");
+
+  const minijs::BaselineCode* code = vm.debugGlobalFunctionBaselineCode("logicalNot");
+  EXPECT(code != nullptr);
+  EXPECT(code->entry != nullptr);
+
+  minijs::Value result =
+      vm.debugExecuteGlobalFunctionBaselineEntry("logicalNot", {minijs::Value(false)},
+                                                 code->entry);
+  EXPECT(result.isBoolean());
+  EXPECT(result.equals(minijs::Value(true)));
+
+  result = vm.debugExecuteGlobalFunctionBaselineEntry("logicalNot", {minijs::Value(true)},
+                                                      code->entry);
+  EXPECT(result.isBoolean());
+  EXPECT(result.equals(minijs::Value(false)));
+
+  result = vm.debugExecuteGlobalFunctionBaselineEntry("logicalNot", {minijs::Value(0.0)},
+                                                      code->entry);
+  EXPECT(result.isBoolean());
+  EXPECT(result.equals(minijs::Value(true)));
+}
+
 void testJitDispatchRunsNativeBaselineEntryForSupportedFunction() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -4411,6 +4442,40 @@ void testJitDispatchRunsNativeBaselineEntryForComparisonFunctions() {
   EXPECT(lessFeedback != nullptr);
   EXPECT(lessFeedback->state == minijs::JitState::Compiled);
   EXPECT(lessFeedback->baselineEntryCount == 1);
+}
+
+void testJitDispatchRunsNativeBaselineEntryForNotFunction() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+    function logicalNot(value) { return !value; }
+    logicalNot(true);
+    logicalNot("");
+  )");
+
+  EXPECT(result.isBoolean());
+  EXPECT(result.equals(minijs::Value(true)));
+
+  const minijs::JitFeedback* notFeedback = vm.debugGlobalFunctionJitFeedback("logicalNot");
+  EXPECT(notFeedback != nullptr);
+  EXPECT(notFeedback->state == minijs::JitState::Compiled);
+  EXPECT(notFeedback->baselineEntryCount == 1);
+
+  result = runBytecodeProgramOnVm(vm, R"(
+    function notEqual(a, b) { return a != b; }
+    notEqual(1, 1);
+    notEqual(1, 2);
+  )");
+
+  EXPECT(result.isBoolean());
+  EXPECT(result.equals(minijs::Value(true)));
+
+  const minijs::JitFeedback* notEqualFeedback = vm.debugGlobalFunctionJitFeedback("notEqual");
+  EXPECT(notEqualFeedback != nullptr);
+  EXPECT(notEqualFeedback->state == minijs::JitState::Compiled);
+  EXPECT(notEqualFeedback->baselineEntryCount == 1);
 }
 #endif
 
@@ -5397,9 +5462,11 @@ void runBytecodeTests() {
   testBaselineCompilerNativeEntryRunsArithmeticFunction();
   testBaselineCompilerNativeEntryRunsEqualFunction();
   testBaselineCompilerNativeEntryRunsComparisonFunctions();
+  testBaselineCompilerNativeEntryRunsNotFunction();
   testJitDispatchRunsNativeBaselineEntryForSupportedFunction();
   testJitDispatchRunsNativeBaselineEntryForEqualFunction();
   testJitDispatchRunsNativeBaselineEntryForComparisonFunctions();
+  testJitDispatchRunsNativeBaselineEntryForNotFunction();
 #endif
   testBaselineRuntimeAbiRunsArithmeticEntry();
   testBaselineRuntimeAbiPushesConstantsAndSetsLocals();

@@ -1454,6 +1454,13 @@ bool VM::baselineRuntimeLess(BaselineFrame& frame) {
   return true;
 }
 
+bool VM::baselineRuntimeNot(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  push(Value(!pop().isTruthy()));
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
 bool VM::baselineRuntimeSyncStackSize(BaselineFrame& frame) {
   validateBaselineRuntimeFrame(frame);
   if (frame.stackSize > stack_.size()) {
