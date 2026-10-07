@@ -51,6 +51,7 @@ bool isBaselineSupported(Opcode opcode) {
     case Opcode::GetCurrentClosure:
     case Opcode::Call:
     case Opcode::MethodCall:
+    case Opcode::SuperCall:
       return true;
 
     case Opcode::Closure:
@@ -58,7 +59,6 @@ bool isBaselineSupported(Opcode opcode) {
     case Opcode::Method:
     case Opcode::StaticMethod:
     case Opcode::Inherit:
-    case Opcode::SuperCall:
       return false;
   }
 

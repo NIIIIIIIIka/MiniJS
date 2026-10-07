@@ -610,37 +610,8 @@ Value VM::run(const Chunk& chunk) {
       }
       case Opcode::SuperCall: {
         const std::uint8_t nameIndex = chunk.readByte(frame.ip++);
-        const std::string& name = chunk.constant(nameIndex).asString();
         const std::uint8_t argCount = chunk.readByte(frame.ip++);
-        if (stack_.size() < static_cast<std::size_t>(argCount) + 2) {
-          throw RuntimeError("super call stack underflow");
-        }
-
-        const std::size_t receiverIndex = stack_.size() - argCount - 1;
-        const std::size_t superclassIndex = receiverIndex - 1;
-        Value superclass = stack_[superclassIndex];
-        Value receiver = stack_[receiverIndex];
-        if (!superclass.isGcClass()) {
-          throw RuntimeError("superclass must be a class");
-        }
-        if (!isGcInstanceValue(receiver)) {
-          throw RuntimeError("this must be an instance");
-        }
-
-        auto method = findMethod(superclass.asGcClass(), name);
-        if (method == nullptr) {
-          throw RuntimeError("superclass has no method: " + name);
-        }
-
-        // 重排前栈布局：[..., superclass, receiver, arg0, arg1, ...]
-        // 重排后栈布局：[..., receiver, arg0, arg1, ...]
-        // 方法从 superclass 上查找，但 local 0 / this 仍然是当前 receiver。
-        stack_[superclassIndex] = receiver;
-        for (std::size_t i = 0; i < argCount; ++i) {
-          stack_[superclassIndex + 1 + i] = stack_[receiverIndex + 1 + i];
-        }
-        stack_.resize(superclassIndex + 1 + argCount);
-        callBytecodeClosure(method, argCount, superclassIndex, superclassIndex, "method");
+        executeSuperCall(chunk, nameIndex, argCount);
         break;
       }
       case Opcode::Array: {
@@ -1291,6 +1262,14 @@ bool VM::baselineRuntimeMethodCall(BaselineFrame& frame, std::uint32_t nameIndex
   return true;
 }
 
+bool VM::baselineRuntimeSuperCall(BaselineFrame& frame, std::uint32_t nameIndex,
+                                  std::uint32_t argCount) {
+  validateBaselineRuntimeFrame(frame);
+  executeSuperCall(frame.closure->function->function.chunk, nameIndex, argCount, true);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
 bool VM::baselineRuntimeAdd(BaselineFrame& frame) {
   validateBaselineRuntimeFrame(frame);
   Value right = pop();
@@ -1915,6 +1894,44 @@ void VM::executeMethodCall(const Chunk& chunk, std::size_t nameIndex, std::size_
   throw RuntimeError("unknown array method: " + name);
 }
 
+void VM::executeSuperCall(const Chunk& chunk, std::size_t nameIndex, std::size_t argCount,
+                          bool requireSynchronousCallee) {
+  const std::string& name = chunk.constant(nameIndex).asString();
+  if (stack_.size() < argCount + 2) {
+    throw RuntimeError("super call stack underflow");
+  }
+
+  const std::size_t receiverIndex = stack_.size() - argCount - 1;
+  const std::size_t superclassIndex = receiverIndex - 1;
+  Value superclass = stack_[superclassIndex];
+  Value receiver = stack_[receiverIndex];
+  if (!superclass.isGcClass()) {
+    throw RuntimeError("superclass must be a class");
+  }
+  if (!isGcInstanceValue(receiver)) {
+    throw RuntimeError("this must be an instance");
+  }
+
+  auto* method = findMethod(superclass.asGcClass(), name);
+  if (method == nullptr) {
+    throw RuntimeError("superclass has no method: " + name);
+  }
+
+  // 重排前栈布局：[..., superclass, receiver, arg0, arg1, ...]
+  // 重排后栈布局：[..., receiver, arg0, arg1, ...]
+  // 方法从 superclass 上查找，但 local 0 / this 仍然是当前 receiver。
+  stack_[superclassIndex] = receiver;
+  for (std::size_t i = 0; i < argCount; ++i) {
+    stack_[superclassIndex + 1 + i] = stack_[receiverIndex + 1 + i];
+  }
+  stack_.resize(superclassIndex + 1 + argCount);
+  if (requireSynchronousCallee) {
+    callBytecodeClosureSynchronously(method, argCount, superclassIndex, superclassIndex, "method");
+  } else {
+    callBytecodeClosure(method, argCount, superclassIndex, superclassIndex, "method");
+  }
+}
+
 void VM::callBytecodeClosure(ObjClosure* closure, std::size_t argCount, std::size_t returnSlot,
                              std::size_t slotStart, const std::string& label,
                              bool returnsReceiver) {
@@ -2292,13 +2309,16 @@ Value VM::executeBaselineCode(const BaselineCode& code, CallFrame& frame) {
                           instruction.operands[2], true);
         ++ip;
         break;
+      case Opcode::SuperCall:
+        executeSuperCall(chunk, instruction.operands[0], instruction.operands[1], true);
+        ++ip;
+        break;
 
       case Opcode::Closure:
       case Opcode::Class:
       case Opcode::Method:
       case Opcode::StaticMethod:
       case Opcode::Inherit:
-      case Opcode::SuperCall:
         throw RuntimeError(std::string("baseline cannot execute ") + opcodeName(instruction.opcode));
     }
   }

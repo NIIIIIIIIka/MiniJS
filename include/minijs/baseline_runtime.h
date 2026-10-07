@@ -36,6 +36,9 @@ extern "C" bool minijsBaselineMethodCall(minijs::BaselineFrame* frame,
                                           std::uint32_t nameIndex,
                                           std::uint32_t argCount,
                                           std::uint32_t feedbackSlotIndex);
+extern "C" bool minijsBaselineSuperCall(minijs::BaselineFrame* frame,
+                                         std::uint32_t nameIndex,
+                                         std::uint32_t argCount);
 extern "C" bool minijsBaselineAdd(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineSub(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineMul(minijs::BaselineFrame* frame);

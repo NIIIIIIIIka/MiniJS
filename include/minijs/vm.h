@@ -48,6 +48,9 @@ extern "C" bool minijsBaselineMethodCall(minijs::BaselineFrame* frame,
                                           std::uint32_t nameIndex,
                                           std::uint32_t argCount,
                                           std::uint32_t feedbackSlotIndex);
+extern "C" bool minijsBaselineSuperCall(minijs::BaselineFrame* frame,
+                                         std::uint32_t nameIndex,
+                                         std::uint32_t argCount);
 extern "C" bool minijsBaselineAdd(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineSub(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineMul(minijs::BaselineFrame* frame);
@@ -185,6 +188,9 @@ class VM {
                                          std::uint32_t nameIndex,
                                          std::uint32_t argCount,
                                          std::uint32_t feedbackSlotIndex);
+  friend bool ::minijsBaselineSuperCall(minijs::BaselineFrame* frame,
+                                        std::uint32_t nameIndex,
+                                        std::uint32_t argCount);
   friend bool ::minijsBaselineAdd(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineSub(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineMul(minijs::BaselineFrame* frame);
@@ -265,6 +271,8 @@ class VM {
   bool baselineRuntimeMethodCall(BaselineFrame& frame, std::uint32_t nameIndex,
                                  std::uint32_t argCount,
                                  std::uint32_t feedbackSlotIndex);
+  bool baselineRuntimeSuperCall(BaselineFrame& frame, std::uint32_t nameIndex,
+                                std::uint32_t argCount);
   bool baselineRuntimeAdd(BaselineFrame& frame);
   bool baselineRuntimeSub(BaselineFrame& frame);
   bool baselineRuntimeMul(BaselineFrame& frame);
@@ -299,6 +307,8 @@ class VM {
   void executeMethodCall(const Chunk& chunk, std::size_t nameIndex, std::size_t argCount,
                          std::size_t feedbackSlotIndex,
                          bool requireSynchronousCallee = false);
+  void executeSuperCall(const Chunk& chunk, std::size_t nameIndex, std::size_t argCount,
+                        bool requireSynchronousCallee = false);
   void callBytecodeClosure(ObjClosure* closure, std::size_t argCount, std::size_t returnSlot,
                            std::size_t slotStart, const std::string& label,
                            bool returnsReceiver = false);

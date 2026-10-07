@@ -4089,6 +4089,45 @@ void testJitCompilesMethodCallOpcode() {
   EXPECT(vm.debugGlobalFunctionBaselineCode("callMethod") != nullptr);
 }
 
+void testJitCompilesSuperCallOpcode() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  const minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+    class Base {
+      value() {
+        return 40;
+      }
+    }
+
+    class Child < Base {
+      value() {
+        return super.value() + 2;
+      }
+    }
+
+    function callValue(child) {
+      return child.value();
+    }
+
+    let child = Child();
+    child.value();
+    callValue(child);
+    callValue(child);
+  )");
+
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 42);
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("callValue");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->callCount == 2);
+  EXPECT(feedback->baselineEntryCount == 1);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+  EXPECT(vm.debugGlobalFunctionBaselineCode("callValue") != nullptr);
+}
+
 void testBaselineExecutorRunsArithmeticAndLocals() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -5902,6 +5941,7 @@ void runBytecodeTests() {
   testJitArityErrorDoesNotCountCall();
   testJitCompilesCallOpcode();
   testJitCompilesMethodCallOpcode();
+  testJitCompilesSuperCallOpcode();
   testBaselineExecutorRunsArithmeticAndLocals();
   testBaselineExecutorRunsSimpleLoop();
   testBaselineExecutorPreservesArithmeticErrors();
