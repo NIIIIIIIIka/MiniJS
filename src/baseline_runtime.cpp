@@ -235,6 +235,58 @@ extern "C" bool minijsBaselineSetIndex(minijs::BaselineFrame* frame) {
   }
 }
 
+extern "C" bool minijsBaselineObject(minijs::BaselineFrame* frame, std::uint32_t namesIndex) {
+  if (!frameCanRun(frame)) {
+    return false;
+  }
+
+  try {
+    return frame->vm->baselineRuntimeObject(*frame, namesIndex);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
+  } catch (...) {
+    return markFailed(frame);
+  }
+}
+
+extern "C" bool minijsBaselineGetProperty(minijs::BaselineFrame* frame,
+                                           std::uint32_t nameIndex,
+                                           std::uint32_t feedbackSlotIndex) {
+  if (!frameCanRun(frame)) {
+    return false;
+  }
+
+  try {
+    return frame->vm->baselineRuntimeGetProperty(*frame, nameIndex, feedbackSlotIndex);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
+  } catch (...) {
+    return markFailed(frame);
+  }
+}
+
+extern "C" bool minijsBaselineSetProperty(minijs::BaselineFrame* frame,
+                                           std::uint32_t nameIndex,
+                                           std::uint32_t feedbackSlotIndex) {
+  if (!frameCanRun(frame)) {
+    return false;
+  }
+
+  try {
+    return frame->vm->baselineRuntimeSetProperty(*frame, nameIndex, feedbackSlotIndex);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
+  } catch (...) {
+    return markFailed(frame);
+  }
+}
+
 extern "C" bool minijsBaselineAdd(minijs::BaselineFrame* frame) {
   if (!frameCanRun(frame)) {
     return false;

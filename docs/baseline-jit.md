@@ -440,6 +440,9 @@ epilogue:
 | `OP_ARRAY` | `count` | `minijsBaselineArray(frame, count)` | 弹出 `count` 个元素，创建 VM 管理的 GC 数组并压栈 |
 | `OP_GET_INDEX` | 无 | `minijsBaselineGetIndex(frame)` | 弹出数组和下标，读取元素后压栈；类型和越界错误沿用 VM 语义 |
 | `OP_SET_INDEX` | 无 | `minijsBaselineSetIndex(frame)` | 弹出数组、下标和值，写入元素后把赋值结果压栈 |
+| `OP_OBJECT` | `namesIndex` | `minijsBaselineObject(frame, namesIndex)` | 从常量池读取属性名数组，弹出对应属性值，创建 GC 对象并压栈 |
+| `OP_GET_PROPERTY` | `nameIndex, feedbackSlot` | `minijsBaselineGetProperty(frame, nameIndex, feedbackSlot)` | 弹出对象并读取属性；普通对象继续复用属性 inline cache |
+| `OP_SET_PROPERTY` | `nameIndex, feedbackSlot` | `minijsBaselineSetProperty(frame, nameIndex, feedbackSlot)` | 写入对象属性并把赋值结果压栈；普通对象继续复用属性 inline cache |
 | `OP_ADD` | 无 | Windows x64 number fast path，否则 `minijsBaselineAdd(frame)` | 两个操作数都是数字时直接执行 double 加法并同步栈高度；否则回退 helper 保留字符串拼接语义 |
 | `OP_SUB` | 无 | Windows x64 number fast path，否则 `minijsBaselineSub(frame)` | 两个操作数都是数字时直接执行 double 减法并同步栈高度；否则回退 helper 保留 VM 语义 |
 | `OP_MUL` | 无 | Windows x64 number fast path，否则 `minijsBaselineMul(frame)` | 两个操作数都是数字时直接执行 double 乘法并同步栈高度；否则回退 helper 保留 VM 语义 |
@@ -596,12 +599,11 @@ jmp epilogue                 ; 成功返回后也结束 stub，不再执行后�
 
 第四阶段先支持低风险 opcode：
 
-- 纯表达式、局部变量、全局变量和数组下标：`Constant`、`Add`、`Sub`、`Mul`、`Div`、`Mod`、`Negate`、`Equal`、`Greater`、`Less`、`Not`、`GetLocal`、`SetLocal`、`Pop`、`DefineGlobal`、`GetGlobal`、`SetGlobal`、`Array`、`GetIndex`、`SetIndex`、`Return`
+- 纯表达式、局部变量、全局变量、数组下标和对象属性：`Constant`、`Add`、`Sub`、`Mul`、`Div`、`Mod`、`Negate`、`Equal`、`Greater`、`Less`、`Not`、`GetLocal`、`SetLocal`、`Pop`、`DefineGlobal`、`GetGlobal`、`SetGlobal`、`Array`、`GetIndex`、`SetIndex`、`Object`、`GetProperty`、`SetProperty`、`Return`
 - 控制流：`JumpIfFalse`、`Jump`、`Loop`
 
 第六阶段继续支持不引入新调用帧的 runtime helper opcode：
 
-- 对象与属性 IC：`Object`、`GetProperty`、`SetProperty`
 - 闭包访问：`GetUpvalue`、`SetUpvalue`、`CloseUpvalue`、`GetCurrentClosure`
 
 函数调用、方法调用、类定义、闭包创建、继承和 `super` 暂时编译失败并回退 VM。后续扩展时优先直接为现有 `Opcode` 增加执行路径或 runtime helper 路径，不新增平行 opcode。
@@ -612,6 +614,7 @@ jmp epilogue                 ; 成功返回后也结束 stub，不再执行后�
 - `GetLocal`、`SetLocal`、`Pop`
 - `DefineGlobal`、`GetGlobal`、`SetGlobal`
 - `Array`、`GetIndex`、`SetIndex`
+- `Object`、`GetProperty`、`SetProperty`
 - `Add`、`Sub`、`Mul`、`Div`、`Mod`、`Negate`、`Equal`、`Greater`、`Less`、`Not`
 - `JumpIfFalse`、`Jump`、`Loop`
 - `Return`

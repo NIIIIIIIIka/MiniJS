@@ -1402,6 +1402,29 @@ bool VM::baselineRuntimeSetIndex(BaselineFrame& frame) {
   return true;
 }
 
+bool VM::baselineRuntimeObject(BaselineFrame& frame, std::uint32_t namesIndex) {
+  validateBaselineRuntimeFrame(frame);
+  executeObjectLiteral(frame.closure->function->function.chunk, namesIndex);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeGetProperty(BaselineFrame& frame, std::uint32_t nameIndex,
+                                    std::uint32_t feedbackSlotIndex) {
+  validateBaselineRuntimeFrame(frame);
+  executeGetProperty(frame.closure->function->function.chunk, nameIndex, feedbackSlotIndex);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeSetProperty(BaselineFrame& frame, std::uint32_t nameIndex,
+                                    std::uint32_t feedbackSlotIndex) {
+  validateBaselineRuntimeFrame(frame);
+  executeSetProperty(frame.closure->function->function.chunk, nameIndex, feedbackSlotIndex);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
 bool VM::baselineRuntimeAdd(BaselineFrame& frame) {
   validateBaselineRuntimeFrame(frame);
   Value right = pop();

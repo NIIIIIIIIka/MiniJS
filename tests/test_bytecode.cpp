@@ -4542,6 +4542,54 @@ void testBaselineCompilerNativeEntryRunsArrayAndIndexFunctions() {
   EXPECT(result.asNumber() == 9);
 }
 
+void testBaselineCompilerNativeEntryRunsObjectAndPropertyFunctions() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  runBytecodeProgramOnVm(vm, R"(
+    let saved = { age: 18 };
+    function makeObject(value) { return { value: value, next: value + 1 }; }
+    function readSaved() { return saved.age; }
+    function writeSaved(value) {
+      saved.age = value;
+      return saved.age;
+    }
+    makeObject(1);
+    readSaved();
+    writeSaved(19);
+  )");
+
+  const minijs::BaselineCode* makeCode = vm.debugGlobalFunctionBaselineCode("makeObject");
+  EXPECT(makeCode != nullptr);
+  EXPECT(makeCode->entry != nullptr);
+  minijs::Value object = vm.debugExecuteGlobalFunctionBaselineEntry(
+      "makeObject", {minijs::Value(4.0)}, makeCode->entry);
+  EXPECT(object.isObject());
+  EXPECT(object.asObject().at("value").asNumber() == 4);
+  EXPECT(object.asObject().at("next").asNumber() == 5);
+
+  const minijs::BaselineCode* readCode = vm.debugGlobalFunctionBaselineCode("readSaved");
+  EXPECT(readCode != nullptr);
+  EXPECT(readCode->entry != nullptr);
+  minijs::Value result = vm.debugExecuteGlobalFunctionBaselineEntry("readSaved", {},
+                                                                    readCode->entry);
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 19);
+
+  const minijs::BaselineCode* writeCode = vm.debugGlobalFunctionBaselineCode("writeSaved");
+  EXPECT(writeCode != nullptr);
+  EXPECT(writeCode->entry != nullptr);
+  result = vm.debugExecuteGlobalFunctionBaselineEntry("writeSaved", {minijs::Value(21.0)},
+                                                      writeCode->entry);
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 21);
+
+  result = vm.debugExecuteGlobalFunctionBaselineEntry("readSaved", {}, readCode->entry);
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 21);
+}
+
 void testJitDispatchRunsNativeBaselineEntryForSupportedFunction() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -4879,6 +4927,10 @@ void testJitDispatchRunsObjectLiteralAndPropertyOpcodes() {
   EXPECT(stats.misses >= 1);
   EXPECT(stats.updates >= 1);
   EXPECT(stats.hits >= 1);
+
+  const minijs::BaselineCode* code = vm.debugGlobalFunctionBaselineCode("make");
+  EXPECT(code != nullptr);
+  EXPECT(code->entry != nullptr);
 }
 
 void testJitDispatchRunsSetPropertyOpcode() {
@@ -4909,6 +4961,10 @@ void testJitDispatchRunsSetPropertyOpcode() {
   EXPECT(stats.setMisses >= 1);
   EXPECT(stats.setUpdates >= 1);
   EXPECT(stats.setHits >= 1);
+
+  const minijs::BaselineCode* code = vm.debugGlobalFunctionBaselineCode("bumpAge");
+  EXPECT(code != nullptr);
+  EXPECT(code->entry != nullptr);
 }
 
 void testJitDispatchRunsUpvalueOpcodes() {
@@ -5714,6 +5770,7 @@ void runBytecodeTests() {
   testBaselineCompilerNativeEntryRunsControlFlowFunctions();
   testBaselineCompilerNativeEntryRunsGlobalFunctions();
   testBaselineCompilerNativeEntryRunsArrayAndIndexFunctions();
+  testBaselineCompilerNativeEntryRunsObjectAndPropertyFunctions();
   testJitDispatchRunsNativeBaselineEntryForSupportedFunction();
   testJitDispatchRunsNativeBaselineEntryForEqualFunction();
   testJitDispatchRunsNativeBaselineEntryForComparisonFunctions();

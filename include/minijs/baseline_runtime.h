@@ -20,6 +20,13 @@ extern "C" bool minijsBaselineSetGlobal(minijs::BaselineFrame* frame,
 extern "C" bool minijsBaselineArray(minijs::BaselineFrame* frame, std::uint32_t count);
 extern "C" bool minijsBaselineGetIndex(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineSetIndex(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineObject(minijs::BaselineFrame* frame, std::uint32_t namesIndex);
+extern "C" bool minijsBaselineGetProperty(minijs::BaselineFrame* frame,
+                                           std::uint32_t nameIndex,
+                                           std::uint32_t feedbackSlotIndex);
+extern "C" bool minijsBaselineSetProperty(minijs::BaselineFrame* frame,
+                                           std::uint32_t nameIndex,
+                                           std::uint32_t feedbackSlotIndex);
 extern "C" bool minijsBaselineAdd(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineSub(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineMul(minijs::BaselineFrame* frame);
