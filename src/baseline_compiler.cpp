@@ -775,6 +775,31 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
         epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
         break;
 
+      case Opcode::GetUpvalue:
+        emitRuntimeCallWithU32(emitter,
+                               reinterpret_cast<std::uintptr_t>(&minijsBaselineGetUpvalue),
+                               instruction.operands[0]);
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        break;
+
+      case Opcode::SetUpvalue:
+        emitRuntimeCallWithU32(emitter,
+                               reinterpret_cast<std::uintptr_t>(&minijsBaselineSetUpvalue),
+                               instruction.operands[0]);
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        break;
+
+      case Opcode::CloseUpvalue:
+        emitRuntimeCall(emitter, reinterpret_cast<std::uintptr_t>(&minijsBaselineCloseUpvalue));
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        break;
+
+      case Opcode::GetCurrentClosure:
+        emitRuntimeCall(emitter,
+                        reinterpret_cast<std::uintptr_t>(&minijsBaselineGetCurrentClosure));
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        break;
+
       case Opcode::Add:
 #if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
       {

@@ -1425,6 +1425,40 @@ bool VM::baselineRuntimeSetProperty(BaselineFrame& frame, std::uint32_t nameInde
   return true;
 }
 
+bool VM::baselineRuntimeGetUpvalue(BaselineFrame& frame, std::uint32_t slot) {
+  validateBaselineRuntimeFrame(frame);
+  const auto& upvalue = frame.closure->upvalues[slot];
+  push(upvalue->isClosed ? upvalue->closed : stack_[upvalue->stackIndex]);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeSetUpvalue(BaselineFrame& frame, std::uint32_t slot) {
+  validateBaselineRuntimeFrame(frame);
+  const auto& upvalue = frame.closure->upvalues[slot];
+  if (upvalue->isClosed) {
+    upvalue->closed = peek();
+  } else {
+    stack_[upvalue->stackIndex] = peek();
+  }
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeCloseUpvalue(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  executeCloseUpvalue();
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeGetCurrentClosure(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  push(Value(frame.closure));
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
 bool VM::baselineRuntimeAdd(BaselineFrame& frame) {
   validateBaselineRuntimeFrame(frame);
   Value right = pop();

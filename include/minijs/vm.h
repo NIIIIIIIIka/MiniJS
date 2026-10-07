@@ -39,6 +39,10 @@ extern "C" bool minijsBaselineGetProperty(minijs::BaselineFrame* frame,
 extern "C" bool minijsBaselineSetProperty(minijs::BaselineFrame* frame,
                                            std::uint32_t nameIndex,
                                            std::uint32_t feedbackSlotIndex);
+extern "C" bool minijsBaselineGetUpvalue(minijs::BaselineFrame* frame, std::uint32_t slot);
+extern "C" bool minijsBaselineSetUpvalue(minijs::BaselineFrame* frame, std::uint32_t slot);
+extern "C" bool minijsBaselineCloseUpvalue(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineGetCurrentClosure(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineAdd(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineSub(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineMul(minijs::BaselineFrame* frame);
@@ -167,6 +171,10 @@ class VM {
   friend bool ::minijsBaselineSetProperty(minijs::BaselineFrame* frame,
                                           std::uint32_t nameIndex,
                                           std::uint32_t feedbackSlotIndex);
+  friend bool ::minijsBaselineGetUpvalue(minijs::BaselineFrame* frame, std::uint32_t slot);
+  friend bool ::minijsBaselineSetUpvalue(minijs::BaselineFrame* frame, std::uint32_t slot);
+  friend bool ::minijsBaselineCloseUpvalue(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineGetCurrentClosure(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineAdd(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineSub(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineMul(minijs::BaselineFrame* frame);
@@ -239,6 +247,10 @@ class VM {
                                   std::uint32_t feedbackSlotIndex);
   bool baselineRuntimeSetProperty(BaselineFrame& frame, std::uint32_t nameIndex,
                                   std::uint32_t feedbackSlotIndex);
+  bool baselineRuntimeGetUpvalue(BaselineFrame& frame, std::uint32_t slot);
+  bool baselineRuntimeSetUpvalue(BaselineFrame& frame, std::uint32_t slot);
+  bool baselineRuntimeCloseUpvalue(BaselineFrame& frame);
+  bool baselineRuntimeGetCurrentClosure(BaselineFrame& frame);
   bool baselineRuntimeAdd(BaselineFrame& frame);
   bool baselineRuntimeSub(BaselineFrame& frame);
   bool baselineRuntimeMul(BaselineFrame& frame);

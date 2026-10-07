@@ -443,6 +443,10 @@ epilogue:
 | `OP_OBJECT` | `namesIndex` | `minijsBaselineObject(frame, namesIndex)` | 从常量池读取属性名数组，弹出对应属性值，创建 GC 对象并压栈 |
 | `OP_GET_PROPERTY` | `nameIndex, feedbackSlot` | `minijsBaselineGetProperty(frame, nameIndex, feedbackSlot)` | 弹出对象并读取属性；普通对象继续复用属性 inline cache |
 | `OP_SET_PROPERTY` | `nameIndex, feedbackSlot` | `minijsBaselineSetProperty(frame, nameIndex, feedbackSlot)` | 写入对象属性并把赋值结果压栈；普通对象继续复用属性 inline cache |
+| `OP_GET_UPVALUE` | `slot` | `minijsBaselineGetUpvalue(frame, slot)` | 读取当前闭包的 upvalue，打开 upvalue 从 VM 栈读取，关闭 upvalue 从 closed 值读取 |
+| `OP_SET_UPVALUE` | `slot` | `minijsBaselineSetUpvalue(frame, slot)` | 把栈顶值写入当前闭包的 upvalue，栈顶值保留给后续表达式或 `OP_POP` |
+| `OP_CLOSE_UPVALUE` | 无 | `minijsBaselineCloseUpvalue(frame)` | 关闭当前栈顶槽关联的 open upvalue，并弹出该局部槽 |
+| `OP_GET_CURRENT_CLOSURE` | 无 | `minijsBaselineGetCurrentClosure(frame)` | 把当前运行中的 closure 压栈，用于局部递归函数引用自身 |
 | `OP_ADD` | 无 | Windows x64 number fast path，否则 `minijsBaselineAdd(frame)` | 两个操作数都是数字时直接执行 double 加法并同步栈高度；否则回退 helper 保留字符串拼接语义 |
 | `OP_SUB` | 无 | Windows x64 number fast path，否则 `minijsBaselineSub(frame)` | 两个操作数都是数字时直接执行 double 减法并同步栈高度；否则回退 helper 保留 VM 语义 |
 | `OP_MUL` | 无 | Windows x64 number fast path，否则 `minijsBaselineMul(frame)` | 两个操作数都是数字时直接执行 double 乘法并同步栈高度；否则回退 helper 保留 VM 语义 |
@@ -599,14 +603,12 @@ jmp epilogue                 ; 成功返回后也结束 stub，不再执行后�
 
 第四阶段先支持低风险 opcode：
 
-- 纯表达式、局部变量、全局变量、数组下标和对象属性：`Constant`、`Add`、`Sub`、`Mul`、`Div`、`Mod`、`Negate`、`Equal`、`Greater`、`Less`、`Not`、`GetLocal`、`SetLocal`、`Pop`、`DefineGlobal`、`GetGlobal`、`SetGlobal`、`Array`、`GetIndex`、`SetIndex`、`Object`、`GetProperty`、`SetProperty`、`Return`
+- 纯表达式、局部变量、全局变量、数组下标、对象属性和闭包访问：`Constant`、`Add`、`Sub`、`Mul`、`Div`、`Mod`、`Negate`、`Equal`、`Greater`、`Less`、`Not`、`GetLocal`、`SetLocal`、`Pop`、`DefineGlobal`、`GetGlobal`、`SetGlobal`、`Array`、`GetIndex`、`SetIndex`、`Object`、`GetProperty`、`SetProperty`、`GetUpvalue`、`SetUpvalue`、`CloseUpvalue`、`GetCurrentClosure`、`Return`
 - 控制流：`JumpIfFalse`、`Jump`、`Loop`
 
 第六阶段继续支持不引入新调用帧的 runtime helper opcode：
 
-- 闭包访问：`GetUpvalue`、`SetUpvalue`、`CloseUpvalue`、`GetCurrentClosure`
-
-函数调用、方法调用、类定义、闭包创建、继承和 `super` 暂时编译失败并回退 VM。后续扩展时优先直接为现有 `Opcode` 增加执行路径或 runtime helper 路径，不新增平行 opcode。
+当前这些 opcode 已经迁移到 native compiler。函数调用、方法调用、类定义、闭包创建、继承和 `super` 暂时编译失败并回退 VM。后续扩展时优先直接为现有 `Opcode` 增加执行路径或 runtime helper 路径，不新增平行 opcode。
 
 第七阶段 native compiler 的平台 backend switch 当前覆盖：
 
@@ -615,6 +617,7 @@ jmp epilogue                 ; 成功返回后也结束 stub，不再执行后�
 - `DefineGlobal`、`GetGlobal`、`SetGlobal`
 - `Array`、`GetIndex`、`SetIndex`
 - `Object`、`GetProperty`、`SetProperty`
+- `GetUpvalue`、`SetUpvalue`、`CloseUpvalue`、`GetCurrentClosure`
 - `Add`、`Sub`、`Mul`、`Div`、`Mod`、`Negate`、`Equal`、`Greater`、`Less`、`Not`
 - `JumpIfFalse`、`Jump`、`Loop`
 - `Return`

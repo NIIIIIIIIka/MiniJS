@@ -287,6 +287,70 @@ extern "C" bool minijsBaselineSetProperty(minijs::BaselineFrame* frame,
   }
 }
 
+extern "C" bool minijsBaselineGetUpvalue(minijs::BaselineFrame* frame, std::uint32_t slot) {
+  if (!frameCanRun(frame)) {
+    return false;
+  }
+
+  try {
+    return frame->vm->baselineRuntimeGetUpvalue(*frame, slot);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
+  } catch (...) {
+    return markFailed(frame);
+  }
+}
+
+extern "C" bool minijsBaselineSetUpvalue(minijs::BaselineFrame* frame, std::uint32_t slot) {
+  if (!frameCanRun(frame)) {
+    return false;
+  }
+
+  try {
+    return frame->vm->baselineRuntimeSetUpvalue(*frame, slot);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
+  } catch (...) {
+    return markFailed(frame);
+  }
+}
+
+extern "C" bool minijsBaselineCloseUpvalue(minijs::BaselineFrame* frame) {
+  if (!frameCanRun(frame)) {
+    return false;
+  }
+
+  try {
+    return frame->vm->baselineRuntimeCloseUpvalue(*frame);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
+  } catch (...) {
+    return markFailed(frame);
+  }
+}
+
+extern "C" bool minijsBaselineGetCurrentClosure(minijs::BaselineFrame* frame) {
+  if (!frameCanRun(frame)) {
+    return false;
+  }
+
+  try {
+    return frame->vm->baselineRuntimeGetCurrentClosure(*frame);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
+  } catch (...) {
+    return markFailed(frame);
+  }
+}
+
 extern "C" bool minijsBaselineAdd(minijs::BaselineFrame* frame) {
   if (!frameCanRun(frame)) {
     return false;

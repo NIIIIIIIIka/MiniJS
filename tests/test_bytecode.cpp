@@ -4228,6 +4228,77 @@ void testBaselineCompilerGeneratesNativeStubForDefineGlobalOpcode() {
          minijs::Opcode::DefineGlobal);
 }
 
+void testBaselineCompilerGeneratesNativeStubForClosureAccessOpcodes() {
+  const minijs::Chunk chunk = compileProgram(R"(
+    function makeCounter() {
+      let value = 0;
+      function inc() {
+        value = value + 1;
+        return value;
+      }
+      return inc;
+    }
+    makeCounter();
+  )");
+  const auto makeCounter = lastBytecodeFunctionNamed(chunk, "makeCounter");
+  EXPECT(makeCounter != nullptr);
+  const auto inc = lastBytecodeFunctionNamed(makeCounter->chunk, "inc");
+  EXPECT(inc != nullptr);
+
+  minijs::BaselineCompiler compiler;
+  minijs::BaselineCompileResult result = compiler.compile(*inc);
+  if (!nativeBaselineBackendAvailable()) {
+    EXPECT(!result.succeeded());
+    EXPECT(result.code == nullptr);
+    return;
+  }
+
+  EXPECT(result.succeeded());
+  EXPECT(result.error.empty());
+  EXPECT(result.code != nullptr);
+  EXPECT(result.code->entry != nullptr);
+  EXPECT(findDecodedInstruction(inc->chunk, minijs::Opcode::GetUpvalue).opcode ==
+         minijs::Opcode::GetUpvalue);
+  EXPECT(findDecodedInstruction(inc->chunk, minijs::Opcode::SetUpvalue).opcode ==
+         minijs::Opcode::SetUpvalue);
+
+  const minijs::Chunk selfChunk = compileProgram(R"(
+    function makeSelf() {
+      function self() { return self; }
+      return self;
+    }
+    makeSelf();
+  )");
+  const auto makeSelf = lastBytecodeFunctionNamed(selfChunk, "makeSelf");
+  EXPECT(makeSelf != nullptr);
+  const auto self = lastBytecodeFunctionNamed(makeSelf->chunk, "self");
+  EXPECT(self != nullptr);
+  result = compiler.compile(*self);
+  EXPECT(result.succeeded());
+  EXPECT(result.error.empty());
+  EXPECT(result.code != nullptr);
+  EXPECT(result.code->entry != nullptr);
+  EXPECT(findDecodedInstruction(self->chunk, minijs::Opcode::GetCurrentClosure).opcode ==
+         minijs::Opcode::GetCurrentClosure);
+
+  minijs::BytecodeFunction closeFunction;
+  closeFunction.name = "close";
+  const auto valueIndex =
+      static_cast<std::uint8_t>(closeFunction.chunk.addConstant(minijs::Value(1.0)));
+  closeFunction.chunk.writeOpcode(minijs::Opcode::Constant);
+  closeFunction.chunk.writeByte(valueIndex);
+  closeFunction.chunk.writeOpcode(minijs::Opcode::CloseUpvalue);
+  closeFunction.chunk.writeOpcode(minijs::Opcode::Constant);
+  closeFunction.chunk.writeByte(valueIndex);
+  closeFunction.chunk.writeOpcode(minijs::Opcode::Return);
+
+  result = compiler.compile(closeFunction);
+  EXPECT(result.succeeded());
+  EXPECT(result.error.empty());
+  EXPECT(result.code != nullptr);
+  EXPECT(result.code->entry != nullptr);
+}
+
 void testBaselineCompilerRejectsUnsupportedOpcode() {
   const minijs::Chunk chunk = compileProgram(R"(
     function caller(f) { return f(); }
@@ -4994,6 +5065,15 @@ void testJitDispatchRunsUpvalueOpcodes() {
   EXPECT(feedback->callCount == 2);
   EXPECT(feedback->baselineEntryCount == 1);
   EXPECT(feedback->state == minijs::JitState::Compiled);
+
+  const minijs::BaselineCode* code = vm.debugGlobalFunctionBaselineCode("inc");
+  EXPECT(code != nullptr);
+  EXPECT(code->entry != nullptr);
+
+  minijs::Value entryResult =
+      vm.debugExecuteGlobalFunctionBaselineEntry("inc", {}, code->entry);
+  EXPECT(entryResult.isNumber());
+  EXPECT(entryResult.asNumber() == 3);
 }
 
 void testJitDispatchEntersCompiledFunctionOnLaterCall() {
@@ -5127,6 +5207,38 @@ void testJitDispatchInlineNegateFallbackPreservesTypeError() {
   EXPECT(feedback->callCount == 2);
   EXPECT(feedback->baselineEntryCount == 1);
   EXPECT(feedback->state == minijs::JitState::Compiled);
+}
+
+void testJitDispatchRunsCurrentClosureOpcode() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  const minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+    function makeSelf() {
+      function self() { return self; }
+      return self;
+    }
+    let self = makeSelf();
+    self();
+    self();
+  )");
+
+  EXPECT(result.isBytecodeClosure());
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("self");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->callCount == 2);
+  EXPECT(feedback->baselineEntryCount == 1);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+
+  const minijs::BaselineCode* code = vm.debugGlobalFunctionBaselineCode("self");
+  EXPECT(code != nullptr);
+  EXPECT(code->entry != nullptr);
+
+  const minijs::Value entryResult =
+      vm.debugExecuteGlobalFunctionBaselineEntry("self", {}, code->entry);
+  EXPECT(entryResult.isBytecodeClosure());
 }
 
 void testJitDispatchInlineAddRunsNumberFastPath() {
@@ -5759,6 +5871,7 @@ void runBytecodeTests() {
   testBaselineCompilerGeneratesNativeStubForAddFunction();
   testBaselineCompilerGeneratesNativeStubForArithmeticFunction();
   testBaselineCompilerGeneratesNativeStubForDefineGlobalOpcode();
+  testBaselineCompilerGeneratesNativeStubForClosureAccessOpcodes();
   testBaselineCompilerRejectsUnsupportedOpcode();
 #if defined(__aarch64__) || defined(_M_ARM64) || \
     (defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__)))
@@ -5789,6 +5902,7 @@ void runBytecodeTests() {
   testJitDispatchRunsObjectLiteralAndPropertyOpcodes();
   testJitDispatchRunsSetPropertyOpcode();
   testJitDispatchRunsUpvalueOpcodes();
+  testJitDispatchRunsCurrentClosureOpcode();
   testJitDispatchEntersCompiledFunctionOnLaterCall();
   testJitDispatchRespectsDisabledJit();
   testJitDispatchPreservesRuntimeErrors();
