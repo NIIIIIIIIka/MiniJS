@@ -437,6 +437,9 @@ epilogue:
 | `OP_DEFINE_GLOBAL` | `nameIndex` | `minijsBaselineDefineGlobal(frame, nameIndex)` | 从当前函数常量池读取变量名，把栈顶值弹出并写入 `globals_` |
 | `OP_GET_GLOBAL` | `nameIndex` | `minijsBaselineGetGlobal(frame, nameIndex)` | 从 `globals_` 读取变量并压栈；变量不存在时保留 VM 的运行时错误 |
 | `OP_SET_GLOBAL` | `nameIndex` | `minijsBaselineSetGlobal(frame, nameIndex)` | 把栈顶值写入已有全局变量；变量不存在时保留 VM 的运行时错误，栈顶值不弹出 |
+| `OP_ARRAY` | `count` | `minijsBaselineArray(frame, count)` | 弹出 `count` 个元素，创建 VM 管理的 GC 数组并压栈 |
+| `OP_GET_INDEX` | 无 | `minijsBaselineGetIndex(frame)` | 弹出数组和下标，读取元素后压栈；类型和越界错误沿用 VM 语义 |
+| `OP_SET_INDEX` | 无 | `minijsBaselineSetIndex(frame)` | 弹出数组、下标和值，写入元素后把赋值结果压栈 |
 | `OP_ADD` | 无 | Windows x64 number fast path，否则 `minijsBaselineAdd(frame)` | 两个操作数都是数字时直接执行 double 加法并同步栈高度；否则回退 helper 保留字符串拼接语义 |
 | `OP_SUB` | 无 | Windows x64 number fast path，否则 `minijsBaselineSub(frame)` | 两个操作数都是数字时直接执行 double 减法并同步栈高度；否则回退 helper 保留 VM 语义 |
 | `OP_MUL` | 无 | Windows x64 number fast path，否则 `minijsBaselineMul(frame)` | 两个操作数都是数字时直接执行 double 乘法并同步栈高度；否则回退 helper 保留 VM 语义 |
@@ -593,12 +596,11 @@ jmp epilogue                 ; 成功返回后也结束 stub，不再执行后�
 
 第四阶段先支持低风险 opcode：
 
-- 纯表达式、局部变量和全局变量：`Constant`、`Add`、`Sub`、`Mul`、`Div`、`Mod`、`Negate`、`Equal`、`Greater`、`Less`、`Not`、`GetLocal`、`SetLocal`、`Pop`、`DefineGlobal`、`GetGlobal`、`SetGlobal`、`Return`
+- 纯表达式、局部变量、全局变量和数组下标：`Constant`、`Add`、`Sub`、`Mul`、`Div`、`Mod`、`Negate`、`Equal`、`Greater`、`Less`、`Not`、`GetLocal`、`SetLocal`、`Pop`、`DefineGlobal`、`GetGlobal`、`SetGlobal`、`Array`、`GetIndex`、`SetIndex`、`Return`
 - 控制流：`JumpIfFalse`、`Jump`、`Loop`
 
 第六阶段继续支持不引入新调用帧的 runtime helper opcode：
 
-- 数组与下标：`Array`、`GetIndex`、`SetIndex`
 - 对象与属性 IC：`Object`、`GetProperty`、`SetProperty`
 - 闭包访问：`GetUpvalue`、`SetUpvalue`、`CloseUpvalue`、`GetCurrentClosure`
 
@@ -609,6 +611,7 @@ jmp epilogue                 ; 成功返回后也结束 stub，不再执行后�
 - `Constant`
 - `GetLocal`、`SetLocal`、`Pop`
 - `DefineGlobal`、`GetGlobal`、`SetGlobal`
+- `Array`、`GetIndex`、`SetIndex`
 - `Add`、`Sub`、`Mul`、`Div`、`Mod`、`Negate`、`Equal`、`Greater`、`Less`、`Not`
 - `JumpIfFalse`、`Jump`、`Loop`
 - `Return`

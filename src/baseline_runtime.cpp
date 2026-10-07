@@ -187,6 +187,54 @@ extern "C" bool minijsBaselineSetGlobal(minijs::BaselineFrame* frame,
   }
 }
 
+extern "C" bool minijsBaselineArray(minijs::BaselineFrame* frame, std::uint32_t count) {
+  if (!frameCanRun(frame)) {
+    return false;
+  }
+
+  try {
+    return frame->vm->baselineRuntimeArray(*frame, count);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
+  } catch (...) {
+    return markFailed(frame);
+  }
+}
+
+extern "C" bool minijsBaselineGetIndex(minijs::BaselineFrame* frame) {
+  if (!frameCanRun(frame)) {
+    return false;
+  }
+
+  try {
+    return frame->vm->baselineRuntimeGetIndex(*frame);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
+  } catch (...) {
+    return markFailed(frame);
+  }
+}
+
+extern "C" bool minijsBaselineSetIndex(minijs::BaselineFrame* frame) {
+  if (!frameCanRun(frame)) {
+    return false;
+  }
+
+  try {
+    return frame->vm->baselineRuntimeSetIndex(*frame);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
+  } catch (...) {
+    return markFailed(frame);
+  }
+}
+
 extern "C" bool minijsBaselineAdd(minijs::BaselineFrame* frame) {
   if (!frameCanRun(frame)) {
     return false;

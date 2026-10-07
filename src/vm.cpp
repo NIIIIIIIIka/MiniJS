@@ -1381,6 +1381,27 @@ bool VM::baselineRuntimeSetGlobal(BaselineFrame& frame, std::uint32_t nameIndex)
   return true;
 }
 
+bool VM::baselineRuntimeArray(BaselineFrame& frame, std::uint32_t count) {
+  validateBaselineRuntimeFrame(frame);
+  executeArrayLiteral(count);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeGetIndex(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  executeGetIndex();
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeSetIndex(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  executeSetIndex();
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
 bool VM::baselineRuntimeAdd(BaselineFrame& frame) {
   validateBaselineRuntimeFrame(frame);
   Value right = pop();

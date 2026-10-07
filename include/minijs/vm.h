@@ -29,6 +29,9 @@ extern "C" bool minijsBaselineGetGlobal(minijs::BaselineFrame* frame,
                                          std::uint32_t nameIndex);
 extern "C" bool minijsBaselineSetGlobal(minijs::BaselineFrame* frame,
                                          std::uint32_t nameIndex);
+extern "C" bool minijsBaselineArray(minijs::BaselineFrame* frame, std::uint32_t count);
+extern "C" bool minijsBaselineGetIndex(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineSetIndex(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineAdd(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineSub(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineMul(minijs::BaselineFrame* frame);
@@ -147,6 +150,9 @@ class VM {
                                         std::uint32_t nameIndex);
   friend bool ::minijsBaselineSetGlobal(minijs::BaselineFrame* frame,
                                         std::uint32_t nameIndex);
+  friend bool ::minijsBaselineArray(minijs::BaselineFrame* frame, std::uint32_t count);
+  friend bool ::minijsBaselineGetIndex(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineSetIndex(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineAdd(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineSub(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineMul(minijs::BaselineFrame* frame);
@@ -211,6 +217,9 @@ class VM {
   bool baselineRuntimeDefineGlobal(BaselineFrame& frame, std::uint32_t nameIndex);
   bool baselineRuntimeGetGlobal(BaselineFrame& frame, std::uint32_t nameIndex);
   bool baselineRuntimeSetGlobal(BaselineFrame& frame, std::uint32_t nameIndex);
+  bool baselineRuntimeArray(BaselineFrame& frame, std::uint32_t count);
+  bool baselineRuntimeGetIndex(BaselineFrame& frame);
+  bool baselineRuntimeSetIndex(BaselineFrame& frame);
   bool baselineRuntimeAdd(BaselineFrame& frame);
   bool baselineRuntimeSub(BaselineFrame& frame);
   bool baselineRuntimeMul(BaselineFrame& frame);

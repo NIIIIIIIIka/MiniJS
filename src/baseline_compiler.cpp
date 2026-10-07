@@ -708,6 +708,23 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
         epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
         break;
 
+      case Opcode::Array:
+        emitRuntimeCallWithU32(emitter,
+                               reinterpret_cast<std::uintptr_t>(&minijsBaselineArray),
+                               instruction.operands[0]);
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        break;
+
+      case Opcode::GetIndex:
+        emitRuntimeCall(emitter, reinterpret_cast<std::uintptr_t>(&minijsBaselineGetIndex));
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        break;
+
+      case Opcode::SetIndex:
+        emitRuntimeCall(emitter, reinterpret_cast<std::uintptr_t>(&minijsBaselineSetIndex));
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        break;
+
       case Opcode::Add:
 #if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
       {

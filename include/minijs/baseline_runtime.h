@@ -17,6 +17,9 @@ extern "C" bool minijsBaselineGetGlobal(minijs::BaselineFrame* frame,
                                          std::uint32_t nameIndex);
 extern "C" bool minijsBaselineSetGlobal(minijs::BaselineFrame* frame,
                                          std::uint32_t nameIndex);
+extern "C" bool minijsBaselineArray(minijs::BaselineFrame* frame, std::uint32_t count);
+extern "C" bool minijsBaselineGetIndex(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineSetIndex(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineAdd(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineSub(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineMul(minijs::BaselineFrame* frame);

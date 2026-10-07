@@ -4492,6 +4492,56 @@ void testBaselineCompilerNativeEntryRunsGlobalFunctions() {
   EXPECT(result.asNumber() == 14);
 }
 
+void testBaselineCompilerNativeEntryRunsArrayAndIndexFunctions() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  runBytecodeProgramOnVm(vm, R"(
+    let saved = [1, 2];
+    function makePair(a, b) { return [a, b]; }
+    function readSaved(index) { return saved[index]; }
+    function writeSaved(index, value) {
+      saved[index] = value;
+      return saved[index];
+    }
+    makePair(1, 2);
+    readSaved(0);
+    writeSaved(1, 3);
+  )");
+
+  const minijs::BaselineCode* makeCode = vm.debugGlobalFunctionBaselineCode("makePair");
+  EXPECT(makeCode != nullptr);
+  EXPECT(makeCode->entry != nullptr);
+  minijs::Value array = vm.debugExecuteGlobalFunctionBaselineEntry(
+      "makePair", {minijs::Value(4.0), minijs::Value(5.0)}, makeCode->entry);
+  EXPECT(array.isArray());
+  EXPECT(array.asArray().size() == 2);
+  EXPECT(array.asArray()[0].asNumber() == 4);
+  EXPECT(array.asArray()[1].asNumber() == 5);
+
+  const minijs::BaselineCode* readCode = vm.debugGlobalFunctionBaselineCode("readSaved");
+  EXPECT(readCode != nullptr);
+  EXPECT(readCode->entry != nullptr);
+  minijs::Value result = vm.debugExecuteGlobalFunctionBaselineEntry(
+      "readSaved", {minijs::Value(1.0)}, readCode->entry);
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 3);
+
+  const minijs::BaselineCode* writeCode = vm.debugGlobalFunctionBaselineCode("writeSaved");
+  EXPECT(writeCode != nullptr);
+  EXPECT(writeCode->entry != nullptr);
+  result = vm.debugExecuteGlobalFunctionBaselineEntry(
+      "writeSaved", {minijs::Value(0.0), minijs::Value(9.0)}, writeCode->entry);
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 9);
+
+  result = vm.debugExecuteGlobalFunctionBaselineEntry(
+      "readSaved", {minijs::Value(0.0)}, readCode->entry);
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 9);
+}
+
 void testJitDispatchRunsNativeBaselineEntryForSupportedFunction() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -4796,6 +4846,10 @@ void testJitDispatchRunsArrayAndIndexOpcodes() {
   EXPECT(feedback->callCount == 2);
   EXPECT(feedback->baselineEntryCount == 1);
   EXPECT(feedback->state == minijs::JitState::Compiled);
+
+  const minijs::BaselineCode* code = vm.debugGlobalFunctionBaselineCode("pick");
+  EXPECT(code != nullptr);
+  EXPECT(code->entry != nullptr);
 }
 
 void testJitDispatchRunsObjectLiteralAndPropertyOpcodes() {
@@ -5659,6 +5713,7 @@ void runBytecodeTests() {
   testBaselineCompilerNativeEntryRunsNotFunction();
   testBaselineCompilerNativeEntryRunsControlFlowFunctions();
   testBaselineCompilerNativeEntryRunsGlobalFunctions();
+  testBaselineCompilerNativeEntryRunsArrayAndIndexFunctions();
   testJitDispatchRunsNativeBaselineEntryForSupportedFunction();
   testJitDispatchRunsNativeBaselineEntryForEqualFunction();
   testJitDispatchRunsNativeBaselineEntryForComparisonFunctions();
