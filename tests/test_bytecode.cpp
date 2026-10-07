@@ -4196,8 +4196,10 @@ void testBaselineCompilerGeneratesNativeStubForArithmeticFunction() {
 }
 
 void testBaselineCompilerRejectsUnsupportedOpcode() {
-  const minijs::Chunk chunk = compileProgram("function equal(a, b) { return a == b; }");
-  const auto function = lastBytecodeFunctionNamed(chunk, "equal");
+  const minijs::Chunk chunk = compileProgram(R"(
+    function caller(f) { return f(); }
+  )");
+  const auto function = lastBytecodeFunctionNamed(chunk, "caller");
   EXPECT(function != nullptr);
 
   minijs::BaselineCompiler compiler;
@@ -4207,7 +4209,7 @@ void testBaselineCompilerRejectsUnsupportedOpcode() {
   if (!nativeBaselineBackendAvailable()) {
     return;
   }
-  EXPECT(result.error.find("OP_EQUAL") != std::string::npos);
+  EXPECT(result.error.find("OP_CALL") != std::string::npos);
 }
 
 #if defined(__aarch64__) || defined(_M_ARM64) || \
@@ -4258,6 +4260,38 @@ void testBaselineCompilerNativeEntryRunsArithmeticFunction() {
   EXPECT(result.asNumber() == -1);
 }
 
+void testBaselineCompilerNativeEntryRunsEqualFunction() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  runBytecodeProgramOnVm(vm, R"(
+    function equal(a, b) { return a == b; }
+    equal(1, 1);
+  )");
+
+  const minijs::BaselineCode* code = vm.debugGlobalFunctionBaselineCode("equal");
+  EXPECT(code != nullptr);
+  EXPECT(code->entry != nullptr);
+
+  minijs::Value result =
+      vm.debugExecuteGlobalFunctionBaselineEntry("equal", {minijs::Value(4.0), minijs::Value(4.0)},
+                                                 code->entry);
+  EXPECT(result.isBoolean());
+  EXPECT(result.equals(minijs::Value(true)));
+
+  result =
+      vm.debugExecuteGlobalFunctionBaselineEntry("equal", {minijs::Value(4.0), minijs::Value(5.0)},
+                                                 code->entry);
+  EXPECT(result.isBoolean());
+  EXPECT(result.equals(minijs::Value(false)));
+
+  result = vm.debugExecuteGlobalFunctionBaselineEntry(
+      "equal", {minijs::Value(std::string("x")), minijs::Value(std::string("x"))}, code->entry);
+  EXPECT(result.isBoolean());
+  EXPECT(result.equals(minijs::Value(true)));
+}
+
 void testJitDispatchRunsNativeBaselineEntryForSupportedFunction() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -4278,6 +4312,30 @@ void testJitDispatchRunsNativeBaselineEntryForSupportedFunction() {
   EXPECT(feedback->baselineEntryCount == 1);
 
   const minijs::BaselineCode* code = vm.debugGlobalFunctionBaselineCode("add");
+  EXPECT(code != nullptr);
+  EXPECT(code->entry != nullptr);
+}
+
+void testJitDispatchRunsNativeBaselineEntryForEqualFunction() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  const minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+    function equal(a, b) { return a == b; }
+    equal(1, 1);
+    equal("x", "x");
+  )");
+
+  EXPECT(result.isBoolean());
+  EXPECT(result.equals(minijs::Value(true)));
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("equal");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+  EXPECT(feedback->baselineEntryCount == 1);
+
+  const minijs::BaselineCode* code = vm.debugGlobalFunctionBaselineCode("equal");
   EXPECT(code != nullptr);
   EXPECT(code->entry != nullptr);
 }
@@ -5224,7 +5282,9 @@ void runBytecodeTests() {
     (defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__)))
   testBaselineCompilerNativeEntryRunsAddFunction();
   testBaselineCompilerNativeEntryRunsArithmeticFunction();
+  testBaselineCompilerNativeEntryRunsEqualFunction();
   testJitDispatchRunsNativeBaselineEntryForSupportedFunction();
+  testJitDispatchRunsNativeBaselineEntryForEqualFunction();
 #endif
   testBaselineRuntimeAbiRunsArithmeticEntry();
   testBaselineRuntimeAbiPushesConstantsAndSetsLocals();

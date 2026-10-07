@@ -1427,6 +1427,15 @@ bool VM::baselineRuntimeNegate(BaselineFrame& frame) {
   return true;
 }
 
+bool VM::baselineRuntimeEqual(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  Value right = pop();
+  Value left = pop();
+  push(Value(left.equals(right)));
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
 bool VM::baselineRuntimeSyncStackSize(BaselineFrame& frame) {
   validateBaselineRuntimeFrame(frame);
   if (frame.stackSize > stack_.size()) {

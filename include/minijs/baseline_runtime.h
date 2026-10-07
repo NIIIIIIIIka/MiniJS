@@ -18,5 +18,6 @@ extern "C" bool minijsBaselineDiv(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineMod(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineModNumber(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineNegate(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineEqual(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineSyncStackSize(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineReturn(minijs::BaselineFrame* frame);
