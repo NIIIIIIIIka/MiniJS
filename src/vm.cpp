@@ -566,27 +566,9 @@ Value VM::run(const Chunk& chunk) {
       }
       case Opcode::Closure: {
         const std::uint8_t functionIndex = chunk.readByte(frame.ip++);
-        auto function = chunk.constant(functionIndex).asBytecodeFunction();
-        auto* closure = makeGcClosure(*function);
-        push(Value(closure));
-
-        const BytecodeFunction& gcFunction = closure->function->function;
-        closure->upvalues.reserve(gcFunction.upvalues.size());
-
-        for (const UpvalueDescriptor& descriptor : gcFunction.upvalues) {
-          const bool isLocal = chunk.readByte(frame.ip++) != 0;
-          const std::uint8_t index = chunk.readByte(frame.ip++);
-          if (isLocal != descriptor.isLocal || index != descriptor.index) {
-            throw RuntimeError("closure upvalue metadata mismatch");
-          }
-
-          if (isLocal) {
-            closure->upvalues.push_back(captureUpvalue(frame.slotStart + index));
-          } else {
-            closure->upvalues.push_back(frame.closure->upvalues[index]);
-          }
-        }
-
+        const std::size_t metadataOffset = frame.ip;
+        executeClosure(chunk, functionIndex, metadataOffset, frame.closure, frame.slotStart);
+        frame.ip += chunk.constant(functionIndex).asBytecodeFunction()->upvalues.size() * 2;
         break;
       }
       case Opcode::GetUpvalue: {
@@ -1245,6 +1227,15 @@ bool VM::baselineRuntimeGetCurrentClosure(BaselineFrame& frame) {
   return true;
 }
 
+bool VM::baselineRuntimeClosure(BaselineFrame& frame, std::uint32_t functionIndex,
+                                std::uint32_t bytecodeOffset) {
+  validateBaselineRuntimeFrame(frame);
+  executeClosure(frame.closure->function->function.chunk, functionIndex, bytecodeOffset,
+                 frame.closure, frame.slotStart);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
 bool VM::baselineRuntimeCall(BaselineFrame& frame, std::uint32_t argCount) {
   validateBaselineRuntimeFrame(frame);
   executeCall(argCount, true);
@@ -1681,6 +1672,31 @@ void VM::executeCloseUpvalue() {
 
 void VM::executeGetCurrentClosure(const CallFrame& frame) {
   push(Value(frame.closure));
+}
+
+void VM::executeClosure(const Chunk& chunk, std::size_t functionIndex, std::size_t bytecodeOffset,
+                        ObjClosure* currentClosure, std::size_t slotStart) {
+  auto function = chunk.constant(functionIndex).asBytecodeFunction();
+  auto* closure = makeGcClosure(*function);
+  push(Value(closure));
+
+  const BytecodeFunction& gcFunction = closure->function->function;
+  closure->upvalues.reserve(gcFunction.upvalues.size());
+
+  std::size_t metadataOffset = bytecodeOffset;
+  for (const UpvalueDescriptor& descriptor : gcFunction.upvalues) {
+    const bool isLocal = chunk.readByte(metadataOffset++) != 0;
+    const std::uint8_t index = chunk.readByte(metadataOffset++);
+    if (isLocal != descriptor.isLocal || index != descriptor.index) {
+      throw RuntimeError("closure upvalue metadata mismatch");
+    }
+
+    if (isLocal) {
+      closure->upvalues.push_back(captureUpvalue(slotStart + index));
+    } else {
+      closure->upvalues.push_back(currentClosure->upvalues[index]);
+    }
+  }
 }
 
 void VM::executeCall(std::size_t argCount, bool requireSynchronousCallee) {
@@ -2300,6 +2316,11 @@ Value VM::executeBaselineCode(const BaselineCode& code, CallFrame& frame) {
         executeGetCurrentClosure(frame);
         ++ip;
         break;
+      case Opcode::Closure:
+        executeClosure(chunk, instruction.operands[0], instruction.offset + 2, frame.closure,
+                       frame.slotStart);
+        ++ip;
+        break;
       case Opcode::Call:
         executeCall(instruction.operands[0], true);
         ++ip;
@@ -2314,7 +2335,6 @@ Value VM::executeBaselineCode(const BaselineCode& code, CallFrame& frame) {
         ++ip;
         break;
 
-      case Opcode::Closure:
       case Opcode::Class:
       case Opcode::Method:
       case Opcode::StaticMethod:

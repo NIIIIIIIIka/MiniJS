@@ -49,12 +49,12 @@ bool isBaselineSupported(Opcode opcode) {
     case Opcode::SetUpvalue:
     case Opcode::CloseUpvalue:
     case Opcode::GetCurrentClosure:
+    case Opcode::Closure:
     case Opcode::Call:
     case Opcode::MethodCall:
     case Opcode::SuperCall:
       return true;
 
-    case Opcode::Closure:
     case Opcode::Class:
     case Opcode::Method:
     case Opcode::StaticMethod:

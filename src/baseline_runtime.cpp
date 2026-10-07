@@ -351,6 +351,24 @@ extern "C" bool minijsBaselineGetCurrentClosure(minijs::BaselineFrame* frame) {
   }
 }
 
+extern "C" bool minijsBaselineClosure(minijs::BaselineFrame* frame,
+                                       std::uint32_t functionIndex,
+                                       std::uint32_t bytecodeOffset) {
+  if (!frameCanRun(frame)) {
+    return false;
+  }
+
+  try {
+    return frame->vm->baselineRuntimeClosure(*frame, functionIndex, bytecodeOffset);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
+  } catch (...) {
+    return markFailed(frame);
+  }
+}
+
 extern "C" bool minijsBaselineCall(minijs::BaselineFrame* frame, std::uint32_t argCount) {
   if (!frameCanRun(frame)) {
     return false;

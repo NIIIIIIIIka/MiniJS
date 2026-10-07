@@ -4128,6 +4128,36 @@ void testJitCompilesSuperCallOpcode() {
   EXPECT(vm.debugGlobalFunctionBaselineCode("callValue") != nullptr);
 }
 
+void testJitCompilesClosureOpcode() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  const minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+    function makeAdder(x) {
+      function add(y) {
+        return x + y;
+      }
+      return add;
+    }
+
+    let add40 = makeAdder(40);
+    add40(2);
+    let add41 = makeAdder(41);
+    add41(1);
+  )");
+
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 42);
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("makeAdder");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->callCount == 2);
+  EXPECT(feedback->baselineEntryCount == 1);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+  EXPECT(vm.debugGlobalFunctionBaselineCode("makeAdder") != nullptr);
+}
+
 void testBaselineExecutorRunsArithmeticAndLocals() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -4318,13 +4348,21 @@ void testBaselineCompilerGeneratesNativeStubForClosureAccessOpcodes() {
   EXPECT(inc != nullptr);
 
   minijs::BaselineCompiler compiler;
-  minijs::BaselineCompileResult result = compiler.compile(*inc);
+  minijs::BaselineCompileResult result = compiler.compile(*makeCounter);
   if (!nativeBaselineBackendAvailable()) {
     EXPECT(!result.succeeded());
     EXPECT(result.code == nullptr);
     return;
   }
 
+  EXPECT(result.succeeded());
+  EXPECT(result.error.empty());
+  EXPECT(result.code != nullptr);
+  EXPECT(result.code->entry != nullptr);
+  EXPECT(findDecodedInstruction(makeCounter->chunk, minijs::Opcode::Closure).opcode ==
+         minijs::Opcode::Closure);
+
+  result = compiler.compile(*inc);
   EXPECT(result.succeeded());
   EXPECT(result.error.empty());
   EXPECT(result.code != nullptr);
@@ -5942,6 +5980,7 @@ void runBytecodeTests() {
   testJitCompilesCallOpcode();
   testJitCompilesMethodCallOpcode();
   testJitCompilesSuperCallOpcode();
+  testJitCompilesClosureOpcode();
   testBaselineExecutorRunsArithmeticAndLocals();
   testBaselineExecutorRunsSimpleLoop();
   testBaselineExecutorPreservesArithmeticErrors();

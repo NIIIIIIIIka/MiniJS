@@ -827,6 +827,15 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
         epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
         break;
 
+      case Opcode::Closure:
+        emitRuntimeCallWithTwoU32(
+            emitter,
+            reinterpret_cast<std::uintptr_t>(&minijsBaselineClosure),
+            instruction.operands[0],
+            static_cast<std::uint32_t>(instruction.offset + 2));
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        break;
+
       case Opcode::Call:
         emitRuntimeCallWithU32(emitter,
                                reinterpret_cast<std::uintptr_t>(&minijsBaselineCall),
