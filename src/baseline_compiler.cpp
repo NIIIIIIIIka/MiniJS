@@ -628,9 +628,23 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
         break;
 
       case Opcode::Add:
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+      {
+        std::string inlineError;
+        if (!emitter.emitInlineNumberBinaryOrRuntimeCall(
+                reinterpret_cast<std::uintptr_t>(&minijsBaselineAdd),
+                reinterpret_cast<std::uintptr_t>(&minijsBaselineSyncStackSize),
+                0x58, "add", false, inlineError)) {
+          return failure(inlineError);
+        }
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        break;
+      }
+#else
         emitRuntimeCall(emitter, reinterpret_cast<std::uintptr_t>(&minijsBaselineAdd));
         epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
         break;
+#endif
 
       case Opcode::Sub:
 #if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))

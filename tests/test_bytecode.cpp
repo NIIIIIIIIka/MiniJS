@@ -4590,6 +4590,55 @@ void testJitDispatchInlineNegateFallbackPreservesTypeError() {
   EXPECT(feedback->state == minijs::JitState::Compiled);
 }
 
+void testJitDispatchInlineAddRunsNumberFastPath() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  const minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+    function add(left, right) { return left + right; }
+    add(1, 2);
+    add(10, 32);
+  )");
+
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 42);
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("add");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->callCount == 2);
+  EXPECT(feedback->baselineEntryCount == 1);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+}
+
+void testJitDispatchInlineAddFallbackPreservesStringConcat() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  const minijs::Value leftString = runBytecodeProgramOnVm(vm, R"(
+    function add(left, right) { return left + right; }
+    add(1, 2);
+    add("x", 1);
+  )");
+
+  EXPECT(leftString.isString());
+  EXPECT(leftString.toString() == "x1");
+
+  const minijs::Value rightString = runBytecodeProgramOnVm(vm, R"(
+    add(1, "x");
+  )");
+
+  EXPECT(rightString.isString());
+  EXPECT(rightString.toString() == "1x");
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("add");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->callCount >= 3);
+  EXPECT(feedback->baselineEntryCount >= 2);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+}
+
 void testJitDispatchInlineSubRunsNumberFastPath() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -5192,6 +5241,8 @@ void runBytecodeTests() {
   testJitDispatchRespectsDisabledJit();
   testJitDispatchPreservesRuntimeErrors();
   testJitDispatchInlineNegateFallbackPreservesTypeError();
+  testJitDispatchInlineAddRunsNumberFastPath();
+  testJitDispatchInlineAddFallbackPreservesStringConcat();
   testJitDispatchInlineSubRunsNumberFastPath();
   testJitDispatchInlineSubFallbackPreservesTypeError();
   testJitDispatchInlineMulRunsNumberFastPath();
