@@ -527,71 +527,8 @@ Value VM::run(const Chunk& chunk) {
       }
       case Opcode::Call: {
         const std::uint8_t argCount = chunk.readByte(frame.ip++);
-        if (stack_.size() < static_cast<std::size_t>(argCount) + 1) {
-          throw RuntimeError("call stack underflow");
-        }
-
-        const std::size_t calleeIndex = stack_.size() - argCount - 1;
-        Value callee = stack_[calleeIndex];
-
-        if (callee.isNativeFunction()) {
-          const std::string& name = callee.isGcNativeFunction()
-                                        ? callee.asGcNativeFunction()->name
-                                        : callee.asNativeFunction()->name;
-          const std::size_t arity = callee.isGcNativeFunction()
-                                        ? callee.asGcNativeFunction()->arity
-                                        : callee.asNativeFunction()->arity;
-          expectArity(argCount, arity, name);
-            
-          std::vector<Value> arguments;
-          arguments.reserve(argCount);
-          for (std::size_t i = 0; i < argCount; ++i) {
-            arguments.push_back(stack_[calleeIndex + 1 + i]);
-          }
-
-          Value result = callee.isGcNativeFunction()
-                             ? callee.asGcNativeFunction()->function(arguments)
-                             : callee.asNativeFunction()->function(arguments);
-          stack_.resize(calleeIndex);
-          push(result);
-          break;
-        }
-
-        if (callee.isGcClass()) {
-          auto klass = callee.asGcClass();
-          auto init = findMethod(klass, "init");
-          if (init == nullptr && argCount != 0) {
-            throw RuntimeError("class " + klass->name + " expects 0 arguments");
-          }
-
-          auto* instance = allocateObject<ObjInstance>(klass);
-          if (init == nullptr) {
-            stack_.resize(calleeIndex);
-            push(Value(instance));
-            break;
-          }
-
-          stack_[calleeIndex] = Value(instance);
-          callBytecodeClosure(init, argCount, calleeIndex, calleeIndex, "method", true);
-          break;
-        }
-
-        if (callee.isGcBoundMethod()) {
-          auto* boundMethod = callee.asGcBoundMethod();
-          stack_[calleeIndex] = boundMethod->receiver;
-          callBytecodeClosure(boundMethod->method, argCount, calleeIndex, calleeIndex, "method");
-          break;
-        }
-
-        if (callee.isGcClosure()) {
-          // callee 位于参数前一个槽位；新函数帧从第一个参数开始。
-          // 因此 OP_GET_LOCAL 0 读取的就是第一个实参，无需复制参数数组。
-          callBytecodeClosure(callee.asGcClosure(), argCount, calleeIndex, calleeIndex + 1,
-                              "function");
-          break;
-        }
-
-        throw RuntimeError("value is not callable");
+        executeCall(argCount);
+        break;
       }
       case Opcode::Class: {
         const std::uint8_t nameIndex = chunk.readByte(frame.ip++);
@@ -1459,6 +1396,13 @@ bool VM::baselineRuntimeGetCurrentClosure(BaselineFrame& frame) {
   return true;
 }
 
+bool VM::baselineRuntimeCall(BaselineFrame& frame, std::uint32_t argCount) {
+  validateBaselineRuntimeFrame(frame);
+  executeCall(argCount, true);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
 bool VM::baselineRuntimeAdd(BaselineFrame& frame) {
   validateBaselineRuntimeFrame(frame);
   Value right = pop();
@@ -1872,6 +1816,87 @@ void VM::executeGetCurrentClosure(const CallFrame& frame) {
   push(Value(frame.closure));
 }
 
+void VM::executeCall(std::size_t argCount, bool requireSynchronousCallee) {
+  if (stack_.size() < argCount + 1) {
+    throw RuntimeError("call stack underflow");
+  }
+
+  const std::size_t calleeIndex = stack_.size() - argCount - 1;
+  Value callee = stack_[calleeIndex];
+
+  if (callee.isNativeFunction()) {
+    const std::string& name = callee.isGcNativeFunction()
+                                  ? callee.asGcNativeFunction()->name
+                                  : callee.asNativeFunction()->name;
+    const std::size_t arity = callee.isGcNativeFunction()
+                                  ? callee.asGcNativeFunction()->arity
+                                  : callee.asNativeFunction()->arity;
+    expectArity(argCount, arity, name);
+
+    std::vector<Value> arguments;
+    arguments.reserve(argCount);
+    for (std::size_t i = 0; i < argCount; ++i) {
+      arguments.push_back(stack_[calleeIndex + 1 + i]);
+    }
+
+    Value result = callee.isGcNativeFunction() ? callee.asGcNativeFunction()->function(arguments)
+                                               : callee.asNativeFunction()->function(arguments);
+    stack_.resize(calleeIndex);
+    push(result);
+    return;
+  }
+
+  if (callee.isGcClass()) {
+    auto* klass = callee.asGcClass();
+    auto* init = findMethod(klass, "init");
+    if (init == nullptr && argCount != 0) {
+      throw RuntimeError("class " + klass->name + " expects 0 arguments");
+    }
+
+    auto* instance = allocateObject<ObjInstance>(klass);
+    if (init == nullptr) {
+      stack_.resize(calleeIndex);
+      push(Value(instance));
+      return;
+    }
+
+    stack_[calleeIndex] = Value(instance);
+    if (requireSynchronousCallee) {
+      callBytecodeClosureSynchronously(init, argCount, calleeIndex, calleeIndex, "method", true);
+    } else {
+      callBytecodeClosure(init, argCount, calleeIndex, calleeIndex, "method", true);
+    }
+    return;
+  }
+
+  if (callee.isGcBoundMethod()) {
+    auto* boundMethod = callee.asGcBoundMethod();
+    stack_[calleeIndex] = boundMethod->receiver;
+    if (requireSynchronousCallee) {
+      callBytecodeClosureSynchronously(boundMethod->method, argCount, calleeIndex, calleeIndex,
+                                       "method");
+    } else {
+      callBytecodeClosure(boundMethod->method, argCount, calleeIndex, calleeIndex, "method");
+    }
+    return;
+  }
+
+  if (callee.isGcClosure()) {
+    // callee 位于参数前一个槽位；新函数帧从第一个参数开始。
+    // 因此 OP_GET_LOCAL 0 读取的就是第一个实参，无需复制参数数组。
+    if (requireSynchronousCallee) {
+      callBytecodeClosureSynchronously(callee.asGcClosure(), argCount, calleeIndex,
+                                       calleeIndex + 1, "function");
+    } else {
+      callBytecodeClosure(callee.asGcClosure(), argCount, calleeIndex, calleeIndex + 1,
+                          "function");
+    }
+    return;
+  }
+
+  throw RuntimeError("value is not callable");
+}
+
 void VM::callBytecodeClosure(ObjClosure* closure, std::size_t argCount, std::size_t returnSlot,
                              std::size_t slotStart, const std::string& label,
                              bool returnsReceiver) {
@@ -1921,6 +1946,51 @@ void VM::callBytecodeClosure(ObjClosure* closure, std::size_t argCount, std::siz
       slotStart,
       returnsReceiver,
   });
+}
+
+void VM::callBytecodeClosureSynchronously(ObjClosure* closure, std::size_t argCount,
+                                          std::size_t returnSlot, std::size_t slotStart,
+                                          const std::string& label, bool returnsReceiver) {
+  BytecodeFunction& function = closure->function->function;
+  if (argCount != function.params.size()) {
+    throw RuntimeError(label + " " + function.name + " expects " +
+                       std::to_string(function.params.size()) + " arguments");
+  }
+
+  recordFunctionCall(*closure->function);
+  if (jitOptions_.enabled && function.jit.state == JitState::Cold) {
+    function.jit.state = JitState::Scheduled;
+    compileScheduledJit(function);
+  }
+
+  if (!jitOptions_.enabled || function.jit.state != JitState::Compiled ||
+      function.jit.baselineCode == nullptr) {
+    throw RuntimeError("baseline call target is not compiled: " + function.name);
+  }
+
+  frames_.push_back(CallFrame{
+      closure,
+      0,
+      returnSlot,
+      slotStart,
+      returnsReceiver,
+  });
+
+  try {
+    incrementSaturating(function.jit.baselineEntryCount);
+    if (canExecuteNativeBaselineEntry(*function.jit.baselineCode)) {
+      executeBaselineEntry(function.jit.baselineCode->entry, frames_.back());
+    } else {
+      Value result = executeBaselineCode(*function.jit.baselineCode, frames_.back());
+      stack_.resize(returnSlot);
+      push(result);
+    }
+  } catch (...) {
+    frames_.pop_back();
+    throw;
+  }
+
+  frames_.pop_back();
 }
 
 void VM::recordFunctionCall(ObjFunction& function) {
@@ -2195,8 +2265,11 @@ Value VM::executeBaselineCode(const BaselineCode& code, CallFrame& frame) {
         executeGetCurrentClosure(frame);
         ++ip;
         break;
-
       case Opcode::Call:
+        executeCall(instruction.operands[0], true);
+        ++ip;
+        break;
+
       case Opcode::MethodCall:
       case Opcode::Closure:
       case Opcode::Class:

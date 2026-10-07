@@ -800,6 +800,13 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
         epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
         break;
 
+      case Opcode::Call:
+        emitRuntimeCallWithU32(emitter,
+                               reinterpret_cast<std::uintptr_t>(&minijsBaselineCall),
+                               instruction.operands[0]);
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        break;
+
       case Opcode::Add:
 #if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
       {

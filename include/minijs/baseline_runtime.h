@@ -31,6 +31,7 @@ extern "C" bool minijsBaselineGetUpvalue(minijs::BaselineFrame* frame, std::uint
 extern "C" bool minijsBaselineSetUpvalue(minijs::BaselineFrame* frame, std::uint32_t slot);
 extern "C" bool minijsBaselineCloseUpvalue(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineGetCurrentClosure(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineCall(minijs::BaselineFrame* frame, std::uint32_t argCount);
 extern "C" bool minijsBaselineAdd(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineSub(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineMul(minijs::BaselineFrame* frame);

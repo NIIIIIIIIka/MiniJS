@@ -4032,7 +4032,7 @@ void testJitArityErrorDoesNotCountCall() {
   EXPECT(feedback->state == minijs::JitState::Cold);
 }
 
-void testJitUnsupportedCallOpcodeFailsAndFallsBackToVm() {
+void testJitCompilesCallOpcode() {
   minijs::VM vm;
   vm.setJitEnabled(true);
   vm.setJitCallThreshold(1);
@@ -4040,20 +4040,20 @@ void testJitUnsupportedCallOpcodeFailsAndFallsBackToVm() {
   const minijs::Value result = runBytecodeProgramOnVm(vm, R"(
     function addOne(value) { return value + 1; }
     function callAdd(value) { return addOne(value); }
+    addOne(0);
     callAdd(1);
+    callAdd(41);
   )");
 
   EXPECT(result.isNumber());
-  EXPECT(result.asNumber() == 2);
+  EXPECT(result.asNumber() == 42);
 
   const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("callAdd");
   EXPECT(feedback != nullptr);
-  EXPECT(feedback->callCount == 1);
-  EXPECT(feedback->baselineEntryCount == 0);
-  EXPECT(feedback->state == minijs::JitState::Failed);
-  EXPECT(vm.debugGlobalFunctionBaselineCode("callAdd") == nullptr);
-  EXPECT(vm.debugGlobalFunctionJitCompileError("callAdd").find("OP_CALL") !=
-         std::string::npos);
+  EXPECT(feedback->callCount == 2);
+  EXPECT(feedback->baselineEntryCount == 1);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+  EXPECT(vm.debugGlobalFunctionBaselineCode("callAdd") != nullptr);
 }
 
 void testBaselineExecutorRunsArithmeticAndLocals() {
@@ -4301,7 +4301,10 @@ void testBaselineCompilerGeneratesNativeStubForClosureAccessOpcodes() {
 
 void testBaselineCompilerRejectsUnsupportedOpcode() {
   const minijs::Chunk chunk = compileProgram(R"(
-    function caller(f) { return f(); }
+    class Box {
+      get() { return 1; }
+    }
+    function caller(box) { return box.get(); }
   )");
   const auto function = lastBytecodeFunctionNamed(chunk, "caller");
   EXPECT(function != nullptr);
@@ -4313,7 +4316,7 @@ void testBaselineCompilerRejectsUnsupportedOpcode() {
   if (!nativeBaselineBackendAvailable()) {
     return;
   }
-  EXPECT(result.error.find("OP_CALL") != std::string::npos);
+  EXPECT(result.error.find("OP_METHOD_CALL") != std::string::npos);
 }
 
 #if defined(__aarch64__) || defined(_M_ARM64) || \
@@ -5864,7 +5867,7 @@ void runBytecodeTests() {
   testJitBackedgeThresholdCompilesSupportedFunction();
   testJitDisabledDoesNotCollectHeat();
   testJitArityErrorDoesNotCountCall();
-  testJitUnsupportedCallOpcodeFailsAndFallsBackToVm();
+  testJitCompilesCallOpcode();
   testBaselineExecutorRunsArithmeticAndLocals();
   testBaselineExecutorRunsSimpleLoop();
   testBaselineExecutorPreservesArithmeticErrors();

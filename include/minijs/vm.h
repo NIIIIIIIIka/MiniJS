@@ -43,6 +43,7 @@ extern "C" bool minijsBaselineGetUpvalue(minijs::BaselineFrame* frame, std::uint
 extern "C" bool minijsBaselineSetUpvalue(minijs::BaselineFrame* frame, std::uint32_t slot);
 extern "C" bool minijsBaselineCloseUpvalue(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineGetCurrentClosure(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineCall(minijs::BaselineFrame* frame, std::uint32_t argCount);
 extern "C" bool minijsBaselineAdd(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineSub(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineMul(minijs::BaselineFrame* frame);
@@ -175,6 +176,7 @@ class VM {
   friend bool ::minijsBaselineSetUpvalue(minijs::BaselineFrame* frame, std::uint32_t slot);
   friend bool ::minijsBaselineCloseUpvalue(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineGetCurrentClosure(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineCall(minijs::BaselineFrame* frame, std::uint32_t argCount);
   friend bool ::minijsBaselineAdd(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineSub(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineMul(minijs::BaselineFrame* frame);
@@ -251,6 +253,7 @@ class VM {
   bool baselineRuntimeSetUpvalue(BaselineFrame& frame, std::uint32_t slot);
   bool baselineRuntimeCloseUpvalue(BaselineFrame& frame);
   bool baselineRuntimeGetCurrentClosure(BaselineFrame& frame);
+  bool baselineRuntimeCall(BaselineFrame& frame, std::uint32_t argCount);
   bool baselineRuntimeAdd(BaselineFrame& frame);
   bool baselineRuntimeSub(BaselineFrame& frame);
   bool baselineRuntimeMul(BaselineFrame& frame);
@@ -281,9 +284,14 @@ class VM {
   void executeSetUpvalue(const CallFrame& frame, std::size_t slot);
   void executeCloseUpvalue();
   void executeGetCurrentClosure(const CallFrame& frame);
+  void executeCall(std::size_t argCount, bool requireSynchronousCallee = false);
   void callBytecodeClosure(ObjClosure* closure, std::size_t argCount, std::size_t returnSlot,
                            std::size_t slotStart, const std::string& label,
                            bool returnsReceiver = false);
+  void callBytecodeClosureSynchronously(ObjClosure* closure, std::size_t argCount,
+                                        std::size_t returnSlot, std::size_t slotStart,
+                                        const std::string& label,
+                                        bool returnsReceiver = false);
   void recordFunctionCall(ObjFunction& function);
   void recordLoopBackedge(ObjFunction& function);
   void maybeScheduleJit(BytecodeFunction& function);
