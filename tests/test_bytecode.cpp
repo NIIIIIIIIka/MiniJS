@@ -4195,6 +4195,39 @@ void testBaselineCompilerGeneratesNativeStubForArithmeticFunction() {
          minijs::Opcode::Negate);
 }
 
+void testBaselineCompilerGeneratesNativeStubForDefineGlobalOpcode() {
+  auto function = std::make_shared<minijs::BytecodeFunction>();
+  function->name = "defineGlobal";
+
+  const auto valueIndex =
+      static_cast<std::uint8_t>(function->chunk.addConstant(minijs::Value(42.0)));
+  const auto nameIndex =
+      static_cast<std::uint8_t>(function->chunk.addConstant(minijs::Value(std::string("answer"))));
+
+  function->chunk.writeOpcode(minijs::Opcode::Constant);
+  function->chunk.writeByte(valueIndex);
+  function->chunk.writeOpcode(minijs::Opcode::DefineGlobal);
+  function->chunk.writeByte(nameIndex);
+  function->chunk.writeOpcode(minijs::Opcode::GetGlobal);
+  function->chunk.writeByte(nameIndex);
+  function->chunk.writeOpcode(minijs::Opcode::Return);
+
+  minijs::BaselineCompiler compiler;
+  const minijs::BaselineCompileResult result = compiler.compile(*function);
+  if (!nativeBaselineBackendAvailable()) {
+    EXPECT(!result.succeeded());
+    EXPECT(result.code == nullptr);
+    return;
+  }
+
+  EXPECT(result.succeeded());
+  EXPECT(result.error.empty());
+  EXPECT(result.code != nullptr);
+  EXPECT(result.code->entry != nullptr);
+  EXPECT(findDecodedInstruction(function->chunk, minijs::Opcode::DefineGlobal).opcode ==
+         minijs::Opcode::DefineGlobal);
+}
+
 void testBaselineCompilerRejectsUnsupportedOpcode() {
   const minijs::Chunk chunk = compileProgram(R"(
     function caller(f) { return f(); }
@@ -4422,6 +4455,43 @@ void testBaselineCompilerNativeEntryRunsControlFlowFunctions() {
   EXPECT(result.asNumber() == 4);
 }
 
+void testBaselineCompilerNativeEntryRunsGlobalFunctions() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  runBytecodeProgramOnVm(vm, R"(
+    let shared = 40;
+    function readShared() { return shared + 2; }
+    function writeShared(value) {
+      shared = value;
+      return shared;
+    }
+    readShared();
+    writeShared(5);
+  )");
+
+  const minijs::BaselineCode* readCode = vm.debugGlobalFunctionBaselineCode("readShared");
+  EXPECT(readCode != nullptr);
+  EXPECT(readCode->entry != nullptr);
+  minijs::Value result =
+      vm.debugExecuteGlobalFunctionBaselineEntry("readShared", {}, readCode->entry);
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 7);
+
+  const minijs::BaselineCode* writeCode = vm.debugGlobalFunctionBaselineCode("writeShared");
+  EXPECT(writeCode != nullptr);
+  EXPECT(writeCode->entry != nullptr);
+  result = vm.debugExecuteGlobalFunctionBaselineEntry("writeShared", {minijs::Value(12.0)},
+                                                      writeCode->entry);
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 12);
+
+  result = vm.debugExecuteGlobalFunctionBaselineEntry("readShared", {}, readCode->entry);
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 14);
+}
+
 void testJitDispatchRunsNativeBaselineEntryForSupportedFunction() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -4569,6 +4639,34 @@ void testJitDispatchRunsNativeBaselineEntryForControlFlowFunction() {
   EXPECT(feedback->baselineEntryCount == 1);
 
   const minijs::BaselineCode* code = vm.debugGlobalFunctionBaselineCode("control");
+  EXPECT(code != nullptr);
+  EXPECT(code->entry != nullptr);
+}
+
+void testJitDispatchRunsNativeBaselineEntryForGlobalFunction() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  const minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+    let counter = 1;
+    function bump() {
+      counter = counter + 1;
+      return counter;
+    }
+    bump();
+    bump();
+  )");
+
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 3);
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("bump");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+  EXPECT(feedback->baselineEntryCount == 1);
+
+  const minijs::BaselineCode* code = vm.debugGlobalFunctionBaselineCode("bump");
   EXPECT(code != nullptr);
   EXPECT(code->entry != nullptr);
 }
@@ -5550,6 +5648,7 @@ void runBytecodeTests() {
   testBaselineExecutorPreservesArithmeticErrors();
   testBaselineCompilerGeneratesNativeStubForAddFunction();
   testBaselineCompilerGeneratesNativeStubForArithmeticFunction();
+  testBaselineCompilerGeneratesNativeStubForDefineGlobalOpcode();
   testBaselineCompilerRejectsUnsupportedOpcode();
 #if defined(__aarch64__) || defined(_M_ARM64) || \
     (defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__)))
@@ -5559,11 +5658,13 @@ void runBytecodeTests() {
   testBaselineCompilerNativeEntryRunsComparisonFunctions();
   testBaselineCompilerNativeEntryRunsNotFunction();
   testBaselineCompilerNativeEntryRunsControlFlowFunctions();
+  testBaselineCompilerNativeEntryRunsGlobalFunctions();
   testJitDispatchRunsNativeBaselineEntryForSupportedFunction();
   testJitDispatchRunsNativeBaselineEntryForEqualFunction();
   testJitDispatchRunsNativeBaselineEntryForComparisonFunctions();
   testJitDispatchRunsNativeBaselineEntryForNotFunction();
   testJitDispatchRunsNativeBaselineEntryForControlFlowFunction();
+  testJitDispatchRunsNativeBaselineEntryForGlobalFunction();
 #endif
   testBaselineRuntimeAbiRunsArithmeticEntry();
   testBaselineRuntimeAbiPushesConstantsAndSetsLocals();

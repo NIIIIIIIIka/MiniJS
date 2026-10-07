@@ -11,6 +11,12 @@ extern "C" bool minijsBaselinePushConstant(minijs::BaselineFrame* frame,
 extern "C" bool minijsBaselineGetLocal(minijs::BaselineFrame* frame, std::uint32_t slot);
 extern "C" bool minijsBaselineSetLocal(minijs::BaselineFrame* frame, std::uint32_t slot);
 extern "C" bool minijsBaselinePop(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineDefineGlobal(minijs::BaselineFrame* frame,
+                                            std::uint32_t nameIndex);
+extern "C" bool minijsBaselineGetGlobal(minijs::BaselineFrame* frame,
+                                         std::uint32_t nameIndex);
+extern "C" bool minijsBaselineSetGlobal(minijs::BaselineFrame* frame,
+                                         std::uint32_t nameIndex);
 extern "C" bool minijsBaselineAdd(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineSub(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineMul(minijs::BaselineFrame* frame);

@@ -1360,6 +1360,27 @@ bool VM::baselineRuntimePop(BaselineFrame& frame) {
   return true;
 }
 
+bool VM::baselineRuntimeDefineGlobal(BaselineFrame& frame, std::uint32_t nameIndex) {
+  validateBaselineRuntimeFrame(frame);
+  executeDefineGlobal(frame.closure->function->function.chunk, nameIndex);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeGetGlobal(BaselineFrame& frame, std::uint32_t nameIndex) {
+  validateBaselineRuntimeFrame(frame);
+  executeGetGlobal(frame.closure->function->function.chunk, nameIndex);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeSetGlobal(BaselineFrame& frame, std::uint32_t nameIndex) {
+  validateBaselineRuntimeFrame(frame);
+  executeSetGlobal(frame.closure->function->function.chunk, nameIndex);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
 bool VM::baselineRuntimeAdd(BaselineFrame& frame) {
   validateBaselineRuntimeFrame(frame);
   Value right = pop();

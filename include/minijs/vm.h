@@ -23,6 +23,12 @@ extern "C" bool minijsBaselinePushConstant(minijs::BaselineFrame* frame,
 extern "C" bool minijsBaselineGetLocal(minijs::BaselineFrame* frame, std::uint32_t slot);
 extern "C" bool minijsBaselineSetLocal(minijs::BaselineFrame* frame, std::uint32_t slot);
 extern "C" bool minijsBaselinePop(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineDefineGlobal(minijs::BaselineFrame* frame,
+                                            std::uint32_t nameIndex);
+extern "C" bool minijsBaselineGetGlobal(minijs::BaselineFrame* frame,
+                                         std::uint32_t nameIndex);
+extern "C" bool minijsBaselineSetGlobal(minijs::BaselineFrame* frame,
+                                         std::uint32_t nameIndex);
 extern "C" bool minijsBaselineAdd(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineSub(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineMul(minijs::BaselineFrame* frame);
@@ -135,6 +141,12 @@ class VM {
   friend bool ::minijsBaselineGetLocal(minijs::BaselineFrame* frame, std::uint32_t slot);
   friend bool ::minijsBaselineSetLocal(minijs::BaselineFrame* frame, std::uint32_t slot);
   friend bool ::minijsBaselinePop(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineDefineGlobal(minijs::BaselineFrame* frame,
+                                           std::uint32_t nameIndex);
+  friend bool ::minijsBaselineGetGlobal(minijs::BaselineFrame* frame,
+                                        std::uint32_t nameIndex);
+  friend bool ::minijsBaselineSetGlobal(minijs::BaselineFrame* frame,
+                                        std::uint32_t nameIndex);
   friend bool ::minijsBaselineAdd(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineSub(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineMul(minijs::BaselineFrame* frame);
@@ -196,6 +208,9 @@ class VM {
   bool baselineRuntimeGetLocal(BaselineFrame& frame, std::uint32_t slot);
   bool baselineRuntimeSetLocal(BaselineFrame& frame, std::uint32_t slot);
   bool baselineRuntimePop(BaselineFrame& frame);
+  bool baselineRuntimeDefineGlobal(BaselineFrame& frame, std::uint32_t nameIndex);
+  bool baselineRuntimeGetGlobal(BaselineFrame& frame, std::uint32_t nameIndex);
+  bool baselineRuntimeSetGlobal(BaselineFrame& frame, std::uint32_t nameIndex);
   bool baselineRuntimeAdd(BaselineFrame& frame);
   bool baselineRuntimeSub(BaselineFrame& frame);
   bool baselineRuntimeMul(BaselineFrame& frame);

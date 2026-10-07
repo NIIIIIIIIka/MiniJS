@@ -434,6 +434,9 @@ epilogue:
 | `OP_GET_LOCAL` | `slot` | `minijsBaselineGetLocal(frame, slot)` | 读取 `slotStart + slot` 的局部槽并压栈 |
 | `OP_SET_LOCAL` | `slot` | `minijsBaselineSetLocal(frame, slot)` | 把栈顶值写入 `slotStart + slot` 的局部槽，栈顶值保留给后续 `OP_POP` |
 | `OP_POP` | 无 | `minijsBaselinePop(frame)` | 弹出栈顶值 |
+| `OP_DEFINE_GLOBAL` | `nameIndex` | `minijsBaselineDefineGlobal(frame, nameIndex)` | 从当前函数常量池读取变量名，把栈顶值弹出并写入 `globals_` |
+| `OP_GET_GLOBAL` | `nameIndex` | `minijsBaselineGetGlobal(frame, nameIndex)` | 从 `globals_` 读取变量并压栈；变量不存在时保留 VM 的运行时错误 |
+| `OP_SET_GLOBAL` | `nameIndex` | `minijsBaselineSetGlobal(frame, nameIndex)` | 把栈顶值写入已有全局变量；变量不存在时保留 VM 的运行时错误，栈顶值不弹出 |
 | `OP_ADD` | 无 | Windows x64 number fast path，否则 `minijsBaselineAdd(frame)` | 两个操作数都是数字时直接执行 double 加法并同步栈高度；否则回退 helper 保留字符串拼接语义 |
 | `OP_SUB` | 无 | Windows x64 number fast path，否则 `minijsBaselineSub(frame)` | 两个操作数都是数字时直接执行 double 减法并同步栈高度；否则回退 helper 保留 VM 语义 |
 | `OP_MUL` | 无 | Windows x64 number fast path，否则 `minijsBaselineMul(frame)` | 两个操作数都是数字时直接执行 double 乘法并同步栈高度；否则回退 helper 保留 VM 语义 |
@@ -590,12 +593,11 @@ jmp epilogue                 ; 成功返回后也结束 stub，不再执行后�
 
 第四阶段先支持低风险 opcode：
 
-- 纯表达式和局部变量：`Constant`、`Add`、`Sub`、`Mul`、`Div`、`Mod`、`Negate`、`Equal`、`Greater`、`Less`、`Not`、`GetLocal`、`SetLocal`、`Pop`、`Return`
+- 纯表达式、局部变量和全局变量：`Constant`、`Add`、`Sub`、`Mul`、`Div`、`Mod`、`Negate`、`Equal`、`Greater`、`Less`、`Not`、`GetLocal`、`SetLocal`、`Pop`、`DefineGlobal`、`GetGlobal`、`SetGlobal`、`Return`
 - 控制流：`JumpIfFalse`、`Jump`、`Loop`
 
 第六阶段继续支持不引入新调用帧的 runtime helper opcode：
 
-- 全局变量：`DefineGlobal`、`GetGlobal`、`SetGlobal`
 - 数组与下标：`Array`、`GetIndex`、`SetIndex`
 - 对象与属性 IC：`Object`、`GetProperty`、`SetProperty`
 - 闭包访问：`GetUpvalue`、`SetUpvalue`、`CloseUpvalue`、`GetCurrentClosure`
@@ -606,6 +608,7 @@ jmp epilogue                 ; 成功返回后也结束 stub，不再执行后�
 
 - `Constant`
 - `GetLocal`、`SetLocal`、`Pop`
+- `DefineGlobal`、`GetGlobal`、`SetGlobal`
 - `Add`、`Sub`、`Mul`、`Div`、`Mod`、`Negate`、`Equal`、`Greater`、`Less`、`Not`
 - `JumpIfFalse`、`Jump`、`Loop`
 - `Return`
