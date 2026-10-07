@@ -17,9 +17,27 @@
 namespace minijs {
 namespace {
 
+enum class NativeBranchKind {
+  Unconditional,
+  Zero,
+  NotOne,
+};
+
 struct BranchPatch {
   std::size_t offset = 0;
-  bool conditional = false;
+  NativeBranchKind kind = NativeBranchKind::Unconditional;
+
+  BranchPatch() = default;
+  BranchPatch(std::size_t offset, bool conditional)
+      : offset(offset),
+        kind(conditional ? NativeBranchKind::Zero : NativeBranchKind::Unconditional) {}
+  BranchPatch(std::size_t offset, NativeBranchKind kind) : offset(offset), kind(kind) {}
+};
+
+struct NativeBranchPatch {
+  std::size_t offset = 0;
+  std::size_t bytecodeTarget = 0;
+  NativeBranchKind kind = NativeBranchKind::Unconditional;
 };
 
 struct BinaryNumberGuardPatches {
@@ -71,6 +89,15 @@ class Arm64Emitter {
 
   std::size_t emitJumpPlaceholder() { return emitBPlaceholder(); }
 
+  std::size_t emitJumpIfZeroPlaceholder() { return emitCbzW0Placeholder(); }
+
+  std::size_t emitJumpIfNotOnePlaceholder() {
+    emit32(0x7100041F);  // cmp w0, #1
+    const std::size_t patchOffset = offset();
+    emit32(0x54000001);  // b.ne <patch>
+    return patchOffset;
+  }
+
   void emitMovW1Imm32(std::uint32_t value) {
     emitMovzW(1, static_cast<std::uint16_t>(value & 0xffff), 0);
     if ((value >> 16) != 0) {
@@ -108,6 +135,15 @@ class Arm64Emitter {
   // emitter 先写 placeholder，等 epilogue offset 确定后统一回填。
   bool patchBranchTo(std::size_t branchOffset, std::size_t targetOffset, bool conditional,
                      std::string& error) {
+    return patchBranchTo(branchOffset,
+                         targetOffset,
+                         conditional ? NativeBranchKind::Zero
+                                     : NativeBranchKind::Unconditional,
+                         error);
+  }
+
+  bool patchBranchTo(std::size_t branchOffset, std::size_t targetOffset,
+                     NativeBranchKind kind, std::string& error) {
     if (branchOffset + sizeof(std::uint32_t) > code_.size() ||
         branchOffset % sizeof(std::uint32_t) != 0 || targetOffset % sizeof(std::uint32_t) != 0) {
       error = "unaligned ARM64 branch patch";
@@ -123,12 +159,18 @@ class Arm64Emitter {
 
     const std::int64_t immediate = displacement / 4;
     std::uint32_t instruction = 0;
-    if (conditional) {
+    if (kind == NativeBranchKind::Zero) {
       if (immediate < -(1 << 18) || immediate >= (1 << 18)) {
         error = "ARM64 conditional branch target out of range";
         return false;
       }
       instruction = 0x34000000 | ((static_cast<std::uint32_t>(immediate) & 0x7ffff) << 5);
+    } else if (kind == NativeBranchKind::NotOne) {
+      if (immediate < -(1 << 18) || immediate >= (1 << 18)) {
+        error = "ARM64 conditional branch target out of range";
+        return false;
+      }
+      instruction = 0x54000001 | ((static_cast<std::uint32_t>(immediate) & 0x7ffff) << 5);
     } else {
       if (immediate < -(1 << 25) || immediate >= (1 << 25)) {
         error = "ARM64 branch target out of range";
@@ -230,6 +272,16 @@ class WindowsX64Emitter {
   std::size_t emitJumpPlaceholder() {
     const std::size_t patchOffset = offset();
     emit8(0xE9);  // jmp rel32
+    emit32(0);
+    return patchOffset;
+  }
+
+  std::size_t emitJumpIfZeroPlaceholder() { return emitJumpIfFalsePlaceholder(); }
+
+  std::size_t emitJumpIfNotOnePlaceholder() {
+    emit({0x83, 0xF8, 0x01});  // cmp eax, 1
+    const std::size_t patchOffset = offset();
+    emit({0x0F, 0x85});  // jne rel32
     emit32(0);
     return patchOffset;
   }
@@ -452,6 +504,16 @@ class WindowsX64Emitter {
 
   bool patchBranchTo(std::size_t branchOffset, std::size_t targetOffset, bool conditional,
                      std::string& error) {
+    return patchBranchTo(branchOffset,
+                         targetOffset,
+                         conditional ? NativeBranchKind::Zero
+                                     : NativeBranchKind::Unconditional,
+                         error);
+  }
+
+  bool patchBranchTo(std::size_t branchOffset, std::size_t targetOffset,
+                     NativeBranchKind kind, std::string& error) {
+    const bool conditional = kind != NativeBranchKind::Unconditional;
     const std::size_t immediateOffset = branchOffset + (conditional ? 2 : 1);
     const std::size_t nextInstruction = immediateOffset + sizeof(std::int32_t);
     if (immediateOffset + sizeof(std::int32_t) > code_.size()) {
@@ -549,6 +611,15 @@ void emitRuntimeCall(Emitter& emitter, std::uintptr_t functionAddress) {
   emitter.emitCallHelper();
 }
 
+template <typename Emitter>
+void emitRuntimeCallWithU32(Emitter& emitter, std::uintptr_t functionAddress,
+                            std::uint32_t argument) {
+  emitter.emitMoveFrameToFirstArg();
+  emitter.emitMoveU32ToSecondArg(argument);
+  emitter.emitLoadHelper(functionAddress);
+  emitter.emitCallHelper();
+}
+
 }  // namespace
 
 BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function) const {
@@ -579,6 +650,7 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
   return failure("baseline compiler has no native backend for this platform");
 #endif
   std::vector<BranchPatch> epiloguePatches;
+  std::vector<NativeBranchPatch> branchPatches;
   emitter.emitPrologue();
 
   // bytecodeOffsetToNativeOffset 记录每条 bytecode 指令对应的机器码起点；
@@ -597,10 +669,21 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
         break;
 
       case Opcode::GetLocal:
-        emitter.emitMoveFrameToFirstArg();
-        emitter.emitMoveU32ToSecondArg(instruction.operands[0]);
-        emitter.emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselineGetLocal));
-        emitter.emitCallHelper();
+        emitRuntimeCallWithU32(emitter,
+                               reinterpret_cast<std::uintptr_t>(&minijsBaselineGetLocal),
+                               instruction.operands[0]);
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        break;
+
+      case Opcode::SetLocal:
+        emitRuntimeCallWithU32(emitter,
+                               reinterpret_cast<std::uintptr_t>(&minijsBaselineSetLocal),
+                               instruction.operands[0]);
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        break;
+
+      case Opcode::Pop:
+        emitRuntimeCall(emitter, reinterpret_cast<std::uintptr_t>(&minijsBaselinePop));
         epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
         break;
 
@@ -736,6 +819,27 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
         epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
         break;
 
+      case Opcode::JumpIfFalse:
+        emitRuntimeCall(emitter, reinterpret_cast<std::uintptr_t>(&minijsBaselinePeekTruthy));
+        branchPatches.push_back({emitter.emitJumpIfZeroPlaceholder(), instruction.jumpTarget,
+                                 NativeBranchKind::Zero});
+        epiloguePatches.push_back({emitter.emitJumpIfNotOnePlaceholder(),
+                                   NativeBranchKind::NotOne});
+        break;
+
+      case Opcode::Jump:
+        branchPatches.push_back({emitter.emitJumpPlaceholder(), instruction.jumpTarget,
+                                 NativeBranchKind::Unconditional});
+        break;
+
+      case Opcode::Loop:
+        emitRuntimeCall(emitter,
+                        reinterpret_cast<std::uintptr_t>(&minijsBaselineRecordLoopBackedge));
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        branchPatches.push_back({emitter.emitJumpPlaceholder(), instruction.jumpTarget,
+                                 NativeBranchKind::Unconditional});
+        break;
+
       case Opcode::Return:
         emitRuntimeCall(emitter, reinterpret_cast<std::uintptr_t>(&minijsBaselineReturn));
         epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
@@ -756,7 +860,22 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
 
   for (const BranchPatch& patch : epiloguePatches) {
     std::string patchError;
-    if (!emitter.patchBranchTo(patch.offset, epilogueOffset, patch.conditional, patchError)) {
+    if (!emitter.patchBranchTo(patch.offset, epilogueOffset, patch.kind, patchError)) {
+      return failure(patchError);
+    }
+  }
+
+  for (const NativeBranchPatch& patch : branchPatches) {
+    if (patch.bytecodeTarget >= code->bytecodeOffsetToNativeOffset.size()) {
+      return failure("baseline branch target out of range");
+    }
+    const std::size_t nativeTarget = code->bytecodeOffsetToNativeOffset[patch.bytecodeTarget];
+    if (nativeTarget == kInvalidNativeOffset) {
+      return failure("baseline branch target has no native offset");
+    }
+
+    std::string patchError;
+    if (!emitter.patchBranchTo(patch.offset, nativeTarget, patch.kind, patchError)) {
       return failure(patchError);
     }
   }

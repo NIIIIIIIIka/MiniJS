@@ -4362,6 +4362,66 @@ void testBaselineCompilerNativeEntryRunsNotFunction() {
   EXPECT(result.equals(minijs::Value(true)));
 }
 
+void testBaselineCompilerNativeEntryRunsControlFlowFunctions() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  runBytecodeProgramOnVm(vm, R"(
+    function choose(flag) {
+      if (flag) {
+        return 11;
+      }
+      return 22;
+    }
+    function orValue(a, b) { return a || b; }
+    function countTo(n) {
+      let i = 0;
+      while (i < n) {
+        i = i + 1;
+      }
+      return i;
+    }
+    choose(true);
+    orValue(false, 1);
+    countTo(1);
+  )");
+
+  const minijs::BaselineCode* chooseCode = vm.debugGlobalFunctionBaselineCode("choose");
+  EXPECT(chooseCode != nullptr);
+  EXPECT(chooseCode->entry != nullptr);
+  minijs::Value result = vm.debugExecuteGlobalFunctionBaselineEntry(
+      "choose", {minijs::Value(true)}, chooseCode->entry);
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 11);
+
+  result = vm.debugExecuteGlobalFunctionBaselineEntry(
+      "choose", {minijs::Value(false)}, chooseCode->entry);
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 22);
+
+  const minijs::BaselineCode* orCode = vm.debugGlobalFunctionBaselineCode("orValue");
+  EXPECT(orCode != nullptr);
+  EXPECT(orCode->entry != nullptr);
+  result = vm.debugExecuteGlobalFunctionBaselineEntry(
+      "orValue", {minijs::Value(false), minijs::Value(42.0)}, orCode->entry);
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 42);
+
+  result = vm.debugExecuteGlobalFunctionBaselineEntry(
+      "orValue", {minijs::Value(true), minijs::Value(42.0)}, orCode->entry);
+  EXPECT(result.isBoolean());
+  EXPECT(result.equals(minijs::Value(true)));
+
+  const minijs::BaselineCode* countCode = vm.debugGlobalFunctionBaselineCode("countTo");
+  EXPECT(countCode != nullptr);
+  EXPECT(countCode->entry != nullptr);
+  result = vm.debugExecuteGlobalFunctionBaselineEntry(
+      "countTo", {minijs::Value(4.0)}, countCode->entry);
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 4);
+}
+
 void testJitDispatchRunsNativeBaselineEntryForSupportedFunction() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -4476,6 +4536,41 @@ void testJitDispatchRunsNativeBaselineEntryForNotFunction() {
   EXPECT(notEqualFeedback != nullptr);
   EXPECT(notEqualFeedback->state == minijs::JitState::Compiled);
   EXPECT(notEqualFeedback->baselineEntryCount == 1);
+}
+
+void testJitDispatchRunsNativeBaselineEntryForControlFlowFunction() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  const minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+    function control(flag, n) {
+      let total = 0;
+      if (flag) {
+        total = 1;
+      } else {
+        total = 2;
+      }
+      while (total < n) {
+        total = total + 1;
+      }
+      return total;
+    }
+    control(false, 3);
+    control(true, 4);
+  )");
+
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 4);
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("control");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+  EXPECT(feedback->baselineEntryCount == 1);
+
+  const minijs::BaselineCode* code = vm.debugGlobalFunctionBaselineCode("control");
+  EXPECT(code != nullptr);
+  EXPECT(code->entry != nullptr);
 }
 #endif
 
@@ -5463,10 +5558,12 @@ void runBytecodeTests() {
   testBaselineCompilerNativeEntryRunsEqualFunction();
   testBaselineCompilerNativeEntryRunsComparisonFunctions();
   testBaselineCompilerNativeEntryRunsNotFunction();
+  testBaselineCompilerNativeEntryRunsControlFlowFunctions();
   testJitDispatchRunsNativeBaselineEntryForSupportedFunction();
   testJitDispatchRunsNativeBaselineEntryForEqualFunction();
   testJitDispatchRunsNativeBaselineEntryForComparisonFunctions();
   testJitDispatchRunsNativeBaselineEntryForNotFunction();
+  testJitDispatchRunsNativeBaselineEntryForControlFlowFunction();
 #endif
   testBaselineRuntimeAbiRunsArithmeticEntry();
   testBaselineRuntimeAbiPushesConstantsAndSetsLocals();

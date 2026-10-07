@@ -22,5 +22,7 @@ extern "C" bool minijsBaselineEqual(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineGreater(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineLess(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineNot(minijs::BaselineFrame* frame);
+extern "C" std::uint8_t minijsBaselinePeekTruthy(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineRecordLoopBackedge(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineSyncStackSize(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineReturn(minijs::BaselineFrame* frame);

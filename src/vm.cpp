@@ -1461,6 +1461,17 @@ bool VM::baselineRuntimeNot(BaselineFrame& frame) {
   return true;
 }
 
+std::uint8_t VM::baselineRuntimePeekTruthy(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  return peek().isTruthy() ? 1 : 0;
+}
+
+bool VM::baselineRuntimeRecordLoopBackedge(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  recordLoopBackedge(*frame.closure->function);
+  return true;
+}
+
 bool VM::baselineRuntimeSyncStackSize(BaselineFrame& frame) {
   validateBaselineRuntimeFrame(frame);
   if (frame.stackSize > stack_.size()) {

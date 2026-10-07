@@ -312,6 +312,41 @@ extern "C" bool minijsBaselineNot(minijs::BaselineFrame* frame) {
   }
 }
 
+extern "C" std::uint8_t minijsBaselinePeekTruthy(minijs::BaselineFrame* frame) {
+  if (!frameCanRun(frame)) {
+    return 2;
+  }
+
+  try {
+    return frame->vm->baselineRuntimePeekTruthy(*frame);
+  } catch (const minijs::RuntimeError& error) {
+    markFailedFromException(frame, error);
+    return 2;
+  } catch (const std::exception& error) {
+    markFailedFromException(frame, error);
+    return 2;
+  } catch (...) {
+    markFailed(frame);
+    return 2;
+  }
+}
+
+extern "C" bool minijsBaselineRecordLoopBackedge(minijs::BaselineFrame* frame) {
+  if (!frameCanRun(frame)) {
+    return false;
+  }
+
+  try {
+    return frame->vm->baselineRuntimeRecordLoopBackedge(*frame);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
+  } catch (...) {
+    return markFailed(frame);
+  }
+}
+
 extern "C" bool minijsBaselineSyncStackSize(minijs::BaselineFrame* frame) {
   if (!frameCanRun(frame)) {
     return false;
