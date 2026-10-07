@@ -22,6 +22,14 @@ struct BranchPatch {
   bool conditional = false;
 };
 
+struct BinaryNumberGuardPatches {
+  std::size_t notEnoughValues = 0;
+  std::size_t leftNonNumber = 0;
+  std::size_t rightNonNumber = 0;
+  std::size_t rightZero = 0;
+  bool hasRightZero = false;
+};
+
 // 极小 ARM64 emitter：只负责写入当前 BaselineCompiler 需要的固定指令。
 // 这里有意不抽象成通用 assembler，避免第一版 backend 扩散出过早接口。
 class Arm64Emitter {
@@ -278,23 +286,26 @@ class WindowsX64Emitter {
     return error.empty();
   }
 
-  // 如果栈顶两个值都是数字，就直接做二元 double 运算；否则回退到 runtime helper。
-  bool emitInlineNumberBinaryOrRuntimeCall(std::uintptr_t functionAddress,
-                                           std::uintptr_t syncStackSizeAddress,
-                                           std::uint8_t sseOpcode,
-                                           std::string_view operationName,
-                                           bool fallbackOnRightZero,
-                                           std::string& error) {
+  bool validateInlineValueSize(std::string_view context, std::string& error) {
     // imul r64, r64, imm32 要求 sizeof(Value) 能放进 32 位立即数。
     if (sizeof(Value) > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
-      error = std::string("Value size is too large for x64 inline ") + std::string(operationName);
+      error = std::string("Value size is too large for x64 ") + std::string(context);
       return false;
     }
+    return true;
+  }
 
+  // 生成二元 number guard。成功后 rdx 指向 left，rcx 指向 right。
+  bool emitLoadBinaryNumberOperands(BinaryNumberGuardPatches& patches,
+                                    std::string_view context,
+                                    std::string& error) {
+    if (!validateInlineValueSize(context, error)) {
+      return false;
+    }
     emit({0x48, 0x8B, 0x83});  // mov rax, [rbx + BaselineFrame::stackSize]
     emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackSize)));
     emit({0x48, 0x83, 0xF8, 0x02});  // cmp rax, 2
-    const std::size_t notEnoughValuesFallback = emitJbPlaceholder();
+    patches.notEnoughValues = emitJbPlaceholder();
 
     emit({0x48, 0x8B, 0x8B});  // mov rcx, [rbx + BaselineFrame::stackData]
     emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackData)));
@@ -313,29 +324,68 @@ class WindowsX64Emitter {
     emit({0x81, 0xBA});  // cmp dword ptr [rdx + Value::typeOffset], Number
     emit32(static_cast<std::uint32_t>(Value::typeOffset()));
     emit32(Value::numberTypeTag());
-    const std::size_t leftNonNumberFallback = emitJnePlaceholder();
+    patches.leftNonNumber = emitJnePlaceholder();
 
     emit({0x81, 0xB9});  // cmp dword ptr [rcx + Value::typeOffset], Number
     emit32(static_cast<std::uint32_t>(Value::typeOffset()));
     emit32(Value::numberTypeTag());
-    const std::size_t rightNonNumberFallback = emitJnePlaceholder();
+    patches.rightNonNumber = emitJnePlaceholder();
+    return true;
+  }
 
-    std::size_t rightZeroFallback = 0;
-    bool hasRightZeroFallback = false;
-    if (fallbackOnRightZero) {
-      // 除法需要保留 VM 的 division by zero 语义：除数是 0 时回退到 helper。
-      // ucomisd 遇到 NaN 会设置 PF，所以先用 jp 跳过 jz，避免把 NaN 误判为 0。
-      emit({0xF2, 0x0F, 0x10, 0x89});  // movsd xmm1, [rcx + Value::numberOffset]
-      emit32(static_cast<std::uint32_t>(Value::numberOffset()));
-      emit({0x66, 0x0F, 0x57, 0xD2});  // xorpd xmm2, xmm2
-      emit({0x66, 0x0F, 0x2E, 0xCA});  // ucomisd xmm1, xmm2
-      const std::size_t unorderedContinue = emitJpPlaceholder();
-      rightZeroFallback = emitJzPlaceholder();
-      hasRightZeroFallback = true;
-      patchBranchTo(unorderedContinue, offset(), true, error);
+  bool emitRightZeroGuard(BinaryNumberGuardPatches& patches, std::string& error) {
+    // 除法和取模需要保留除零错误：右操作数是 0 时回退到通用 helper。
+    // NaN 走 unordered 分支，不会被当作 0。
+    emit({0xF2, 0x0F, 0x10, 0x89});  // movsd xmm1, [rcx + Value::numberOffset]
+    emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+    emit({0x66, 0x0F, 0x57, 0xD2});  // xorpd xmm2, xmm2
+    emit({0x66, 0x0F, 0x2E, 0xCA});  // ucomisd xmm1, xmm2
+    const std::size_t unorderedContinue = emitJpPlaceholder();
+    patches.rightZero = emitJzPlaceholder();
+    patches.hasRightZero = true;
+    patchBranchTo(unorderedContinue, offset(), true, error);
+    return error.empty();
+  }
+
+  bool patchBinaryNumberFallbacks(const BinaryNumberGuardPatches& patches,
+                                  std::size_t fallback,
+                                  std::string& error) {
+    patchBranchTo(patches.notEnoughValues, fallback, true, error);
+    if (!error.empty()) {
+      return false;
+    }
+    patchBranchTo(patches.leftNonNumber, fallback, true, error);
+    if (!error.empty()) {
+      return false;
+    }
+    patchBranchTo(patches.rightNonNumber, fallback, true, error);
+    if (!error.empty()) {
+      return false;
+    }
+    if (patches.hasRightZero) {
+      patchBranchTo(patches.rightZero, fallback, true, error);
       if (!error.empty()) {
         return false;
       }
+    }
+    return true;
+  }
+
+  // 如果栈顶两个值都是数字，就直接做二元 double 运算；否则回退到 runtime helper。
+  bool emitInlineNumberBinaryOrRuntimeCall(std::uintptr_t functionAddress,
+                                           std::uintptr_t syncStackSizeAddress,
+                                           std::uint8_t sseOpcode,
+                                           std::string_view operationName,
+                                           bool fallbackOnRightZero,
+                                           std::string& error) {
+    BinaryNumberGuardPatches patches;
+    if (!emitLoadBinaryNumberOperands(patches,
+                                      std::string("inline ") + std::string(operationName),
+                                      error)) {
+      return false;
+    }
+    if (fallbackOnRightZero && !emitRightZeroGuard(patches, error)) {
+      return false;
     }
 
     emit({0xF2, 0x0F, 0x10, 0x82});  // movsd xmm0, [rdx + Value::numberOffset]
@@ -353,23 +403,8 @@ class WindowsX64Emitter {
     const std::size_t done = emitJumpPlaceholder();
 
     const std::size_t fallback = offset();
-    patchBranchTo(notEnoughValuesFallback, fallback, true, error);
-    if (!error.empty()) {
+    if (!patchBinaryNumberFallbacks(patches, fallback, error)) {
       return false;
-    }
-    patchBranchTo(leftNonNumberFallback, fallback, true, error);
-    if (!error.empty()) {
-      return false;
-    }
-    patchBranchTo(rightNonNumberFallback, fallback, true, error);
-    if (!error.empty()) {
-      return false;
-    }
-    if (hasRightZeroFallback) {
-      patchBranchTo(rightZeroFallback, fallback, true, error);
-      if (!error.empty()) {
-        return false;
-      }
     }
     emitMoveFrameToFirstArg();
     emitLoadHelper(functionAddress);
@@ -387,57 +422,14 @@ class WindowsX64Emitter {
                                           std::string_view operationName,
                                           bool fallbackOnRightZero,
                                           std::string& error) {
-    if (sizeof(Value) > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
-      error = std::string("Value size is too large for x64 guarded ") +
-              std::string(operationName);
+    BinaryNumberGuardPatches patches;
+    if (!emitLoadBinaryNumberOperands(patches,
+                                      std::string("guarded ") + std::string(operationName),
+                                      error)) {
       return false;
     }
-
-    emit({0x48, 0x8B, 0x83});  // mov rax, [rbx + BaselineFrame::stackSize]
-    emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackSize)));
-    emit({0x48, 0x83, 0xF8, 0x02});  // cmp rax, 2
-    const std::size_t notEnoughValuesFallback = emitJbPlaceholder();
-
-    emit({0x48, 0x8B, 0x8B});  // mov rcx, [rbx + BaselineFrame::stackData]
-    emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackData)));
-
-    emit({0x48, 0x89, 0xC2});  // mov rdx, rax
-    emit({0x48, 0x83, 0xEA, 0x02});  // sub rdx, 2
-    emit({0x48, 0x69, 0xD2});  // imul rdx, rdx, sizeof(Value)
-    emit32(static_cast<std::uint32_t>(sizeof(Value)));
-    emit({0x48, 0x8D, 0x14, 0x11});  // lea rdx, [rcx + rdx]
-
-    emit({0x48, 0xFF, 0xC8});  // dec rax
-    emit({0x48, 0x69, 0xC0});  // imul rax, rax, sizeof(Value)
-    emit32(static_cast<std::uint32_t>(sizeof(Value)));
-    emit({0x48, 0x8D, 0x0C, 0x01});  // lea rcx, [rcx + rax]
-
-    emit({0x81, 0xBA});  // cmp dword ptr [rdx + Value::typeOffset], Number
-    emit32(static_cast<std::uint32_t>(Value::typeOffset()));
-    emit32(Value::numberTypeTag());
-    const std::size_t leftNonNumberFallback = emitJnePlaceholder();
-
-    emit({0x81, 0xB9});  // cmp dword ptr [rcx + Value::typeOffset], Number
-    emit32(static_cast<std::uint32_t>(Value::typeOffset()));
-    emit32(Value::numberTypeTag());
-    const std::size_t rightNonNumberFallback = emitJnePlaceholder();
-
-    std::size_t rightZeroFallback = 0;
-    bool hasRightZeroFallback = false;
-    if (fallbackOnRightZero) {
-      // 取模和除法一样需要保留除零错误：右操作数是 0 时回退到通用 helper。
-      // NaN 走 unordered 分支，不会被当作 0。
-      emit({0xF2, 0x0F, 0x10, 0x89});  // movsd xmm1, [rcx + Value::numberOffset]
-      emit32(static_cast<std::uint32_t>(Value::numberOffset()));
-      emit({0x66, 0x0F, 0x57, 0xD2});  // xorpd xmm2, xmm2
-      emit({0x66, 0x0F, 0x2E, 0xCA});  // ucomisd xmm1, xmm2
-      const std::size_t unorderedContinue = emitJpPlaceholder();
-      rightZeroFallback = emitJzPlaceholder();
-      hasRightZeroFallback = true;
-      patchBranchTo(unorderedContinue, offset(), true, error);
-      if (!error.empty()) {
-        return false;
-      }
+    if (fallbackOnRightZero && !emitRightZeroGuard(patches, error)) {
+      return false;
     }
 
     emitMoveFrameToFirstArg();
@@ -446,23 +438,8 @@ class WindowsX64Emitter {
     const std::size_t done = emitJumpPlaceholder();
 
     const std::size_t fallback = offset();
-    patchBranchTo(notEnoughValuesFallback, fallback, true, error);
-    if (!error.empty()) {
+    if (!patchBinaryNumberFallbacks(patches, fallback, error)) {
       return false;
-    }
-    patchBranchTo(leftNonNumberFallback, fallback, true, error);
-    if (!error.empty()) {
-      return false;
-    }
-    patchBranchTo(rightNonNumberFallback, fallback, true, error);
-    if (!error.empty()) {
-      return false;
-    }
-    if (hasRightZeroFallback) {
-      patchBranchTo(rightZeroFallback, fallback, true, error);
-      if (!error.empty()) {
-        return false;
-      }
     }
     emitMoveFrameToFirstArg();
     emitLoadHelper(fallbackFunctionAddress);
