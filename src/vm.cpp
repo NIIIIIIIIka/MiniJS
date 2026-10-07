@@ -603,132 +603,10 @@ Value VM::run(const Chunk& chunk) {
       }
       case Opcode::MethodCall: {
         const std::uint8_t nameIndex = chunk.readByte(frame.ip++);
-        const std::string& name = chunk.constant(nameIndex).asString();
         const std::uint8_t argCount = chunk.readByte(frame.ip++);
         const std::uint8_t feedbackSlotIndex = chunk.readByte(frame.ip++);
-        if (stack_.size() < static_cast<std::size_t>(argCount) + 1) {
-          ++propertyInlineCacheStats_.methodCallDispatchErrors;
-          throw RuntimeError("method call stack underflow");
-        }
-
-        const std::size_t receiverIndex = stack_.size() - argCount - 1;
-        Value receiver = stack_[receiverIndex];
-        auto callMethod = [&](ObjClosure* method, std::size_t slotStart, const std::string& label) {
-          try {
-            callBytecodeClosure(method, argCount, receiverIndex, slotStart, label);
-          } catch (const RuntimeError&) {
-            ++propertyInlineCacheStats_.methodCallDispatchErrors;
-            throw;
-          }
-        };
-
-        if (isGcInstanceValue(receiver)) {
-          ObjClass* klass = gcInstanceClass(receiver);
-          FeedbackSlot* feedback =
-              inlineCachesEnabled_ ? &chunk.feedbackSlot(feedbackSlotIndex) : nullptr;
-          if (feedback != nullptr && feedback->state != FeedbackState::Megamorphic) {
-            if (const auto* entry = findMethodInlineCacheEntry(feedback->method, klass, false)) {
-              ++propertyInlineCacheStats_.methodCallHits;
-              callMethod(entry->method, receiverIndex, "method");
-              ++propertyInlineCacheStats_.methodCallInstanceDispatches;
-              break;
-            }
-          }
-
-          if (feedback != nullptr && feedback->state == FeedbackState::Megamorphic) {
-            ++propertyInlineCacheStats_.methodCallBypasses;
-          } else {
-            ++propertyInlineCacheStats_.methodCallMisses;
-          }
-          auto method = findMethod(klass, name);
-          if (method == nullptr) {
-            ++propertyInlineCacheStats_.methodCallDispatchErrors;
-            throw RuntimeError("value has no method: " + name);
-          }
-
-          if (feedback != nullptr && updateMethodFeedback(*feedback, klass, method, false)) {
-            ++propertyInlineCacheStats_.methodCallUpdates;
-          }
-          callMethod(method, receiverIndex, "method");
-          ++propertyInlineCacheStats_.methodCallInstanceDispatches;
-          break;
-        }
-
-        if (receiver.isGcClass()) {
-          ObjClass* klass = receiver.asGcClass();
-          FeedbackSlot* feedback =
-              inlineCachesEnabled_ ? &chunk.feedbackSlot(feedbackSlotIndex) : nullptr;
-          if (feedback != nullptr && feedback->state != FeedbackState::Megamorphic) {
-            if (const auto* entry = findMethodInlineCacheEntry(feedback->method, klass, true)) {
-              ++propertyInlineCacheStats_.methodCallHits;
-              callMethod(entry->method, receiverIndex + 1, "function");
-              ++propertyInlineCacheStats_.methodCallStaticDispatches;
-              break;
-            }
-          }
-
-          if (feedback != nullptr && feedback->state == FeedbackState::Megamorphic) {
-            ++propertyInlineCacheStats_.methodCallBypasses;
-          } else {
-            ++propertyInlineCacheStats_.methodCallMisses;
-          }
-          auto method = findStaticMethod(klass, name);
-          if (method == nullptr) {
-            ++propertyInlineCacheStats_.methodCallDispatchErrors;
-            throw RuntimeError("value has no method: " + name);
-          }
-
-          if (feedback != nullptr && updateMethodFeedback(*feedback, klass, method, true)) {
-            ++propertyInlineCacheStats_.methodCallUpdates;
-          }
-          callMethod(method, receiverIndex + 1, "function");
-          ++propertyInlineCacheStats_.methodCallStaticDispatches;
-          break;
-        }
-
-        if (!receiver.isGcArray()) {
-          ++propertyInlineCacheStats_.methodCallDispatchErrors;
-          throw RuntimeError("method call receiver is not an array");
-        }
-
-        std::vector<Value>& array = receiver.asGcArray()->elements;
-        ++propertyInlineCacheStats_.methodCallBypasses;
-
-        if (name == "push") {
-          if (argCount != 1) {
-            ++propertyInlineCacheStats_.methodCallDispatchErrors;
-            throw RuntimeError("push expects 1 argument");
-          }
-
-          ++propertyInlineCacheStats_.methodCallArrayPushes;
-          array.push_back(stack_[receiverIndex + 1]);
-          stack_.resize(receiverIndex);
-          push(Value(static_cast<double>(array.size())));
-          break;
-        }
-
-        if (name == "pop") {
-          if (argCount != 0) {
-            ++propertyInlineCacheStats_.methodCallDispatchErrors;
-            throw RuntimeError("pop expects 0 arguments");
-          }
-
-          ++propertyInlineCacheStats_.methodCallArrayPops;
-          if (array.empty()) {
-            stack_.resize(receiverIndex);
-            push(Value::undefined());
-            break;
-          }
-
-          Value value = array.back();
-          array.pop_back();
-          stack_.resize(receiverIndex);
-          push(value);
-          break;
-        }
-
-        ++propertyInlineCacheStats_.methodCallDispatchErrors;
-        throw RuntimeError("unknown array method: " + name);
+        executeMethodCall(chunk, nameIndex, argCount, feedbackSlotIndex);
+        break;
       }
       case Opcode::SuperCall: {
         const std::uint8_t nameIndex = chunk.readByte(frame.ip++);
@@ -1403,6 +1281,16 @@ bool VM::baselineRuntimeCall(BaselineFrame& frame, std::uint32_t argCount) {
   return true;
 }
 
+bool VM::baselineRuntimeMethodCall(BaselineFrame& frame, std::uint32_t nameIndex,
+                                   std::uint32_t argCount,
+                                   std::uint32_t feedbackSlotIndex) {
+  validateBaselineRuntimeFrame(frame);
+  executeMethodCall(frame.closure->function->function.chunk, nameIndex, argCount,
+                    feedbackSlotIndex, true);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
 bool VM::baselineRuntimeAdd(BaselineFrame& frame) {
   validateBaselineRuntimeFrame(frame);
   Value right = pop();
@@ -1897,6 +1785,136 @@ void VM::executeCall(std::size_t argCount, bool requireSynchronousCallee) {
   throw RuntimeError("value is not callable");
 }
 
+void VM::executeMethodCall(const Chunk& chunk, std::size_t nameIndex, std::size_t argCount,
+                           std::size_t feedbackSlotIndex, bool requireSynchronousCallee) {
+  const std::string& name = chunk.constant(nameIndex).asString();
+  if (stack_.size() < argCount + 1) {
+    ++propertyInlineCacheStats_.methodCallDispatchErrors;
+    throw RuntimeError("method call stack underflow");
+  }
+
+  const std::size_t receiverIndex = stack_.size() - argCount - 1;
+  Value receiver = stack_[receiverIndex];
+  auto callMethod = [&](ObjClosure* method, std::size_t slotStart, const std::string& label) {
+    try {
+      if (requireSynchronousCallee) {
+        callBytecodeClosureSynchronously(method, argCount, receiverIndex, slotStart, label);
+      } else {
+        callBytecodeClosure(method, argCount, receiverIndex, slotStart, label);
+      }
+    } catch (const RuntimeError&) {
+      ++propertyInlineCacheStats_.methodCallDispatchErrors;
+      throw;
+    }
+  };
+
+  if (isGcInstanceValue(receiver)) {
+    ObjClass* klass = gcInstanceClass(receiver);
+    FeedbackSlot* feedback = inlineCachesEnabled_ ? &chunk.feedbackSlot(feedbackSlotIndex) : nullptr;
+    if (feedback != nullptr && feedback->state != FeedbackState::Megamorphic) {
+      if (const auto* entry = findMethodInlineCacheEntry(feedback->method, klass, false)) {
+        ++propertyInlineCacheStats_.methodCallHits;
+        callMethod(entry->method, receiverIndex, "method");
+        ++propertyInlineCacheStats_.methodCallInstanceDispatches;
+        return;
+      }
+    }
+
+    if (feedback != nullptr && feedback->state == FeedbackState::Megamorphic) {
+      ++propertyInlineCacheStats_.methodCallBypasses;
+    } else {
+      ++propertyInlineCacheStats_.methodCallMisses;
+    }
+    auto* method = findMethod(klass, name);
+    if (method == nullptr) {
+      ++propertyInlineCacheStats_.methodCallDispatchErrors;
+      throw RuntimeError("value has no method: " + name);
+    }
+
+    if (feedback != nullptr && updateMethodFeedback(*feedback, klass, method, false)) {
+      ++propertyInlineCacheStats_.methodCallUpdates;
+    }
+    callMethod(method, receiverIndex, "method");
+    ++propertyInlineCacheStats_.methodCallInstanceDispatches;
+    return;
+  }
+
+  if (receiver.isGcClass()) {
+    ObjClass* klass = receiver.asGcClass();
+    FeedbackSlot* feedback = inlineCachesEnabled_ ? &chunk.feedbackSlot(feedbackSlotIndex) : nullptr;
+    if (feedback != nullptr && feedback->state != FeedbackState::Megamorphic) {
+      if (const auto* entry = findMethodInlineCacheEntry(feedback->method, klass, true)) {
+        ++propertyInlineCacheStats_.methodCallHits;
+        callMethod(entry->method, receiverIndex + 1, "function");
+        ++propertyInlineCacheStats_.methodCallStaticDispatches;
+        return;
+      }
+    }
+
+    if (feedback != nullptr && feedback->state == FeedbackState::Megamorphic) {
+      ++propertyInlineCacheStats_.methodCallBypasses;
+    } else {
+      ++propertyInlineCacheStats_.methodCallMisses;
+    }
+    auto* method = findStaticMethod(klass, name);
+    if (method == nullptr) {
+      ++propertyInlineCacheStats_.methodCallDispatchErrors;
+      throw RuntimeError("value has no method: " + name);
+    }
+
+    if (feedback != nullptr && updateMethodFeedback(*feedback, klass, method, true)) {
+      ++propertyInlineCacheStats_.methodCallUpdates;
+    }
+    callMethod(method, receiverIndex + 1, "function");
+    ++propertyInlineCacheStats_.methodCallStaticDispatches;
+    return;
+  }
+
+  if (!receiver.isGcArray()) {
+    ++propertyInlineCacheStats_.methodCallDispatchErrors;
+    throw RuntimeError("method call receiver is not an array");
+  }
+
+  std::vector<Value>& array = receiver.asGcArray()->elements;
+  ++propertyInlineCacheStats_.methodCallBypasses;
+
+  if (name == "push") {
+    if (argCount != 1) {
+      ++propertyInlineCacheStats_.methodCallDispatchErrors;
+      throw RuntimeError("push expects 1 argument");
+    }
+
+    ++propertyInlineCacheStats_.methodCallArrayPushes;
+    array.push_back(stack_[receiverIndex + 1]);
+    stack_.resize(receiverIndex);
+    push(Value(static_cast<double>(array.size())));
+    return;
+  }
+
+  if (name == "pop") {
+    if (argCount != 0) {
+      ++propertyInlineCacheStats_.methodCallDispatchErrors;
+      throw RuntimeError("pop expects 0 arguments");
+    }
+
+    ++propertyInlineCacheStats_.methodCallArrayPops;
+    if (array.empty()) {
+      stack_.resize(receiverIndex);
+      push(Value::undefined());
+      return;
+    }
+
+    Value value = array.back();
+    array.pop_back();
+    stack_.resize(receiverIndex);
+    push(value);
+    return;
+  }
+
+  ++propertyInlineCacheStats_.methodCallDispatchErrors;
+  throw RuntimeError("unknown array method: " + name);
+}
+
 void VM::callBytecodeClosure(ObjClosure* closure, std::size_t argCount, std::size_t returnSlot,
                              std::size_t slotStart, const std::string& label,
                              bool returnsReceiver) {
@@ -2269,8 +2287,12 @@ Value VM::executeBaselineCode(const BaselineCode& code, CallFrame& frame) {
         executeCall(instruction.operands[0], true);
         ++ip;
         break;
-
       case Opcode::MethodCall:
+        executeMethodCall(chunk, instruction.operands[0], instruction.operands[1],
+                          instruction.operands[2], true);
+        ++ip;
+        break;
+
       case Opcode::Closure:
       case Opcode::Class:
       case Opcode::Method:

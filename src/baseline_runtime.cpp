@@ -367,6 +367,25 @@ extern "C" bool minijsBaselineCall(minijs::BaselineFrame* frame, std::uint32_t a
   }
 }
 
+extern "C" bool minijsBaselineMethodCall(minijs::BaselineFrame* frame,
+                                          std::uint32_t nameIndex,
+                                          std::uint32_t argCount,
+                                          std::uint32_t feedbackSlotIndex) {
+  if (!frameCanRun(frame)) {
+    return false;
+  }
+
+  try {
+    return frame->vm->baselineRuntimeMethodCall(*frame, nameIndex, argCount, feedbackSlotIndex);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
+  } catch (...) {
+    return markFailed(frame);
+  }
+}
+
 extern "C" bool minijsBaselineAdd(minijs::BaselineFrame* frame) {
   if (!frameCanRun(frame)) {
     return false;

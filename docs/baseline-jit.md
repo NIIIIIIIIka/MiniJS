@@ -14,7 +14,7 @@
 - [x] `JitFeedback` 已保存 baseline code handle 和编译失败原因。
 - [x] `VM` 已有测试用 baseline executor 入口，可直接执行纯算术、local、return 和简单 loop。
 - [x] VM 调用 compiled code 的入口已接入 `callBytecodeClosure()`。
-- [x] Baseline executor 已复用 VM runtime helper 支持 global、array/index、object/property、upvalue、current-closure 和 call opcode。
+- [x] Baseline executor 已复用 VM runtime helper 支持 global、array/index、object/property、upvalue、current-closure、call 和 method-call opcode。
 - [x] `BaselineFrame` 和 `BaselineEntry` 已定义，第一批 `extern "C"` runtime helper 已通过稳定入口帧访问 VM。
 - [x] `BaselineCompiler` 已能为局部变量、栈清理、算术/比较/逻辑 opcode、基础控制流和 `Return` 生成 ARM64 和 Windows x64 stub，并写入 executable memory；Windows x64 的 `Negate`、`Add`、`Sub`、`Mul`、`Div` 和 `Mod` 已有 number fast path / guarded number helper。
 - [x] VM baseline dispatch 已能在支持 native backend 且存在 native `BaselineEntry` 时优先进入机器码；没有 native entry 时继续使用 decoded executor。
@@ -22,7 +22,8 @@
 还没有完成：
 
 - [x] `Call` 已支持在 baseline 中同步进入被调 bytecode closure 或 native function。
-- [ ] `MethodCall`、`SuperCall` 的嵌套调用 frame 协议。
+- [x] `MethodCall` 已支持在 baseline 中复用 method inline cache，并同步进入目标方法 closure。
+- [ ] `SuperCall` 的嵌套调用 frame 协议。
 - [ ] `Closure`、`Class`、`Method`、`StaticMethod`、`Inherit` 的 baseline 执行路径。
 - [ ] safepoint、deopt 或 fallback 协议。
 - [ ] 平台相关 codegen 后端。
@@ -249,7 +250,7 @@ Opcode::Loop
 
 `Scheduled` 是瞬时状态。支持的函数会进入 `Compiled` 并挂上 `BaselineCode`；不支持的 opcode 或 verifier 失败会进入 `Failed`，之后继续走 VM。达到阈值的那次调用只负责安装 code object，下一次调用才进入 baseline executor。JIT disabled 时即使已有 `BaselineCode` 也继续走 VM。
 
-`compileBaseline()` 会先尝试第一版 native `BaselineCompiler`。如果函数只包含局部变量、栈清理、全局变量、数组/对象、upvalue、普通调用、算术/比较/逻辑 opcode、基础控制流和 `Return`，会在当前平台生成 native stub、`bytecodeOffsetToNativeOffset` 映射和 `BaselineEntry`。如果 native compiler 遇到暂不支持的 opcode 或当前平台没有 native backend，会回退到现有 decoded baseline compiler；这样已经支持的 runtime helper opcode 仍能通过 decoded executor 验证语义。
+`compileBaseline()` 会先尝试第一版 native `BaselineCompiler`。如果函数只包含局部变量、栈清理、全局变量、数组/对象、upvalue、普通调用、方法调用、算术/比较/逻辑 opcode、基础控制流和 `Return`，会在当前平台生成 native stub、`bytecodeOffsetToNativeOffset` 映射和 `BaselineEntry`。如果 native compiler 遇到暂不支持的 opcode 或当前平台没有 native backend，会回退到现有 decoded baseline compiler；这样已经支持的 runtime helper opcode 仍能通过 decoded executor 验证语义。
 
 ## 函数职责
 
@@ -449,6 +450,7 @@ epilogue:
 | `OP_CLOSE_UPVALUE` | 无 | `minijsBaselineCloseUpvalue(frame)` | 关闭当前栈顶槽关联的 open upvalue，并弹出该局部槽 |
 | `OP_GET_CURRENT_CLOSURE` | 无 | `minijsBaselineGetCurrentClosure(frame)` | 把当前运行中的 closure 压栈，用于局部递归函数引用自身 |
 | `OP_CALL` | `argCount` | `minijsBaselineCall(frame, argCount)` | 按普通 VM 调用语义消费 callee 和参数；native function 直接调用，bytecode closure 会同步进入其 baseline code 并把返回值写回调用位置 |
+| `OP_METHOD_CALL` | `nameIndex, argCount, feedbackSlot` | `minijsBaselineMethodCall(frame, nameIndex, argCount, feedbackSlot)` | 读取 receiver 的方法或数组内建方法；实例/静态方法复用 method inline cache，并同步进入目标方法 closure |
 | `OP_ADD` | 无 | Windows x64 number fast path，否则 `minijsBaselineAdd(frame)` | 两个操作数都是数字时直接执行 double 加法并同步栈高度；否则回退 helper 保留字符串拼接语义 |
 | `OP_SUB` | 无 | Windows x64 number fast path，否则 `minijsBaselineSub(frame)` | 两个操作数都是数字时直接执行 double 减法并同步栈高度；否则回退 helper 保留 VM 语义 |
 | `OP_MUL` | 无 | Windows x64 number fast path，否则 `minijsBaselineMul(frame)` | 两个操作数都是数字时直接执行 double 乘法并同步栈高度；否则回退 helper 保留 VM 语义 |
@@ -610,7 +612,7 @@ jmp epilogue                 ; 成功返回后也结束 stub，不再执行后�
 
 第六阶段继续支持不引入新调用帧的 runtime helper opcode：
 
-当前这些 opcode 已经迁移到 native compiler。普通函数调用通过 `minijsBaselineCall()` 复用 VM 调用语义；方法调用、类定义、闭包创建、继承和 `super` 暂时编译失败并回退 VM。后续扩展时优先直接为现有 `Opcode` 增加执行路径或 runtime helper 路径，不新增平行 opcode。
+当前这些 opcode 已经迁移到 native compiler。普通函数调用通过 `minijsBaselineCall()` 复用 VM 调用语义，方法调用通过 `minijsBaselineMethodCall()` 复用 method inline cache 和数组内建方法路径；类定义、闭包创建、继承和 `super` 暂时编译失败并回退 VM。后续扩展时优先直接为现有 `Opcode` 增加执行路径或 runtime helper 路径，不新增平行 opcode。
 
 第七阶段 native compiler 的平台 backend switch 当前覆盖：
 
@@ -642,7 +644,7 @@ Baseline frame 复用 VM 的调用约定：
 
 ## 下一步
 
-1. 继续设计 `MethodCall`、`SuperCall` 的嵌套调用 frame 协议。
+1. 继续设计 `SuperCall` 的嵌套调用 frame 协议。
 2. 为 `Closure` 和 class-family opcode 增加 GC 安全的 baseline helper。
 3. 扩展 benchmark，用于对比解释执行、IC 与 baseline dispatch 路径。
 4. 设计 safepoint、deopt 和 fallback 边界。

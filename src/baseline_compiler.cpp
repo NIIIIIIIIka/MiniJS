@@ -83,6 +83,8 @@ class Arm64Emitter {
 
   void emitMoveU32ToThirdArg(std::uint32_t value) { emitMovW2Imm32(value); }
 
+  void emitMoveU32ToFourthArg(std::uint32_t value) { emitMovW3Imm32(value); }
+
   void emitLoadHelper(std::uintptr_t value) { emitLoadX16Imm64(value); }
 
   void emitCallHelper() { emitBlrX16(); }
@@ -111,6 +113,13 @@ class Arm64Emitter {
     emitMovzW(2, static_cast<std::uint16_t>(value & 0xffff), 0);
     if ((value >> 16) != 0) {
       emitMovkW(2, static_cast<std::uint16_t>(value >> 16), 1);
+    }
+  }
+
+  void emitMovW3Imm32(std::uint32_t value) {
+    emitMovzW(3, static_cast<std::uint16_t>(value & 0xffff), 0);
+    if ((value >> 16) != 0) {
+      emitMovkW(3, static_cast<std::uint16_t>(value >> 16), 1);
     }
   }
 
@@ -262,6 +271,11 @@ class WindowsX64Emitter {
 
   void emitMoveU32ToThirdArg(std::uint32_t value) {
     emit({0x41, 0xB8});  // mov r8d, imm32
+    emit32(value);
+  }
+
+  void emitMoveU32ToFourthArg(std::uint32_t value) {
+    emit({0x41, 0xB9});  // mov r9d, imm32
     emit32(value);
   }
 
@@ -645,6 +659,19 @@ void emitRuntimeCallWithTwoU32(Emitter& emitter, std::uintptr_t functionAddress,
   emitter.emitCallHelper();
 }
 
+template <typename Emitter>
+void emitRuntimeCallWithThreeU32(Emitter& emitter, std::uintptr_t functionAddress,
+                                 std::uint32_t firstArgument,
+                                 std::uint32_t secondArgument,
+                                 std::uint32_t thirdArgument) {
+  emitter.emitMoveFrameToFirstArg();
+  emitter.emitMoveU32ToSecondArg(firstArgument);
+  emitter.emitMoveU32ToThirdArg(secondArgument);
+  emitter.emitMoveU32ToFourthArg(thirdArgument);
+  emitter.emitLoadHelper(functionAddress);
+  emitter.emitCallHelper();
+}
+
 }  // namespace
 
 BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function) const {
@@ -804,6 +831,16 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
         emitRuntimeCallWithU32(emitter,
                                reinterpret_cast<std::uintptr_t>(&minijsBaselineCall),
                                instruction.operands[0]);
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        break;
+
+      case Opcode::MethodCall:
+        emitRuntimeCallWithThreeU32(
+            emitter,
+            reinterpret_cast<std::uintptr_t>(&minijsBaselineMethodCall),
+            instruction.operands[0],
+            instruction.operands[1],
+            instruction.operands[2]);
         epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
         break;
 

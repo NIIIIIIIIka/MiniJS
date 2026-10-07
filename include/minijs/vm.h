@@ -44,6 +44,10 @@ extern "C" bool minijsBaselineSetUpvalue(minijs::BaselineFrame* frame, std::uint
 extern "C" bool minijsBaselineCloseUpvalue(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineGetCurrentClosure(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineCall(minijs::BaselineFrame* frame, std::uint32_t argCount);
+extern "C" bool minijsBaselineMethodCall(minijs::BaselineFrame* frame,
+                                          std::uint32_t nameIndex,
+                                          std::uint32_t argCount,
+                                          std::uint32_t feedbackSlotIndex);
 extern "C" bool minijsBaselineAdd(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineSub(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineMul(minijs::BaselineFrame* frame);
@@ -177,6 +181,10 @@ class VM {
   friend bool ::minijsBaselineCloseUpvalue(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineGetCurrentClosure(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineCall(minijs::BaselineFrame* frame, std::uint32_t argCount);
+  friend bool ::minijsBaselineMethodCall(minijs::BaselineFrame* frame,
+                                         std::uint32_t nameIndex,
+                                         std::uint32_t argCount,
+                                         std::uint32_t feedbackSlotIndex);
   friend bool ::minijsBaselineAdd(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineSub(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineMul(minijs::BaselineFrame* frame);
@@ -254,6 +262,9 @@ class VM {
   bool baselineRuntimeCloseUpvalue(BaselineFrame& frame);
   bool baselineRuntimeGetCurrentClosure(BaselineFrame& frame);
   bool baselineRuntimeCall(BaselineFrame& frame, std::uint32_t argCount);
+  bool baselineRuntimeMethodCall(BaselineFrame& frame, std::uint32_t nameIndex,
+                                 std::uint32_t argCount,
+                                 std::uint32_t feedbackSlotIndex);
   bool baselineRuntimeAdd(BaselineFrame& frame);
   bool baselineRuntimeSub(BaselineFrame& frame);
   bool baselineRuntimeMul(BaselineFrame& frame);
@@ -285,6 +296,9 @@ class VM {
   void executeCloseUpvalue();
   void executeGetCurrentClosure(const CallFrame& frame);
   void executeCall(std::size_t argCount, bool requireSynchronousCallee = false);
+  void executeMethodCall(const Chunk& chunk, std::size_t nameIndex, std::size_t argCount,
+                         std::size_t feedbackSlotIndex,
+                         bool requireSynchronousCallee = false);
   void callBytecodeClosure(ObjClosure* closure, std::size_t argCount, std::size_t returnSlot,
                            std::size_t slotStart, const std::string& label,
                            bool returnsReceiver = false);
