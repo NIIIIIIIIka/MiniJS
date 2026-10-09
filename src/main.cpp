@@ -5,6 +5,9 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <algorithm>
+#include <utility>
+#include <vector>
 
 #include "minijs/compiler.h"
 #include "minijs/disassembler.h"
@@ -21,6 +24,7 @@
 namespace {
 constexpr int ExitUsageError = 64;
 constexpr int ExitInputError = 74;
+constexpr int BenchmarkSamples = 5;
 
 void printUsage(std::ostream& output) {
   output << "Usage: minijs <file>\n"
@@ -161,12 +165,18 @@ struct BenchmarkResult {
   minijs::Value result;
   long long compileMicros = 0;
   long long runMicros = 0;
+  int samples = 1;
   minijs::PropertyInlineCacheStats stats;
   minijs::JitRuntimeStats jitStats;
 };
 
-BenchmarkResult runBenchmark(const minijs::Program& program, bool inlineCachesEnabled,
-                             bool jitEnabled) {
+long long medianMicros(std::vector<long long> values) {
+  std::sort(values.begin(), values.end());
+  return values[values.size() / 2];
+}
+
+BenchmarkResult runBenchmarkSample(const minijs::Program& program, bool inlineCachesEnabled,
+                                   bool jitEnabled) {
   const auto compileStart = std::chrono::steady_clock::now();
   minijs::Compiler compiler;
   const minijs::Chunk chunk = compiler.compileProgram(program);
@@ -189,6 +199,33 @@ BenchmarkResult runBenchmark(const minijs::Program& program, bool inlineCachesEn
       std::chrono::duration_cast<std::chrono::microseconds>(runEnd - runStart).count();
   benchmark.stats = vm.propertyInlineCacheStats();
   benchmark.jitStats = vm.jitRuntimeStats();
+  return benchmark;
+}
+
+BenchmarkResult runBenchmark(const minijs::Program& program, bool inlineCachesEnabled,
+                             bool jitEnabled) {
+  std::vector<BenchmarkResult> samples;
+  samples.reserve(BenchmarkSamples);
+  std::vector<long long> compileMicros;
+  compileMicros.reserve(BenchmarkSamples);
+  std::vector<long long> runMicros;
+  runMicros.reserve(BenchmarkSamples);
+
+  for (int sample = 0; sample < BenchmarkSamples; ++sample) {
+    BenchmarkResult result = runBenchmarkSample(program, inlineCachesEnabled, jitEnabled);
+    if (!samples.empty() && !result.result.equals(samples.front().result)) {
+      throw std::runtime_error("benchmark result changed between samples");
+    }
+    compileMicros.push_back(result.compileMicros);
+    runMicros.push_back(result.runMicros);
+    samples.push_back(std::move(result));
+  }
+
+  BenchmarkResult benchmark = samples.back();
+  benchmark.result = samples.front().result;
+  benchmark.compileMicros = medianMicros(std::move(compileMicros));
+  benchmark.runMicros = medianMicros(std::move(runMicros));
+  benchmark.samples = BenchmarkSamples;
   return benchmark;
 }
 
@@ -234,7 +271,8 @@ bool benchmarkVmProgram(std::string_view source) {
   if (!benchmark.result.isNull()) {
     std::cout << "result: " << benchmark.result.toString() << '\n';
   }
-  std::cout << "compile_us: " << benchmark.compileMicros << '\n'
+  std::cout << "samples: " << benchmark.samples << '\n'
+            << "compile_us: " << benchmark.compileMicros << '\n'
             << "run_us: " << benchmark.runMicros << '\n';
   printInlineCacheStats(benchmark.stats);
   return true;
@@ -265,8 +303,10 @@ bool benchmarkCompareVmProgram(std::string_view source) {
     std::cout << "result: " << withIc.result.toString() << '\n';
   }
 
-  std::cout << "with_ic_compile_us: " << withIc.compileMicros << '\n'
+  std::cout << "with_ic_samples: " << withIc.samples << '\n'
+            << "with_ic_compile_us: " << withIc.compileMicros << '\n'
             << "with_ic_run_us: " << withIc.runMicros << '\n'
+            << "without_ic_samples: " << withoutIc.samples << '\n'
             << "without_ic_compile_us: " << withoutIc.compileMicros << '\n'
             << "without_ic_run_us: " << withoutIc.runMicros << '\n';
   if (withIc.runMicros > 0 && withoutIc.runMicros > 0) {
@@ -309,8 +349,10 @@ bool benchmarkCompareJitProgram(std::string_view source) {
     std::cout << "result: " << withJit.result.toString() << '\n';
   }
 
-  std::cout << "without_jit_compile_us: " << withoutJit.compileMicros << '\n'
+  std::cout << "without_jit_samples: " << withoutJit.samples << '\n'
+            << "without_jit_compile_us: " << withoutJit.compileMicros << '\n'
             << "without_jit_run_us: " << withoutJit.runMicros << '\n'
+            << "with_jit_samples: " << withJit.samples << '\n'
             << "with_jit_compile_us: " << withJit.compileMicros << '\n'
             << "with_jit_run_us: " << withJit.runMicros << '\n';
   if (withJit.runMicros > 0 && withoutJit.runMicros > 0) {

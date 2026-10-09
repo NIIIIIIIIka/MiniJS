@@ -666,10 +666,10 @@ JIT on/off 对比可以直接运行：
 minijs --benchmark-compare-jit examples/baseline_jit_benchmark.js
 ```
 
-CTest 也会通过 `minijs_cli_benchmark_compare_reports_jit_on_and_off` 跑同一份脚本，确认 JIT 开关不改变结果，并输出 `without_jit_run_us`、`with_jit_run_us` 和 `speedup`。同一份输出还包含 JIT 调度统计：`jit functions` 显示函数处于 `cold/scheduled/compiled/failed` 的数量，`jit counters` 显示函数调用次数、回边次数和 `baseline_entries`，`jit code` 显示最终进入 native entry 还是 decoded baseline executor。
+CTest 也会通过 `minijs_cli_benchmark_compare_reports_jit_on_and_off` 跑同一份脚本，确认 JIT 开关不改变结果，并输出 `without_jit_run_us`、`with_jit_run_us` 和 `speedup`。benchmark 默认运行 5 轮，`compile_us` 和 `run_us` 输出中位数，`samples` 字段显示采样轮数。同一份输出还包含 JIT 调度统计：`jit functions` 显示函数处于 `cold/scheduled/compiled/failed` 的数量，`jit counters` 显示函数调用次数、回边次数和 `baseline_entries`，`jit code` 显示最终进入 native entry 还是 decoded baseline executor。
 
 ## 下一步
 
 1. 设计 safepoint、deopt 和 fallback 边界。
 2. 逐步把更多 opcode 从 helper-call 形态下沉到更细的 native fast path。
-3. 给 benchmark 增加更稳定的多轮采样，降低单次运行的系统抖动。
+3. 增加可选的 warmup / iteration 参数，让 benchmark 可以区分开发 smoke test 和更长时间的性能采样。
