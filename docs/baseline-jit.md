@@ -19,15 +19,16 @@
 - [x] `BaselineCompiler` 已能为局部变量、栈清理、算术/比较/逻辑 opcode、基础控制流和 `Return` 生成 ARM64 和 Windows x64 stub，并写入 executable memory；Windows x64 的 `Negate`、`Add`、`Sub`、`Mul`、`Div` 和 `Mod` 已有 number fast path / guarded number helper。
 - [x] VM baseline dispatch 已能在支持 native backend 且存在 native `BaselineEntry` 时优先进入机器码；没有 native entry 时继续使用 decoded executor。
 
-还没有完成：
+后续扩展与边界状态：
 
 - [x] `Call` 已支持在 baseline 中同步进入被调 bytecode closure 或 native function。
 - [x] `MethodCall` 已支持在 baseline 中复用 method inline cache，并同步进入目标方法 closure。
 - [x] `SuperCall` 已支持在 baseline 中重排 superclass/receiver 栈槽，并同步进入父类方法 closure。
 - [x] `Closure` 已支持在 baseline 中创建运行时 closure，并按 bytecode 携带的元数据捕获 upvalue。
 - [x] `Class`、`Method`、`StaticMethod`、`Inherit` 已支持在 baseline 中创建类对象、挂载方法和建立继承关系。
-- [ ] safepoint、deopt 或 fallback 协议。
-- [ ] 平台相关 codegen 后端。
+- [x] 编译回退、指令级 helper fallback 和错误退出边界已明确，见下文。
+- [ ] 可恢复执行的 deopt 协议和独立 safepoint 元数据。
+- [x] ARM64 和 Windows x64 codegen 后端；其它平台使用 decoded executor。
 
 ## Baseline JIT 的运行过程与代码位置
 
@@ -141,7 +142,7 @@ code->entry =
 
 ### 6. native stub 通过 Runtime ABI 复用 VM 语义
 
-native 入口接收一个 `BaselineFrame*`。frame 保存 VM、当前闭包、局部槽起点、返回槽和执行结果状态。stub 不直接访问 `std::vector<Value>` 或 GC 对象布局，而是调用 `extern "C"` helper；helper 再转发到 `VM::baselineRuntime*()`，完成压栈、局部变量访问、算术和返回等操作。
+native 入口接收一个 `BaselineFrame*`。frame 保存 VM、当前闭包、局部槽起点、返回槽、栈地址快照和执行结果状态。stub 不依赖 `std::vector<Value>` 的内部布局；Windows x64 的数字快路径通过 frame 的栈快照和 `Value` 提供的字段偏移直接访问数字载荷，其余操作调用 `extern "C"` helper。helper 再转发到 `VM::baselineRuntime*()`，完成完整语义。
 
 helper 用 `bool` 表示成功或失败，并通过 `BaselineFrame::failed`、`completed` 把状态带回 C++。这样异常和复杂 C++ 对象都不会跨越 native ABI 边界。
 
@@ -171,7 +172,7 @@ Stable Bytecode
   -> Optimizing JIT: Bytecode + feedback -> SSA IR -> optimized code
 ```
 
-Baseline code object 的职责是缓存已经验证过的 bytecode 视图，减少重复 decode，并为后续 dispatch/native codegen 提供稳定输入。真正需要 Guard、类型特化、Deopt 时，再进入 Optimizing JIT 的 SSA IR。
+Baseline code object 的职责是缓存已经验证过的 bytecode 视图，减少重复 decode，并为后续 dispatch/native codegen 提供稳定输入。Baseline 已使用局部数字类型 guard；需要跨指令类型特化和可恢复执行的 Deopt 时，再进入 Optimizing JIT 的 SSA IR。
 
 ## BaselineCode 表示
 
@@ -209,16 +210,19 @@ struct BaselineFrame {
 
   std::size_t returnSlot = 0;
   std::size_t slotStart = 0;
+  Value* stackData = nullptr;
+  std::size_t stackSize = 0;
 
   bool returnsReceiver = false;
   bool completed = false;
   bool failed = false;
+  std::string errorMessage;
 };
 
 using BaselineEntry = void (*)(BaselineFrame*);
 ```
 
-机器码需要读写局部变量、压栈、算术或返回时，必须调用 Runtime ABI helper，例如：
+机器码通过 Runtime ABI helper 读写局部变量、压栈和返回；部分数字运算可以在 guard 成功后内联。helper 接口例如：
 
 ```cpp
 extern "C" bool minijsBaselineGetLocal(BaselineFrame* frame, std::uint32_t slot);
@@ -540,7 +544,7 @@ stack_.empty()
 
 `OP_JUMP` 和 `OP_LOOP` 的目标不是运行时计算出来的；bytecode verifier 已经确认目标落在指令边界上，native compiler 先记录 bytecode target，等所有指令都生成完并填好 `bytecodeOffsetToNativeOffset` 后，再把占位跳转回填成真正的 native 相对分支。`OP_LOOP` 在跳回去前仍会调用 `minijsBaselineRecordLoopBackedge()`，保持循环热度统计和普通 VM 一致。
 
-`BaselineCode::bytecodeOffsetToNativeOffset` 会记录每条 bytecode 指令对应的机器码起点。当前它主要用于测试和调试，后续 safepoint、deopt 或源码级 profiling 也可以从这里建立 bytecode offset 和 native offset 的关系。
+`BaselineCode::bytecodeOffsetToNativeOffset` 会记录每条 bytecode 指令对应的机器码起点，当前用于分支回填、测试和调试。后续 safepoint、deopt 或源码级 profiling 可以以它为定位依据，但仍需单独补充恢复状态等元数据。
 
 ### Windows x64 stub 形态
 
@@ -643,7 +647,7 @@ Baseline frame 复用 VM 的调用约定：
 - `returnSlot` 和 `slotStart` 与 `CallFrame` 保持一致。
 - 局部变量仍使用 bytecode slot 编号。
 - 返回值仍写回调用方期待的位置。
-- GC roots 仍来自 `stack_`、`frames_`、`openUpvalues_` 和 `temporaryRoots_`。
+- GC roots 仍来自 `stack_`、`globals_`、`frames_`、`openUpvalues_` 和 `temporaryRoots_`。
 
 当前 baseline dispatch 已接入 `callBytecodeClosure()` 的函数入口。当前平台支持 native backend 且 `BaselineCode::entry != nullptr` 时，VM 会优先进入 native `BaselineEntry`；否则继续进入 decoded baseline executor。测试入口仍保留，用于直接验证 code object 和 runtime helper ABI。
 
@@ -684,8 +688,75 @@ JSON 输出会保留 `result`、`speedup`、采样轮数、编译/运行耗时�
 
 CTest 也会通过 `minijs_cli_benchmark_compare_reports_jit_on_and_off` 跑同一份脚本，确认 JIT 开关不改变结果，并输出 `without_jit_run_us`、`with_jit_run_us` 和 `speedup`。同一份输出还包含 JIT 调度统计：`jit functions` 显示函数处于 `cold/scheduled/compiled/failed` 的数量，`jit counters` 显示函数调用次数、回边次数和 `baseline_entries`，`jit code` 显示最终进入 native entry 还是 decoded baseline executor。
 
+## Native Fast Path 与 Fallback 边界
+
+以下描述当前实现；可恢复执行的 deopt 属于后续设计，尚未实现。
+
+### 三种退出或回退
+
+| 触发点 | 当前行为 | 后续执行位置 |
+| --- | --- | --- |
+| native 编译失败或平台没有 native backend | `compileBaseline()` 尝试 decoded 编译 | 后续函数调用从 decoded executor 入口开始 |
+| 数字快路径的 guard 未命中 | 跳到当前 opcode 的完整 runtime helper | helper 成功后继续下一条 native 指令 |
+| runtime helper 抛异常或返回失败 | C ABI 包装记录失败，native 跳到统一 epilogue | `executeBaselineEntry()` 抛出 `RuntimeError` |
+
+如果 decoded 编译也失败，函数进入 `JitState::Failed`，后续调用继续普通 VM。编译回退发生在选择执行入口之前，不涉及从执行到一半的 native 代码恢复。
+
+指令级 fallback 也不会切换到 decoded executor。它仍在同一次 native 函数调用里，只借助 helper 完成当前指令。helper 失败时不能从函数开头重跑：全局写入、属性写入或函数调用可能已经产生副作用，重跑会重复这些操作。
+
+### 当前 opcode 分类
+
+| opcode | Windows x64 | ARM64 |
+| --- | --- | --- |
+| `Negate` | 检查栈深度和 Number 标签，直接翻转 double 符号位；未命中调用完整 helper | 完整 helper |
+| `Add`、`Sub`、`Mul`、`Div` | 检查两个 Number，使用 SSE double 运算；成功后同步栈深度；未命中调用完整 helper | 完整 helper |
+| `Mod` | 数字 guard 成功后调用 `minijsBaselineModNumber()`；未命中调用完整 helper | 完整 helper |
+| 常量、local/global、array/index、object/property | 完整 helper | 完整 helper |
+| closure/upvalue、class/method/inherit、call/method-call/super-call | 完整 helper | 完整 helper |
+| `Equal`、`Greater`、`Less`、`Not` | 完整 helper | 完整 helper |
+| `Jump` | native 分支 | native 分支 |
+| `JumpIfFalse` | truthiness helper 加 native 分支 | truthiness helper 加 native 分支 |
+| `Loop` | 回边计数 helper 加 native 分支 | 回边计数 helper 加 native 分支 |
+| `Return` | 返回 helper 加统一 epilogue | 返回 helper 加统一 epilogue |
+
+`Div` 和 `Mod` 的零除数 guard 同时识别 `+0` 和 `-0`，交给完整 helper 产生现有除零错误；NaN 不按零处理。`ModNumber` 内部仍使用 `std::fmod`，因此它是经过 guard 的窄 helper，还没有完整内联为机器码。
+
+例如 `1 + 2` 命中数字快路径；`"a" + "b"` 的 Number guard 未命中，完整 `Add` helper 执行字符串拼接。guard 失败只说明快路径不适用，是否报错由完整 helper 的语言语义决定。
+
+### Guard 与栈状态契约
+
+1. guard 必须在修改 Value、弹栈或产生其它副作用之前完成。失败时 helper 看到原来的操作数和栈深度。
+2. 快路径成功后的栈效果必须与普通 VM 相同。`Negate` 原地修改栈顶，不改变栈深度；二元运算把结果写入左操作数槽，并减少一个栈槽。
+3. 二元快路径先减少 `BaselineFrame::stackSize`，随后调用 `minijsBaselineSyncStackSize()`，由 VM 执行 `stack_.resize()`，再刷新栈快照。同步完成之前不能调用可能分配或触发 GC 的语义 helper。
+4. `refreshBaselineFrameStack()` 从真实 `stack_` 更新 `stackData` 和 `stackSize`。可能改变栈或重入 VM 的 helper 成功返回后，要确保快照已刷新；不改变栈的 truthiness 和回边计数 helper 不需要刷新。
+5. helper 调用后不得继续使用调用前缓存的栈元素地址。压栈或嵌套调用可能使 `std::vector` 扩容，旧 `Value*` 随之失效；下一条快路径重新读取 frame 的快照。
+
+相关实现：`WindowsX64Emitter::emitInlineNumberNegateOrRuntimeCall()`、`emitInlineNumberBinaryOrRuntimeCall()`、`emitGuardedNumberBinaryRuntimeCall()` 位于 [src/baseline_compiler.cpp](../src/baseline_compiler.cpp)；栈同步位于 [src/vm.cpp](../src/vm.cpp)。
+
+### Helper 返回值与错误传播
+
+普通 C ABI helper 返回 `true` 表示操作成功，native 继续执行；捕获异常时设置 `failed` 和可用的 `errorMessage`，返回 `false`，native 跳到 epilogue。epilogue 只恢复机器调用帧，不负责恢复语言栈或重试 opcode。
+
+`Return` 成功时设置 `completed = true`，完成 upvalue 关闭和返回槽整理，也跳到 epilogue。`executeBaselineEntry()` 检查 `failed`、`completed` 和返回值是否存在，失败时抛出错误。
+
+`minijsBaselinePeekTruthy()` 是单独的三态接口：`0` 表示假，`1` 表示真，`2` 表示失败。`JumpIfFalse` 对 `0` 跳到 bytecode 目标，对 `1` 继续，对 `2` 退出，不能按普通 bool helper 处理。
+
+### GC 与 Safepoint 边界
+
+当前数字内联路径不会分配 GC 对象。可能分配或调用其它函数的 opcode 通过 helper 执行，由 VM 现有根集合保护存活对象。`BaselineFrame::stackData` 只是栈快照，不是新增的 GC 根；native 寄存器里的裸对象指针也不会自动被标记。
+
+新增快路径若要持有 GC 对象并调用可能触发 GC 的 helper，必须先把对象保存在有效 VM 栈槽或 `temporaryRoots_` 中。仅把对象地址放在寄存器里不够。进入 helper 时真实 VM 栈必须已经同步，GC 才能看到正确的存活槽。
+
+现有 helper 调用是后续 safepoint 设计可以利用的边界，尤其是对象/数组/闭包/类创建和函数调用；`Loop` 的回边 helper 也是未来中断检查的候选位置。目前没有独立 safepoint 表、寄存器根映射或从 native PC 恢复语言帧的协议，不能把这些候选位置当成已经实现的 deopt 点。
+
+### 后续 Deopt 需要补什么
+
+真正的 deopt 要在 native 执行中恢复普通 VM，并从正确的 bytecode 位置继续。除了现有 `bytecodeOffsetToNativeOffset` 映射，还需要记录恢复点对应的 bytecode offset、操作发生前还是发生后、有效栈深度、局部变量与操作数的位置，以及嵌套调用帧状态。
+
+当前 offset 映射用于分支回填和定位指令起点，不包含上述恢复信息。现有类型 guard 直接调用当前 opcode 的 helper，因此暂时无需恢复整个 VM 帧。未来只有确定恢复状态和副作用边界后，才可以增加执行中切回 VM 的机制。
+
 ## 下一步
 
-1. 设计 safepoint、deopt 和 fallback 边界。
-2. 逐步把更多 opcode 从 helper-call 形态下沉到更细的 native fast path。
-3. 梳理 native fast path 的 fallback/deopt 边界，把 helper-call 和内联机器码的职责分清。
+1. 对现有数字快路径集中验证 guard 命中、类型 fallback、零除数、NaN 和嵌套 helper 调用后的栈快照刷新。
+2. 按上述契约扩展 number comparison 快路径，并用 JIT on/off 验证结果和错误一致。
+3. 引入执行中恢复需求时，再增加 safepoint 元数据和 deopt 帧恢复协议。
