@@ -4158,6 +4158,44 @@ void testJitCompilesClosureOpcode() {
   EXPECT(vm.debugGlobalFunctionBaselineCode("makeAdder") != nullptr);
 }
 
+void testJitCompilesClassFamilyOpcodes() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+
+  const minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+    function makeChildClass() {
+      class Base {
+        value() {
+          return 40;
+        }
+
+        static bonus() {
+          return 2;
+        }
+      }
+
+      class Child < Base {}
+      return Child;
+    }
+
+    let First = makeChildClass();
+    First().value();
+    let Second = makeChildClass();
+    Second().value() + Second.bonus();
+  )");
+
+  EXPECT(result.isNumber());
+  EXPECT(result.asNumber() == 42);
+
+  const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("makeChildClass");
+  EXPECT(feedback != nullptr);
+  EXPECT(feedback->callCount == 2);
+  EXPECT(feedback->baselineEntryCount == 1);
+  EXPECT(feedback->state == minijs::JitState::Compiled);
+  EXPECT(vm.debugGlobalFunctionBaselineCode("makeChildClass") != nullptr);
+}
+
 void testBaselineExecutorRunsArithmeticAndLocals() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -4409,10 +4447,16 @@ void testBaselineCompilerGeneratesNativeStubForClosureAccessOpcodes() {
   EXPECT(result.code->entry != nullptr);
 }
 
-void testBaselineCompilerRejectsUnsupportedOpcode() {
+void testBaselineCompilerGeneratesNativeStubForClassFamilyOpcodes() {
   const minijs::Chunk chunk = compileProgram(R"(
     function makeBox() {
-      class Box {}
+      class Base {
+        get() { return 1; }
+        static tag() { return 2; }
+      }
+      class Box < Base {
+        value() { return 3; }
+      }
       return Box;
     }
   )");
@@ -4421,12 +4465,24 @@ void testBaselineCompilerRejectsUnsupportedOpcode() {
 
   minijs::BaselineCompiler compiler;
   const minijs::BaselineCompileResult result = compiler.compile(*function);
-  EXPECT(!result.succeeded());
-  EXPECT(result.code == nullptr);
   if (!nativeBaselineBackendAvailable()) {
+    EXPECT(!result.succeeded());
+    EXPECT(result.code == nullptr);
     return;
   }
-  EXPECT(result.error.find("OP_CLASS") != std::string::npos);
+
+  EXPECT(result.succeeded());
+  EXPECT(result.error.empty());
+  EXPECT(result.code != nullptr);
+  EXPECT(result.code->entry != nullptr);
+  EXPECT(findDecodedInstruction(function->chunk, minijs::Opcode::Class).opcode ==
+         minijs::Opcode::Class);
+  EXPECT(findDecodedInstruction(function->chunk, minijs::Opcode::Method).opcode ==
+         minijs::Opcode::Method);
+  EXPECT(findDecodedInstruction(function->chunk, minijs::Opcode::StaticMethod).opcode ==
+         minijs::Opcode::StaticMethod);
+  EXPECT(findDecodedInstruction(function->chunk, minijs::Opcode::Inherit).opcode ==
+         minijs::Opcode::Inherit);
 }
 
 #if defined(__aarch64__) || defined(_M_ARM64) || \
@@ -5981,6 +6037,7 @@ void runBytecodeTests() {
   testJitCompilesMethodCallOpcode();
   testJitCompilesSuperCallOpcode();
   testJitCompilesClosureOpcode();
+  testJitCompilesClassFamilyOpcodes();
   testBaselineExecutorRunsArithmeticAndLocals();
   testBaselineExecutorRunsSimpleLoop();
   testBaselineExecutorPreservesArithmeticErrors();
@@ -5988,7 +6045,7 @@ void runBytecodeTests() {
   testBaselineCompilerGeneratesNativeStubForArithmeticFunction();
   testBaselineCompilerGeneratesNativeStubForDefineGlobalOpcode();
   testBaselineCompilerGeneratesNativeStubForClosureAccessOpcodes();
-  testBaselineCompilerRejectsUnsupportedOpcode();
+  testBaselineCompilerGeneratesNativeStubForClassFamilyOpcodes();
 #if defined(__aarch64__) || defined(_M_ARM64) || \
     (defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__)))
   testBaselineCompilerNativeEntryRunsAddFunction();

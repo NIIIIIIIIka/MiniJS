@@ -39,6 +39,11 @@ extern "C" bool minijsBaselineGetProperty(minijs::BaselineFrame* frame,
 extern "C" bool minijsBaselineSetProperty(minijs::BaselineFrame* frame,
                                            std::uint32_t nameIndex,
                                            std::uint32_t feedbackSlotIndex);
+extern "C" bool minijsBaselineClass(minijs::BaselineFrame* frame, std::uint32_t nameIndex);
+extern "C" bool minijsBaselineMethod(minijs::BaselineFrame* frame, std::uint32_t nameIndex);
+extern "C" bool minijsBaselineStaticMethod(minijs::BaselineFrame* frame,
+                                            std::uint32_t nameIndex);
+extern "C" bool minijsBaselineInherit(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineGetUpvalue(minijs::BaselineFrame* frame, std::uint32_t slot);
 extern "C" bool minijsBaselineSetUpvalue(minijs::BaselineFrame* frame, std::uint32_t slot);
 extern "C" bool minijsBaselineCloseUpvalue(minijs::BaselineFrame* frame);
@@ -182,6 +187,11 @@ class VM {
   friend bool ::minijsBaselineSetProperty(minijs::BaselineFrame* frame,
                                           std::uint32_t nameIndex,
                                           std::uint32_t feedbackSlotIndex);
+  friend bool ::minijsBaselineClass(minijs::BaselineFrame* frame, std::uint32_t nameIndex);
+  friend bool ::minijsBaselineMethod(minijs::BaselineFrame* frame, std::uint32_t nameIndex);
+  friend bool ::minijsBaselineStaticMethod(minijs::BaselineFrame* frame,
+                                           std::uint32_t nameIndex);
+  friend bool ::minijsBaselineInherit(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineGetUpvalue(minijs::BaselineFrame* frame, std::uint32_t slot);
   friend bool ::minijsBaselineSetUpvalue(minijs::BaselineFrame* frame, std::uint32_t slot);
   friend bool ::minijsBaselineCloseUpvalue(minijs::BaselineFrame* frame);
@@ -269,6 +279,10 @@ class VM {
                                   std::uint32_t feedbackSlotIndex);
   bool baselineRuntimeSetProperty(BaselineFrame& frame, std::uint32_t nameIndex,
                                   std::uint32_t feedbackSlotIndex);
+  bool baselineRuntimeClass(BaselineFrame& frame, std::uint32_t nameIndex);
+  bool baselineRuntimeMethod(BaselineFrame& frame, std::uint32_t nameIndex);
+  bool baselineRuntimeStaticMethod(BaselineFrame& frame, std::uint32_t nameIndex);
+  bool baselineRuntimeInherit(BaselineFrame& frame);
   bool baselineRuntimeGetUpvalue(BaselineFrame& frame, std::uint32_t slot);
   bool baselineRuntimeSetUpvalue(BaselineFrame& frame, std::uint32_t slot);
   bool baselineRuntimeCloseUpvalue(BaselineFrame& frame);
@@ -307,6 +321,10 @@ class VM {
                           std::size_t feedbackSlotIndex);
   void executeSetProperty(const Chunk& chunk, std::size_t nameIndex,
                           std::size_t feedbackSlotIndex);
+  void executeClass(const Chunk& chunk, std::size_t nameIndex);
+  void executeMethod(const Chunk& chunk, std::size_t nameIndex);
+  void executeStaticMethod(const Chunk& chunk, std::size_t nameIndex);
+  void executeInherit();
   void executeGetUpvalue(const CallFrame& frame, std::size_t slot);
   void executeSetUpvalue(const CallFrame& frame, std::size_t slot);
   void executeCloseUpvalue();

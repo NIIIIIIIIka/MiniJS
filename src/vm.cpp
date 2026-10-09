@@ -532,36 +532,21 @@ Value VM::run(const Chunk& chunk) {
       }
       case Opcode::Class: {
         const std::uint8_t nameIndex = chunk.readByte(frame.ip++);
-        push(Value(allocateObject<ObjClass>(chunk.constant(nameIndex).asString())));
+        executeClass(chunk, nameIndex);
         break;
       }
       case Opcode::Method: {
         const std::uint8_t nameIndex = chunk.readByte(frame.ip++);
-        const std::string& name = chunk.constant(nameIndex).asString();
-        Value method = pop();
-        Value klass = peek();
-        klass.asGcClass()->methods[name] = method.asGcClosure();
+        executeMethod(chunk, nameIndex);
         break;
       }
       case Opcode::StaticMethod: {
         const std::uint8_t nameIndex = chunk.readByte(frame.ip++);
-        const std::string& name = chunk.constant(nameIndex).asString();
-        Value method = pop();
-        Value klass = peek();
-        klass.asGcClass()->staticMethods[name] = method.asGcClosure();
+        executeStaticMethod(chunk, nameIndex);
         break;
       }
       case Opcode::Inherit: {
-        Value superclass = pop();
-        Value subclass = peek();
-        if (!superclass.isGcClass()) {
-          throw RuntimeError("superclass must be a class");
-        }
-        if (!subclass.isGcClass()) {
-          throw RuntimeError("subclass must be a class");
-        }
-
-        subclass.asGcClass()->superclass = superclass.asGcClass();
+        executeInherit();
         break;
       }
       case Opcode::Closure: {
@@ -1193,6 +1178,34 @@ bool VM::baselineRuntimeSetProperty(BaselineFrame& frame, std::uint32_t nameInde
   return true;
 }
 
+bool VM::baselineRuntimeClass(BaselineFrame& frame, std::uint32_t nameIndex) {
+  validateBaselineRuntimeFrame(frame);
+  executeClass(frame.closure->function->function.chunk, nameIndex);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeMethod(BaselineFrame& frame, std::uint32_t nameIndex) {
+  validateBaselineRuntimeFrame(frame);
+  executeMethod(frame.closure->function->function.chunk, nameIndex);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeStaticMethod(BaselineFrame& frame, std::uint32_t nameIndex) {
+  validateBaselineRuntimeFrame(frame);
+  executeStaticMethod(frame.closure->function->function.chunk, nameIndex);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeInherit(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  executeInherit();
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
 bool VM::baselineRuntimeGetUpvalue(BaselineFrame& frame, std::uint32_t slot) {
   validateBaselineRuntimeFrame(frame);
   const auto& upvalue = frame.closure->upvalues[slot];
@@ -1649,6 +1662,37 @@ void VM::executeSetProperty(const Chunk& chunk, std::size_t nameIndex,
   }
 
   finishAssignment();
+}
+
+void VM::executeClass(const Chunk& chunk, std::size_t nameIndex) {
+  push(Value(allocateObject<ObjClass>(chunk.constant(nameIndex).asString())));
+}
+
+void VM::executeMethod(const Chunk& chunk, std::size_t nameIndex) {
+  const std::string& name = chunk.constant(nameIndex).asString();
+  Value method = pop();
+  Value klass = peek();
+  klass.asGcClass()->methods[name] = method.asGcClosure();
+}
+
+void VM::executeStaticMethod(const Chunk& chunk, std::size_t nameIndex) {
+  const std::string& name = chunk.constant(nameIndex).asString();
+  Value method = pop();
+  Value klass = peek();
+  klass.asGcClass()->staticMethods[name] = method.asGcClosure();
+}
+
+void VM::executeInherit() {
+  Value superclass = pop();
+  Value subclass = peek();
+  if (!superclass.isGcClass()) {
+    throw RuntimeError("superclass must be a class");
+  }
+  if (!subclass.isGcClass()) {
+    throw RuntimeError("subclass must be a class");
+  }
+
+  subclass.asGcClass()->superclass = superclass.asGcClass();
 }
 
 void VM::executeGetUpvalue(const CallFrame& frame, std::size_t slot) {
@@ -2300,6 +2344,22 @@ Value VM::executeBaselineCode(const BaselineCode& code, CallFrame& frame) {
         executeSetProperty(chunk, instruction.operands[0], instruction.operands[1]);
         ++ip;
         break;
+      case Opcode::Class:
+        executeClass(chunk, instruction.operands[0]);
+        ++ip;
+        break;
+      case Opcode::Method:
+        executeMethod(chunk, instruction.operands[0]);
+        ++ip;
+        break;
+      case Opcode::StaticMethod:
+        executeStaticMethod(chunk, instruction.operands[0]);
+        ++ip;
+        break;
+      case Opcode::Inherit:
+        executeInherit();
+        ++ip;
+        break;
       case Opcode::GetUpvalue:
         executeGetUpvalue(frame, instruction.operands[0]);
         ++ip;
@@ -2335,10 +2395,6 @@ Value VM::executeBaselineCode(const BaselineCode& code, CallFrame& frame) {
         ++ip;
         break;
 
-      case Opcode::Class:
-      case Opcode::Method:
-      case Opcode::StaticMethod:
-      case Opcode::Inherit:
         throw RuntimeError(std::string("baseline cannot execute ") + opcodeName(instruction.opcode));
     }
   }

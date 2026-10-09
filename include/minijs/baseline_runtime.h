@@ -27,6 +27,11 @@ extern "C" bool minijsBaselineGetProperty(minijs::BaselineFrame* frame,
 extern "C" bool minijsBaselineSetProperty(minijs::BaselineFrame* frame,
                                            std::uint32_t nameIndex,
                                            std::uint32_t feedbackSlotIndex);
+extern "C" bool minijsBaselineClass(minijs::BaselineFrame* frame, std::uint32_t nameIndex);
+extern "C" bool minijsBaselineMethod(minijs::BaselineFrame* frame, std::uint32_t nameIndex);
+extern "C" bool minijsBaselineStaticMethod(minijs::BaselineFrame* frame,
+                                            std::uint32_t nameIndex);
+extern "C" bool minijsBaselineInherit(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineGetUpvalue(minijs::BaselineFrame* frame, std::uint32_t slot);
 extern "C" bool minijsBaselineSetUpvalue(minijs::BaselineFrame* frame, std::uint32_t slot);
 extern "C" bool minijsBaselineCloseUpvalue(minijs::BaselineFrame* frame);

@@ -45,6 +45,10 @@ bool isBaselineSupported(Opcode opcode) {
     case Opcode::Object:
     case Opcode::GetProperty:
     case Opcode::SetProperty:
+    case Opcode::Class:
+    case Opcode::Method:
+    case Opcode::StaticMethod:
+    case Opcode::Inherit:
     case Opcode::GetUpvalue:
     case Opcode::SetUpvalue:
     case Opcode::CloseUpvalue:
@@ -55,10 +59,6 @@ bool isBaselineSupported(Opcode opcode) {
     case Opcode::SuperCall:
       return true;
 
-    case Opcode::Class:
-    case Opcode::Method:
-    case Opcode::StaticMethod:
-    case Opcode::Inherit:
       return false;
   }
 

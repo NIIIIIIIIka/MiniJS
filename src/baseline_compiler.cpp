@@ -802,6 +802,32 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
         epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
         break;
 
+      case Opcode::Class:
+        emitRuntimeCallWithU32(emitter,
+                               reinterpret_cast<std::uintptr_t>(&minijsBaselineClass),
+                               instruction.operands[0]);
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        break;
+
+      case Opcode::Method:
+        emitRuntimeCallWithU32(emitter,
+                               reinterpret_cast<std::uintptr_t>(&minijsBaselineMethod),
+                               instruction.operands[0]);
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        break;
+
+      case Opcode::StaticMethod:
+        emitRuntimeCallWithU32(emitter,
+                               reinterpret_cast<std::uintptr_t>(&minijsBaselineStaticMethod),
+                               instruction.operands[0]);
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        break;
+
+      case Opcode::Inherit:
+        emitRuntimeCall(emitter, reinterpret_cast<std::uintptr_t>(&minijsBaselineInherit));
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        break;
+
       case Opcode::GetUpvalue:
         emitRuntimeCallWithU32(emitter,
                                reinterpret_cast<std::uintptr_t>(&minijsBaselineGetUpvalue),

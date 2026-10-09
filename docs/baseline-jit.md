@@ -14,7 +14,7 @@
 - [x] `JitFeedback` 已保存 baseline code handle 和编译失败原因。
 - [x] `VM` 已有测试用 baseline executor 入口，可直接执行纯算术、local、return 和简单 loop。
 - [x] VM 调用 compiled code 的入口已接入 `callBytecodeClosure()`。
-- [x] Baseline executor 已复用 VM runtime helper 支持 global、array/index、object/property、closure/upvalue、current-closure、call、method-call 和 super-call opcode。
+- [x] Baseline executor 已复用 VM runtime helper 支持 global、array/index、object/property、closure/upvalue、class/method/inherit、current-closure、call、method-call 和 super-call opcode。
 - [x] `BaselineFrame` 和 `BaselineEntry` 已定义，第一批 `extern "C"` runtime helper 已通过稳定入口帧访问 VM。
 - [x] `BaselineCompiler` 已能为局部变量、栈清理、算术/比较/逻辑 opcode、基础控制流和 `Return` 生成 ARM64 和 Windows x64 stub，并写入 executable memory；Windows x64 的 `Negate`、`Add`、`Sub`、`Mul`、`Div` 和 `Mod` 已有 number fast path / guarded number helper。
 - [x] VM baseline dispatch 已能在支持 native backend 且存在 native `BaselineEntry` 时优先进入机器码；没有 native entry 时继续使用 decoded executor。
@@ -25,7 +25,7 @@
 - [x] `MethodCall` 已支持在 baseline 中复用 method inline cache，并同步进入目标方法 closure。
 - [x] `SuperCall` 已支持在 baseline 中重排 superclass/receiver 栈槽，并同步进入父类方法 closure。
 - [x] `Closure` 已支持在 baseline 中创建运行时 closure，并按 bytecode 携带的元数据捕获 upvalue。
-- [ ] `Class`、`Method`、`StaticMethod`、`Inherit` 的 baseline 执行路径。
+- [x] `Class`、`Method`、`StaticMethod`、`Inherit` 已支持在 baseline 中创建类对象、挂载方法和建立继承关系。
 - [ ] safepoint、deopt 或 fallback 协议。
 - [ ] 平台相关 codegen 后端。
 
@@ -251,7 +251,7 @@ Opcode::Loop
 
 `Scheduled` 是瞬时状态。支持的函数会进入 `Compiled` 并挂上 `BaselineCode`；不支持的 opcode 或 verifier 失败会进入 `Failed`，之后继续走 VM。达到阈值的那次调用只负责安装 code object，下一次调用才进入 baseline executor。JIT disabled 时即使已有 `BaselineCode` 也继续走 VM。
 
-`compileBaseline()` 会先尝试第一版 native `BaselineCompiler`。如果函数只包含局部变量、栈清理、全局变量、数组/对象、closure/upvalue、普通调用、方法调用、`super` 调用、算术/比较/逻辑 opcode、基础控制流和 `Return`，会在当前平台生成 native stub、`bytecodeOffsetToNativeOffset` 映射和 `BaselineEntry`。如果 native compiler 遇到暂不支持的 opcode 或当前平台没有 native backend，会回退到现有 decoded baseline compiler；这样已经支持的 runtime helper opcode 仍能通过 decoded executor 验证语义。
+`compileBaseline()` 会先尝试第一版 native `BaselineCompiler`。如果函数只包含局部变量、栈清理、全局变量、数组/对象、closure/upvalue、class/method/inherit、普通调用、方法调用、`super` 调用、算术/比较/逻辑 opcode、基础控制流和 `Return`，会在当前平台生成 native stub、`bytecodeOffsetToNativeOffset` 映射和 `BaselineEntry`。如果 native compiler 遇到暂不支持的 opcode 或当前平台没有 native backend，会回退到现有 decoded baseline compiler；这样已经支持的 runtime helper opcode 仍能通过 decoded executor 验证语义。
 
 ## 函数职责
 
@@ -446,6 +446,10 @@ epilogue:
 | `OP_OBJECT` | `namesIndex` | `minijsBaselineObject(frame, namesIndex)` | 从常量池读取属性名数组，弹出对应属性值，创建 GC 对象并压栈 |
 | `OP_GET_PROPERTY` | `nameIndex, feedbackSlot` | `minijsBaselineGetProperty(frame, nameIndex, feedbackSlot)` | 弹出对象并读取属性；普通对象继续复用属性 inline cache |
 | `OP_SET_PROPERTY` | `nameIndex, feedbackSlot` | `minijsBaselineSetProperty(frame, nameIndex, feedbackSlot)` | 写入对象属性并把赋值结果压栈；普通对象继续复用属性 inline cache |
+| `OP_CLASS` | `nameIndex` | `minijsBaselineClass(frame, nameIndex)` | 从常量池读取类名，创建 GC class 对象并压栈 |
+| `OP_METHOD` | `nameIndex` | `minijsBaselineMethod(frame, nameIndex)` | 弹出方法 closure，把它写入栈顶 class 的实例方法表 |
+| `OP_STATIC_METHOD` | `nameIndex` | `minijsBaselineStaticMethod(frame, nameIndex)` | 弹出方法 closure，把它写入栈顶 class 的静态方法表 |
+| `OP_INHERIT` | 无 | `minijsBaselineInherit(frame)` | 弹出 superclass，把栈顶 subclass 的 superclass 指针指向它，并保留 subclass 在栈顶 |
 | `OP_GET_UPVALUE` | `slot` | `minijsBaselineGetUpvalue(frame, slot)` | 读取当前闭包的 upvalue，打开 upvalue 从 VM 栈读取，关闭 upvalue 从 closed 值读取 |
 | `OP_SET_UPVALUE` | `slot` | `minijsBaselineSetUpvalue(frame, slot)` | 把栈顶值写入当前闭包的 upvalue，栈顶值保留给后续表达式或 `OP_POP` |
 | `OP_CLOSE_UPVALUE` | 无 | `minijsBaselineCloseUpvalue(frame)` | 关闭当前栈顶槽关联的 open upvalue，并弹出该局部槽 |
@@ -615,7 +619,7 @@ jmp epilogue                 ; 成功返回后也结束 stub，不再执行后�
 
 第六阶段继续支持不引入新调用帧的 runtime helper opcode：
 
-当前这些 opcode 已经迁移到 native compiler。`OP_CLOSURE` 通过 `minijsBaselineClosure()` 创建运行时 closure 并捕获 upvalue；普通函数调用通过 `minijsBaselineCall()` 复用 VM 调用语义，方法调用通过 `minijsBaselineMethodCall()` 复用 method inline cache 和数组内建方法路径，`super` 调用通过 `minijsBaselineSuperCall()` 复用 VM 的 superclass 查找和栈槽重排逻辑；类定义、方法定义和继承暂时编译失败并回退 VM。后续扩展时优先直接为现有 `Opcode` 增加执行路径或 runtime helper 路径，不新增平行 opcode。
+当前这些 opcode 已经迁移到 native compiler。`OP_CLOSURE` 通过 `minijsBaselineClosure()` 创建运行时 closure 并捕获 upvalue；`OP_CLASS`、`OP_METHOD`、`OP_STATIC_METHOD` 和 `OP_INHERIT` 通过各自 helper 复用 VM 的 class 构造语义；普通函数调用通过 `minijsBaselineCall()` 复用 VM 调用语义，方法调用通过 `minijsBaselineMethodCall()` 复用 method inline cache 和数组内建方法路径，`super` 调用通过 `minijsBaselineSuperCall()` 复用 VM 的 superclass 查找和栈槽重排逻辑。后续扩展时优先直接为现有 `Opcode` 增加执行路径或 runtime helper 路径，不新增平行 opcode。
 
 第七阶段 native compiler 的平台 backend switch 当前覆盖：
 
