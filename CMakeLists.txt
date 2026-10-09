@@ -206,6 +206,14 @@ if(MINIJS_BUILD_TESTS)
         )
 
         add_test(
+            NAME minijs_cli_benchmark_accepts_sampling_options
+            COMMAND minijs --benchmark "${CMAKE_CURRENT_SOURCE_DIR}/examples/inline_cache_benchmark.js" --benchmark-samples 2 --benchmark-warmup 1
+        )
+        set_tests_properties(minijs_cli_benchmark_accepts_sampling_options PROPERTIES
+            PASS_REGULAR_EXPRESSION "warmup_samples: 1"
+        )
+
+        add_test(
             NAME minijs_cli_benchmark_compare_reports_ic_on_and_off
             COMMAND minijs --benchmark-compare "${CMAKE_CURRENT_SOURCE_DIR}/examples/inline_cache_benchmark.js"
         )

@@ -26,6 +26,11 @@ constexpr int ExitUsageError = 64;
 constexpr int ExitInputError = 74;
 constexpr int BenchmarkSamples = 5;
 
+struct BenchmarkConfig {
+  int samples = BenchmarkSamples;
+  int warmupSamples = 0;
+};
+
 void printUsage(std::ostream& output) {
   output << "Usage: minijs <file>\n"
          << "       minijs --tokens <file>\n"
@@ -34,11 +39,54 @@ void printUsage(std::ostream& output) {
          << "       minijs --interp <file>\n"
          << "       minijs --bytecode <file>\n"
          << "       minijs --ic-stats <file>\n"
-         << "       minijs --benchmark <file>\n"
-         << "       minijs --benchmark-compare <file>\n"
-         << "       minijs --benchmark-compare-jit <file>\n"
+         << "       minijs --benchmark <file> [--benchmark-samples <n>] [--benchmark-warmup <n>]\n"
+         << "       minijs --benchmark-compare <file> [--benchmark-samples <n>] [--benchmark-warmup <n>]\n"
+         << "       minijs --benchmark-compare-jit <file> [--benchmark-samples <n>] [--benchmark-warmup <n>]\n"
          << "       minijs --help\n"
          << "       minijs --version\n";
+}
+
+bool isBenchmarkCommand(const std::string& argument) {
+  return argument == "--benchmark" || argument == "--benchmark-compare" ||
+         argument == "--benchmark-compare-jit";
+}
+
+int parseIntegerOption(const std::string& option, const std::string& value, int minimum) {
+  std::size_t parsed = 0;
+  int result = 0;
+  try {
+    result = std::stoi(value, &parsed);
+  } catch (const std::exception&) {
+    throw std::runtime_error(option + " expects an integer");
+  }
+
+  if (parsed != value.size() || result < minimum) {
+    throw std::runtime_error(option + " expects an integer >= " + std::to_string(minimum));
+  }
+  return result;
+}
+
+BenchmarkConfig parseBenchmarkConfig(int argc, char* argv[], int firstOption) {
+  BenchmarkConfig config;
+  for (int index = firstOption; index < argc; index += 2) {
+    const std::string option = argv[index];
+    if (index + 1 >= argc) {
+      throw std::runtime_error(option + " expects a value");
+    }
+
+    const std::string value = argv[index + 1];
+    if (option == "--benchmark-samples") {
+      config.samples = parseIntegerOption(option, value, 1);
+      continue;
+    }
+    if (option == "--benchmark-warmup") {
+      config.warmupSamples = parseIntegerOption(option, value, 0);
+      continue;
+    }
+
+    throw std::runtime_error("unknown benchmark option: " + option);
+  }
+  return config;
 }
 
 std::string readFile(const std::string& path) {
@@ -166,6 +214,7 @@ struct BenchmarkResult {
   long long compileMicros = 0;
   long long runMicros = 0;
   int samples = 1;
+  int warmupSamples = 0;
   minijs::PropertyInlineCacheStats stats;
   minijs::JitRuntimeStats jitStats;
 };
@@ -203,15 +252,19 @@ BenchmarkResult runBenchmarkSample(const minijs::Program& program, bool inlineCa
 }
 
 BenchmarkResult runBenchmark(const minijs::Program& program, bool inlineCachesEnabled,
-                             bool jitEnabled) {
+                             bool jitEnabled, const BenchmarkConfig& config) {
   std::vector<BenchmarkResult> samples;
-  samples.reserve(BenchmarkSamples);
+  samples.reserve(config.samples);
   std::vector<long long> compileMicros;
-  compileMicros.reserve(BenchmarkSamples);
+  compileMicros.reserve(config.samples);
   std::vector<long long> runMicros;
-  runMicros.reserve(BenchmarkSamples);
+  runMicros.reserve(config.samples);
 
-  for (int sample = 0; sample < BenchmarkSamples; ++sample) {
+  for (int sample = 0; sample < config.warmupSamples; ++sample) {
+    (void)runBenchmarkSample(program, inlineCachesEnabled, jitEnabled);
+  }
+
+  for (int sample = 0; sample < config.samples; ++sample) {
     BenchmarkResult result = runBenchmarkSample(program, inlineCachesEnabled, jitEnabled);
     if (!samples.empty() && !result.result.equals(samples.front().result)) {
       throw std::runtime_error("benchmark result changed between samples");
@@ -225,7 +278,8 @@ BenchmarkResult runBenchmark(const minijs::Program& program, bool inlineCachesEn
   benchmark.result = samples.front().result;
   benchmark.compileMicros = medianMicros(std::move(compileMicros));
   benchmark.runMicros = medianMicros(std::move(runMicros));
-  benchmark.samples = BenchmarkSamples;
+  benchmark.samples = config.samples;
+  benchmark.warmupSamples = config.warmupSamples;
   return benchmark;
 }
 
@@ -253,7 +307,7 @@ bool runVmProgramWithIcStats(std::string_view source) {
   return true;
 }
 
-bool benchmarkVmProgram(std::string_view source) {
+bool benchmarkVmProgram(std::string_view source, const BenchmarkConfig& config) {
   minijs::Parser parser(source);
   minijs::Program program = parser.parseProgram();
 
@@ -266,19 +320,20 @@ bool benchmarkVmProgram(std::string_view source) {
     return false;
   }
 
-  const BenchmarkResult benchmark = runBenchmark(program, true, false);
+  const BenchmarkResult benchmark = runBenchmark(program, true, false, config);
 
   if (!benchmark.result.isNull()) {
     std::cout << "result: " << benchmark.result.toString() << '\n';
   }
-  std::cout << "samples: " << benchmark.samples << '\n'
+  std::cout << "warmup_samples: " << benchmark.warmupSamples << '\n'
+            << "samples: " << benchmark.samples << '\n'
             << "compile_us: " << benchmark.compileMicros << '\n'
             << "run_us: " << benchmark.runMicros << '\n';
   printInlineCacheStats(benchmark.stats);
   return true;
 }
 
-bool benchmarkCompareVmProgram(std::string_view source) {
+bool benchmarkCompareVmProgram(std::string_view source, const BenchmarkConfig& config) {
   minijs::Parser parser(source);
   minijs::Program program = parser.parseProgram();
 
@@ -291,8 +346,8 @@ bool benchmarkCompareVmProgram(std::string_view source) {
     return false;
   }
 
-  const BenchmarkResult withIc = runBenchmark(program, true, false);
-  const BenchmarkResult withoutIc = runBenchmark(program, false, false);
+  const BenchmarkResult withIc = runBenchmark(program, true, false, config);
+  const BenchmarkResult withoutIc = runBenchmark(program, false, false, config);
 
   if (!withIc.result.equals(withoutIc.result)) {
     std::cerr << "error: benchmark result changed when inline caches were disabled\n";
@@ -303,9 +358,11 @@ bool benchmarkCompareVmProgram(std::string_view source) {
     std::cout << "result: " << withIc.result.toString() << '\n';
   }
 
-  std::cout << "with_ic_samples: " << withIc.samples << '\n'
+  std::cout << "with_ic_warmup_samples: " << withIc.warmupSamples << '\n'
+            << "with_ic_samples: " << withIc.samples << '\n'
             << "with_ic_compile_us: " << withIc.compileMicros << '\n'
             << "with_ic_run_us: " << withIc.runMicros << '\n'
+            << "without_ic_warmup_samples: " << withoutIc.warmupSamples << '\n'
             << "without_ic_samples: " << withoutIc.samples << '\n'
             << "without_ic_compile_us: " << withoutIc.compileMicros << '\n'
             << "without_ic_run_us: " << withoutIc.runMicros << '\n';
@@ -324,7 +381,7 @@ bool benchmarkCompareVmProgram(std::string_view source) {
   return true;
 }
 
-bool benchmarkCompareJitProgram(std::string_view source) {
+bool benchmarkCompareJitProgram(std::string_view source, const BenchmarkConfig& config) {
   minijs::Parser parser(source);
   minijs::Program program = parser.parseProgram();
 
@@ -337,8 +394,8 @@ bool benchmarkCompareJitProgram(std::string_view source) {
     return false;
   }
 
-  const BenchmarkResult withoutJit = runBenchmark(program, true, false);
-  const BenchmarkResult withJit = runBenchmark(program, true, true);
+  const BenchmarkResult withoutJit = runBenchmark(program, true, false, config);
+  const BenchmarkResult withJit = runBenchmark(program, true, true, config);
 
   if (!withJit.result.equals(withoutJit.result)) {
     std::cerr << "error: benchmark result changed when JIT was enabled\n";
@@ -349,9 +406,11 @@ bool benchmarkCompareJitProgram(std::string_view source) {
     std::cout << "result: " << withJit.result.toString() << '\n';
   }
 
-  std::cout << "without_jit_samples: " << withoutJit.samples << '\n'
+  std::cout << "without_jit_warmup_samples: " << withoutJit.warmupSamples << '\n'
+            << "without_jit_samples: " << withoutJit.samples << '\n'
             << "without_jit_compile_us: " << withoutJit.compileMicros << '\n'
             << "without_jit_run_us: " << withoutJit.runMicros << '\n'
+            << "with_jit_warmup_samples: " << withJit.warmupSamples << '\n'
             << "with_jit_samples: " << withJit.samples << '\n'
             << "with_jit_compile_us: " << withJit.compileMicros << '\n'
             << "with_jit_run_us: " << withJit.runMicros << '\n';
@@ -395,7 +454,7 @@ bool runInterpreterProgram(std::string_view source) {
 }  // namespace
 
 int main(int argc, char* argv[]) {
-  if (argc != 2 && argc != 3) {
+  if (argc < 2) {
     std::cerr << "error: expected one argument, or an option plus a file\n";
     printUsage(std::cerr);
     return ExitUsageError;
@@ -403,10 +462,15 @@ int main(int argc, char* argv[]) {
 
   const std::string argument = argv[1];
 
+  if (!isBenchmarkCommand(argument) && argc != 2 && argc != 3) {
+    std::cerr << "error: expected one argument, or an option plus a file\n";
+    printUsage(std::cerr);
+    return ExitUsageError;
+  }
+
   if (argc == 3 && argument != "--tokens" && argument != "--ast" && argument != "--run" &&
       argument != "--interp" && argument != "--bytecode" && argument != "--ic-stats" &&
-      argument != "--benchmark" && argument != "--benchmark-compare" &&
-      argument != "--benchmark-compare-jit") {
+      !isBenchmarkCommand(argument)) {
     std::cerr << "error: unknown two-argument command: " << argument << '\n';
     printUsage(std::cerr);
     return ExitUsageError;
@@ -514,14 +578,15 @@ int main(int argc, char* argv[]) {
   }
 
   if (argument == "--benchmark") {
-    if (argc != 3) {
+    if (argc < 3) {
       std::cerr << "error: --benchmark expects a file\n";
       printUsage(std::cerr);
       return ExitUsageError;
     }
 
     try {
-      return benchmarkVmProgram(readFile(argv[2])) ? 0 : ExitInputError;
+      const BenchmarkConfig config = parseBenchmarkConfig(argc, argv, 3);
+      return benchmarkVmProgram(readFile(argv[2]), config) ? 0 : ExitInputError;
     } catch (const std::exception& error) {
       std::cerr << "error: " << error.what() << '\n';
       return ExitInputError;
@@ -529,14 +594,15 @@ int main(int argc, char* argv[]) {
   }
 
   if (argument == "--benchmark-compare") {
-    if (argc != 3) {
+    if (argc < 3) {
       std::cerr << "error: --benchmark-compare expects a file\n";
       printUsage(std::cerr);
       return ExitUsageError;
     }
 
     try {
-      return benchmarkCompareVmProgram(readFile(argv[2])) ? 0 : ExitInputError;
+      const BenchmarkConfig config = parseBenchmarkConfig(argc, argv, 3);
+      return benchmarkCompareVmProgram(readFile(argv[2]), config) ? 0 : ExitInputError;
     } catch (const std::exception& error) {
       std::cerr << "error: " << error.what() << '\n';
       return ExitInputError;
@@ -544,14 +610,15 @@ int main(int argc, char* argv[]) {
   }
 
   if (argument == "--benchmark-compare-jit") {
-    if (argc != 3) {
+    if (argc < 3) {
       std::cerr << "error: --benchmark-compare-jit expects a file\n";
       printUsage(std::cerr);
       return ExitUsageError;
     }
 
     try {
-      return benchmarkCompareJitProgram(readFile(argv[2])) ? 0 : ExitInputError;
+      const BenchmarkConfig config = parseBenchmarkConfig(argc, argv, 3);
+      return benchmarkCompareJitProgram(readFile(argv[2]), config) ? 0 : ExitInputError;
     } catch (const std::exception& error) {
       std::cerr << "error: " << error.what() << '\n';
       return ExitInputError;
