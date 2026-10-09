@@ -649,9 +649,27 @@ Baseline frame 复用 VM 的调用约定：
 
 非调用型 runtime opcode 通过 VM helper 与解释器共享语义，例如 global 读写、数组创建、对象属性读写和 upvalue 读写。baseline 只负责从 `DecodedInstruction::operands` 取操作数，不直接读取或推进 `frame.ip`。
 
+## Benchmark 覆盖
+
+`examples/baseline_jit_benchmark.js` 是当前 baseline JIT 的综合 smoke benchmark。它覆盖：
+
+- 普通函数调用：`callAdd()` 反复调用 `add()`。
+- 闭包创建和调用：`makeAdder()` 返回捕获外部变量的 `addInner()`。
+- 方法调用、类实例化和静态方法：`Child()`、`child.value()`、`Child.bonus()`。
+- 继承和 `super`：`Child.value()` 通过 `super.value()` 进入父类方法。
+- 对象属性读写：`point.x` 读取和 `point.y = ...` 写入。
+- 数组方法和下标读写：`values.push()`、`values[j]`、`values[j] = ...`、`values.pop()`。
+
+JIT on/off 对比可以直接运行：
+
+```text
+minijs --benchmark-compare-jit examples/baseline_jit_benchmark.js
+```
+
+CTest 也会通过 `minijs_cli_benchmark_compare_reports_jit_on_and_off` 跑同一份脚本，确认 JIT 开关不改变结果，并输出 `without_jit_run_us`、`with_jit_run_us` 和 `speedup`。更细的 `baselineEntryCount` 仍由 `tests/test_bytecode.cpp` 中的 JIT 调度测试验证，避免 benchmark 输出和内部调度状态耦合。
+
 ## 下一步
 
-1. 为 class-family opcode 增加 GC 安全的 baseline helper。
-3. 扩展 benchmark，用于对比解释执行、IC 与 baseline dispatch 路径。
-4. 设计 safepoint、deopt 和 fallback 边界。
-5. 逐步把更多 opcode 从 decoded executor 下沉到 native stub 或更细的 runtime helper。
+1. 设计 safepoint、deopt 和 fallback 边界。
+2. 逐步把更多 opcode 从 helper-call 形态下沉到更细的 native fast path。
+3. 在 benchmark 输出中加入可选 JIT 调度统计，例如 compiled function 数量和 baseline entry 次数。
