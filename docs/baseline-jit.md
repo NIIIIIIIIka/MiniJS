@@ -674,10 +674,18 @@ minijs --benchmark-compare-jit examples/baseline_jit_benchmark.js --benchmark-sa
 
 `--benchmark-warmup` 会先运行指定轮数并丢弃结果，`--benchmark-samples` 决定正式采样轮数。`compile_us` 和 `run_us` 输出正式采样的中位数，`samples` / `warmup_samples` 字段显示实际使用的轮数。
 
+如果要给脚本、CI 或后续画图工具消费，可以追加 JSON 输出格式：
+
+```text
+minijs --benchmark-compare-jit examples/baseline_jit_benchmark.js --benchmark-format json
+```
+
+JSON 输出会保留 `result`、`speedup`、采样轮数、编译/运行耗时、inline cache 统计和 JIT 调度统计。JIT 对比模式下，结果分为 `without_jit` 和 `with_jit` 两个对象；其中 `with_jit.jit.counters.baseline_entries` 可以直接用来确认 benchmark 是否真的进入 baseline。
+
 CTest 也会通过 `minijs_cli_benchmark_compare_reports_jit_on_and_off` 跑同一份脚本，确认 JIT 开关不改变结果，并输出 `without_jit_run_us`、`with_jit_run_us` 和 `speedup`。同一份输出还包含 JIT 调度统计：`jit functions` 显示函数处于 `cold/scheduled/compiled/failed` 的数量，`jit counters` 显示函数调用次数、回边次数和 `baseline_entries`，`jit code` 显示最终进入 native entry 还是 decoded baseline executor。
 
 ## 下一步
 
 1. 设计 safepoint、deopt 和 fallback 边界。
 2. 逐步把更多 opcode 从 helper-call 形态下沉到更细的 native fast path。
-3. 给 benchmark 结果增加更容易脚本处理的机器可读输出格式。
+3. 梳理 native fast path 的 fallback/deopt 边界，把 helper-call 和内联机器码的职责分清。

@@ -214,6 +214,14 @@ if(MINIJS_BUILD_TESTS)
         )
 
         add_test(
+            NAME minijs_cli_benchmark_reports_json_format
+            COMMAND minijs --benchmark-compare-jit "${CMAKE_CURRENT_SOURCE_DIR}/examples/baseline_jit_benchmark.js" --benchmark-samples 1 --benchmark-format json
+        )
+        set_tests_properties(minijs_cli_benchmark_reports_json_format PROPERTIES
+            PASS_REGULAR_EXPRESSION "\"with_jit\""
+        )
+
+        add_test(
             NAME minijs_cli_benchmark_compare_reports_ic_on_and_off
             COMMAND minijs --benchmark-compare "${CMAKE_CURRENT_SOURCE_DIR}/examples/inline_cache_benchmark.js"
         )
