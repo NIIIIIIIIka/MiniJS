@@ -126,6 +126,19 @@ struct JitOptions {
   std::uint32_t backedgeThreshold = 1000;
 };
 
+struct JitRuntimeStats {
+  std::size_t functions = 0;
+  std::size_t cold = 0;
+  std::size_t scheduled = 0;
+  std::size_t compiled = 0;
+  std::size_t failed = 0;
+  std::uint64_t calls = 0;
+  std::uint64_t backedges = 0;
+  std::uint64_t baselineEntries = 0;
+  std::size_t nativeEntries = 0;
+  std::size_t decodedEntries = 0;
+};
+
 // 执行 Chunk 的栈式虚拟机。
 class VM {
  public:
@@ -142,6 +155,7 @@ class VM {
   void setJitEnabled(bool enabled);
   void setJitCallThreshold(std::uint32_t threshold);
   void setJitBackedgeThreshold(std::uint32_t threshold);
+  JitRuntimeStats jitRuntimeStats() const;
 
   void collectGarbage();
 

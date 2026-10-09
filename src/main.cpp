@@ -147,11 +147,22 @@ void printInlineCacheStats(const minijs::PropertyInlineCacheStats& stats) {
             << " errors=" << stats.methodCallDispatchErrors << '\n';
 }
 
+void printJitRuntimeStats(const minijs::JitRuntimeStats& stats) {
+  std::cout << "jit functions: total=" << stats.functions << " cold=" << stats.cold
+            << " scheduled=" << stats.scheduled << " compiled=" << stats.compiled
+            << " failed=" << stats.failed << '\n'
+            << "jit counters: calls=" << stats.calls << " backedges=" << stats.backedges
+            << " baseline_entries=" << stats.baselineEntries << '\n'
+            << "jit code: native_entries=" << stats.nativeEntries
+            << " decoded_entries=" << stats.decodedEntries << '\n';
+}
+
 struct BenchmarkResult {
   minijs::Value result;
   long long compileMicros = 0;
   long long runMicros = 0;
   minijs::PropertyInlineCacheStats stats;
+  minijs::JitRuntimeStats jitStats;
 };
 
 BenchmarkResult runBenchmark(const minijs::Program& program, bool inlineCachesEnabled,
@@ -177,6 +188,7 @@ BenchmarkResult runBenchmark(const minijs::Program& program, bool inlineCachesEn
   benchmark.runMicros =
       std::chrono::duration_cast<std::chrono::microseconds>(runEnd - runStart).count();
   benchmark.stats = vm.propertyInlineCacheStats();
+  benchmark.jitStats = vm.jitRuntimeStats();
   return benchmark;
 }
 
@@ -311,8 +323,10 @@ bool benchmarkCompareJitProgram(std::string_view source) {
 
   std::cout << "without_jit:\n";
   printInlineCacheStats(withoutJit.stats);
+  printJitRuntimeStats(withoutJit.jitStats);
   std::cout << "with_jit:\n";
   printInlineCacheStats(withJit.stats);
+  printJitRuntimeStats(withJit.jitStats);
   return true;
 }
 

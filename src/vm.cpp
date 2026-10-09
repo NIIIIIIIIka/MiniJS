@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "minijs/baseline_jit.h"
+#include "minijs/baseline_code.h"
 #include "minijs/gc_object.h"
 #include "minijs/runtime_error.h"
 
@@ -648,6 +649,47 @@ void VM::setJitCallThreshold(std::uint32_t threshold) {
 
 void VM::setJitBackedgeThreshold(std::uint32_t threshold) {
   jitOptions_.backedgeThreshold = threshold;
+}
+
+JitRuntimeStats VM::jitRuntimeStats() const {
+  JitRuntimeStats stats;
+
+  for (const Obj* object = objects_; object != nullptr; object = object->next) {
+    if (object->type != ObjType::Function) {
+      continue;
+    }
+
+    const auto* function = static_cast<const ObjFunction*>(object);
+    const JitFeedback& jit = function->function.jit;
+    ++stats.functions;
+    stats.calls += jit.callCount;
+    stats.backedges += jit.backedgeCount;
+    stats.baselineEntries += jit.baselineEntryCount;
+
+    switch (jit.state) {
+      case JitState::Cold:
+        ++stats.cold;
+        break;
+      case JitState::Scheduled:
+        ++stats.scheduled;
+        break;
+      case JitState::Compiled:
+        ++stats.compiled;
+        if (jit.baselineCode != nullptr) {
+          if (jit.baselineCode->entry != nullptr) {
+            ++stats.nativeEntries;
+          } else {
+            ++stats.decodedEntries;
+          }
+        }
+        break;
+      case JitState::Failed:
+        ++stats.failed;
+        break;
+    }
+  }
+
+  return stats;
 }
 
 #ifdef MINIJS_TESTING
