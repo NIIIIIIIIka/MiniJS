@@ -320,7 +320,9 @@ class Value {
   // 普通 VM 语义仍应通过 is*/as* 接口访问 Value。
   static std::size_t typeOffset();
   static std::size_t numberOffset();
+  static std::size_t booleanOffset();
   static std::uint32_t numberTypeTag();
+  static std::uint32_t booleanTypeTag();
 
  private:
   explicit Value(ValueType type);

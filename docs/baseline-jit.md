@@ -386,6 +386,35 @@ fallback:
 
 这就是后续优化的模板：每次只内联一个足够简单的 number-only fast path，并保留 helper fallback 作为语义兜底。
 
+### Windows x64 数字比较快路径
+
+`OP_GREATER` 和 `OP_LESS` 先检查栈深度及两个操作数的 Number 标签。guard 未命中时调用原来的完整 helper，保留类型错误；成功时直接比较 double，把左操作数槽改为 Boolean，再减少一个栈槽并调用 `minijsBaselineSyncStackSize()`。
+
+```asm
+movsd xmm0, [rdx + Value::numberOffset]   ; rdx 指向左操作数
+ucomisd xmm0, [rcx + Value::numberOffset] ; rcx 指向右操作数
+```
+
+大于比较使用：
+
+```asm
+seta al                                 ; CF=0 且 ZF=0
+```
+
+小于比较使用：
+
+```asm
+setb al                                 ; CF=1
+setnp cl                                ; PF=0，比较结果必须有序
+and al, cl                              ; 排除 NaN 的 unordered 情况
+```
+
+任一操作数为 NaN 时，`ucomisd` 会设置 CF、ZF、PF，因此 `seta` 自然得到 false，而小于比较需要额外用 `setnp` 排除 NaN。`+0` 和 `-0` 比较相等，两种严格比较都为 false；无穷大遵循 double 比较规则。
+
+结果写回时分别更新 `Value::booleanOffset()` 和 `Value::typeOffset()`。小于路径中的 `setnp cl` 会改写 rcx 的低字节，此时右操作数地址已不再使用；左操作数地址仍保存在 rdx。两个输入经过 Number guard，不持有需要释放的对象资源，因此可以原地转换为 Boolean。
+
+测试直接调用 native entry，将普通数字、相等值、正负零、无穷大和左右 NaN 与 decoded executor 对比，并检查两侧非数字 fallback。JIT on/off 测试同时覆盖比较后的条件跳转、循环、数组结果和嵌套 helper 调用。
+
 ### BaselineFrame 的栈快照
 
 `BaselineFrame` 除了保存 VM、闭包、`returnSlot`、`slotStart` 等调用信息外，现在还保存：
@@ -406,7 +435,9 @@ Windows x64 number fast path 需要判断 `Value` 是否为 number，并直接�
 ```cpp
 Value::typeOffset()
 Value::numberOffset()
+Value::booleanOffset()
 Value::numberTypeTag()
+Value::booleanTypeTag()
 ```
 
 这些接口只用于 native baseline codegen。普通 VM 和 runtime helper 仍然应该通过 `isNumber()`、`asNumber()`、`Value(double)` 等正常接口访问 `Value`。如果未来 `Value` 布局变化，fast path 通过这些 offset 自动拿到新位置，而不是在机器码生成器里散落硬编码偏移。
@@ -469,8 +500,8 @@ epilogue:
 | `OP_MOD` | 无 | Windows x64 guarded number helper，否则 `minijsBaselineMod(frame)` | 两个操作数都是数字且除数非 0 时调用 `minijsBaselineModNumber(frame)`；否则回退 helper 保留 VM 语义 |
 | `OP_NEGATE` | 无 | Windows x64 number fast path，否则 `minijsBaselineNegate(frame)` | 栈顶是数字时直接翻转符号位；否则回退 helper 保留 VM 语义 |
 | `OP_EQUAL` | 无 | `minijsBaselineEqual(frame)` | 弹出两个值，通过 `Value::equals()` 比较后压入布尔结果 |
-| `OP_GREATER` | 无 | `minijsBaselineGreater(frame)` | 弹出两个值，执行数字大于比较后压入布尔结果 |
-| `OP_LESS` | 无 | `minijsBaselineLess(frame)` | 弹出两个值，执行数字小于比较后压入布尔结果 |
+| `OP_GREATER` | 无 | Windows x64 number fast path，否则 `minijsBaselineGreater(frame)` | 数字 guard 成功时通过 `ucomisd` / `seta` 写回 Boolean 并同步栈；否则回退完整 helper |
+| `OP_LESS` | 无 | Windows x64 number fast path，否则 `minijsBaselineLess(frame)` | 数字 guard 成功时通过 `ucomisd` / `setb` / `setnp` 写回 Boolean 并同步栈，NaN 结果为 false；否则回退完整 helper |
 | `OP_NOT` | 无 | `minijsBaselineNot(frame)` | 弹出一个值，通过 `isTruthy()` 取反后压入布尔结果 |
 | `OP_JUMP_IF_FALSE` | `jumpOffset` | `minijsBaselinePeekTruthy(frame)` + native conditional branch | 读取栈顶 truthiness，不弹栈；返回 falsey 时跳到 bytecode 目标对应的 native offset |
 | `OP_JUMP` | `jumpOffset` | native unconditional branch | 无条件跳到 bytecode 目标对应的 native offset |
@@ -713,7 +744,8 @@ CTest 也会通过 `minijs_cli_benchmark_compare_reports_jit_on_and_off` 跑同�
 | `Mod` | 数字 guard 成功后调用 `minijsBaselineModNumber()`；未命中调用完整 helper | 完整 helper |
 | 常量、local/global、array/index、object/property | 完整 helper | 完整 helper |
 | closure/upvalue、class/method/inherit、call/method-call/super-call | 完整 helper | 完整 helper |
-| `Equal`、`Greater`、`Less`、`Not` | 完整 helper | 完整 helper |
+| `Greater`、`Less` | 数字 guard 成功后使用 `ucomisd` 并写回 Boolean；未命中调用完整 helper | 完整 helper |
+| `Equal`、`Not` | 完整 helper | 完整 helper |
 | `Jump` | native 分支 | native 分支 |
 | `JumpIfFalse` | truthiness helper 加 native 分支 | truthiness helper 加 native 分支 |
 | `Loop` | 回边计数 helper 加 native 分支 | 回边计数 helper 加 native 分支 |
@@ -726,7 +758,7 @@ CTest 也会通过 `minijs_cli_benchmark_compare_reports_jit_on_and_off` 跑同�
 ### Guard 与栈状态契约
 
 1. guard 必须在修改 Value、弹栈或产生其它副作用之前完成。失败时 helper 看到原来的操作数和栈深度。
-2. 快路径成功后的栈效果必须与普通 VM 相同。`Negate` 原地修改栈顶，不改变栈深度；二元运算把结果写入左操作数槽，并减少一个栈槽。
+2. 快路径成功后的栈效果必须与普通 VM 相同。`Negate` 原地修改栈顶，不改变栈深度；二元运算把结果写入左操作数槽，并减少一个栈槽。`Greater` 和 `Less` 还会把左槽的类型标签和布尔载荷改为 Boolean 结果。
 3. 二元快路径先减少 `BaselineFrame::stackSize`，随后调用 `minijsBaselineSyncStackSize()`，由 VM 执行 `stack_.resize()`，再刷新栈快照。同步完成之前不能调用可能分配或触发 GC 的语义 helper。
 4. `refreshBaselineFrameStack()` 从真实 `stack_` 更新 `stackData` 和 `stackSize`。可能改变栈或重入 VM 的 helper 成功返回后，要确保快照已刷新；不改变栈的 truthiness 和回边计数 helper 不需要刷新。
 5. helper 调用后不得继续使用调用前缓存的栈元素地址。压栈或嵌套调用可能使 `std::vector` 扩容，旧 `Value*` 随之失效；下一条快路径重新读取 frame 的快照。
@@ -758,5 +790,5 @@ CTest 也会通过 `minijs_cli_benchmark_compare_reports_jit_on_and_off` 跑同�
 ## 下一步
 
 1. 对现有数字快路径集中验证 guard 命中、类型 fallback、零除数、NaN 和嵌套 helper 调用后的栈快照刷新。
-2. 按上述契约扩展 number comparison 快路径，并用 JIT on/off 验证结果和错误一致。
+2. 数字比较快路径已覆盖 `Greater` 和 `Less`；下一步评估 `Equal` 的数字快路径，并保留完整引用和字符串相等语义。
 3. 引入执行中恢复需求时，再增加 safepoint 元数据和 deopt 帧恢复协议。

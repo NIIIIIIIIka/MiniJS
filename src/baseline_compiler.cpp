@@ -495,6 +495,52 @@ class WindowsX64Emitter {
     return error.empty();
   }
 
+  // 数字比较将左操作数槽改为 Boolean，再同步二元运算的弹栈效果。
+  bool emitInlineNumberComparisonOrRuntimeCall(std::uintptr_t functionAddress,
+                                               std::uintptr_t syncStackSizeAddress,
+                                               bool greater,
+                                               std::string& error) {
+    BinaryNumberGuardPatches patches;
+    if (!emitLoadBinaryNumberOperands(patches, "inline comparison", error)) {
+      return false;
+    }
+
+    // rdx 指向左操作数，rcx 指向右操作数；guard 完成前不修改栈。
+    emit({0xF2, 0x0F, 0x10, 0x82});  // movsd xmm0, [rdx + numberOffset]
+    emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+    emit({0x66, 0x0F, 0x2E, 0x81});  // ucomisd xmm0, [rcx + numberOffset]
+    emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+    if (greater) {
+      emit({0x0F, 0x97, 0xC0});  // seta al：CF=0 且 ZF=0，NaN 时自然为 false。
+    } else {
+      emit({0x0F, 0x92, 0xC0});  // setb al：CF=1，包括 unordered。
+      emit({0x0F, 0x9B, 0xC1});  // setnp cl：PF=0，排除任一操作数为 NaN。
+      emit({0x20, 0xC8});        // and al, cl：只有有序且小于时为 true。
+    }
+    emit({0x88, 0x82});  // mov byte ptr [rdx + booleanOffset], al
+    emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
+    emit({0xC7, 0x82});  // mov dword ptr [rdx + typeOffset], Boolean
+    emit32(static_cast<std::uint32_t>(Value::typeOffset()));
+    emit32(Value::booleanTypeTag());
+
+    emit({0x48, 0xFF, 0x8B});  // dec qword ptr [rbx + stackSize]
+    emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackSize)));
+    emitMoveFrameToFirstArg();
+    emitLoadHelper(syncStackSizeAddress);
+    emitCallHelper();
+    const std::size_t done = emitJumpPlaceholder();
+
+    const std::size_t fallback = offset();
+    if (!patchBinaryNumberFallbacks(patches, fallback, error)) {
+      return false;
+    }
+    emitMoveFrameToFirstArg();
+    emitLoadHelper(functionAddress);
+    emitCallHelper();
+    patchBranchTo(done, offset(), false, error);
+    return error.empty();
+  }
+
   // 如果栈顶两个值都是数字，并且需要时确认右操作数非 0，就调用窄 helper；
   // 否则回退到完整 runtime helper，保留类型错误和除零错误语义。
   bool emitGuardedNumberBinaryRuntimeCall(std::uintptr_t guardedFunctionAddress,
@@ -1006,14 +1052,28 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
         break;
 
       case Opcode::Greater:
-        emitRuntimeCall(emitter, reinterpret_cast<std::uintptr_t>(&minijsBaselineGreater));
-        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
-        break;
-
       case Opcode::Less:
-        emitRuntimeCall(emitter, reinterpret_cast<std::uintptr_t>(&minijsBaselineLess));
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+      {
+        std::string inlineError;
+        const bool greater = instruction.opcode == Opcode::Greater;
+        if (!emitter.emitInlineNumberComparisonOrRuntimeCall(
+                greater ? reinterpret_cast<std::uintptr_t>(&minijsBaselineGreater)
+                        : reinterpret_cast<std::uintptr_t>(&minijsBaselineLess),
+                reinterpret_cast<std::uintptr_t>(&minijsBaselineSyncStackSize),
+                greater, inlineError)) {
+          return failure(inlineError);
+        }
         epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
         break;
+      }
+#else
+        emitRuntimeCall(emitter, instruction.opcode == Opcode::Greater
+                                     ? reinterpret_cast<std::uintptr_t>(&minijsBaselineGreater)
+                                     : reinterpret_cast<std::uintptr_t>(&minijsBaselineLess));
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        break;
+#endif
 
       case Opcode::Not:
         emitRuntimeCall(emitter, reinterpret_cast<std::uintptr_t>(&minijsBaselineNot));

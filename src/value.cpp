@@ -511,7 +511,13 @@ std::size_t Value::typeOffset() { return offsetof(Value, value_type_); }
 
 std::size_t Value::numberOffset() { return offsetof(Value, number_); }
 
+std::size_t Value::booleanOffset() { return offsetof(Value, boolean_); }
+
 std::uint32_t Value::numberTypeTag() {
   return static_cast<std::uint32_t>(ValueType::Number);
+}
+
+std::uint32_t Value::booleanTypeTag() {
+  return static_cast<std::uint32_t>(ValueType::Boolean);
 }
 }  // namespace minijs

@@ -1,8 +1,10 @@
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "minijs/baseline_compiler.h"
 #include "minijs/baseline_code.h"
@@ -5355,6 +5357,81 @@ void testJitDispatchComparisonHelpersPreserveTypeErrors() {
   EXPECT(lessFeedback->state == minijs::JitState::Compiled);
 }
 
+void testBaselineNumberComparisonsHandleSpecialValues() {
+  if (!nativeBaselineBackendAvailable()) {
+    return;
+  }
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+  runBytecodeProgramOnVm(vm, R"(
+    function greater(a, b) { return a > b; }
+    function less(a, b) { return a < b; }
+    greater(2, 1);
+    less(1, 2);
+  )");
+
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+  const double pairs[][2] = {
+      {1, 2}, {2, 1}, {2, 2}, {-2, -1}, {0.0, -0.0}, {-0.0, 0.0},
+      {inf, 1}, {-inf, 1}, {1, inf}, {1, -inf}, {inf, inf}, {-inf, inf},
+      {nan, 1}, {1, nan}, {nan, nan}};
+  for (const std::string name : {"greater", "less"}) {
+    const minijs::BaselineCode* code = vm.debugGlobalFunctionBaselineCode(name);
+    EXPECT(code != nullptr);
+    EXPECT(code->entry != nullptr);
+    for (const auto& pair : pairs) {
+      const std::vector<minijs::Value> args = {minijs::Value(pair[0]), minijs::Value(pair[1])};
+      const bool expected = name == "greater" ? pair[0] > pair[1] : pair[0] < pair[1];
+      const minijs::Value decoded = vm.debugExecuteGlobalFunctionBaseline(name, args);
+      const minijs::Value native =
+          vm.debugExecuteGlobalFunctionBaselineEntry(name, args, code->entry);
+      EXPECT(native.isBoolean());
+      EXPECT(native.equals(minijs::Value(expected)));
+      EXPECT(native.equals(decoded));
+    }
+    // 分别让左右操作数的类型 guard 失败，检查完整 helper 的错误语义。
+    for (const auto& args : {std::vector<minijs::Value>{minijs::Value(std::string("x")), minijs::Value(1.0)},
+                            std::vector<minijs::Value>{minijs::Value(1.0), minijs::Value(std::string("x"))}}) {
+      try {
+        vm.debugExecuteGlobalFunctionBaselineEntry(name, args, code->entry);
+        EXPECT(false);
+      } catch (const minijs::RuntimeError& error) {
+        EXPECT(std::string_view(error.what()) == "RuntimeError: value is not a number");
+      }
+    }
+  }
+}
+
+void testJitNumberComparisonsComposeWithControlFlowAndCalls() {
+  for (const bool enabled : {false, true}) {
+    minijs::VM vm;
+    vm.setJitEnabled(enabled);
+    vm.setJitCallThreshold(1);
+    const minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+      function next(i) { let values = [i, i + 1]; return values[1]; }
+      function count(n) {
+        let i = 0;
+        let total = 0;
+        while (i < n) {
+          if (i > 2) { total = total + 1; }
+          i = next(i);
+        }
+        return [total, i < n, i > 2];
+      }
+      count(1);
+      count(8);
+    )");
+    EXPECT(result.toString() == "[5, false, true]");
+    if (enabled) {
+      const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("count");
+      EXPECT(feedback != nullptr);
+      EXPECT(feedback->baselineEntryCount == 1);
+    }
+  }
+}
+
 void testJitDispatchInlineNegateFallbackPreservesTypeError() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -6080,6 +6157,8 @@ void runBytecodeTests() {
   testJitDispatchRespectsDisabledJit();
   testJitDispatchPreservesRuntimeErrors();
   testJitDispatchComparisonHelpersPreserveTypeErrors();
+  testBaselineNumberComparisonsHandleSpecialValues();
+  testJitNumberComparisonsComposeWithControlFlowAndCalls();
   testJitDispatchInlineNegateFallbackPreservesTypeError();
   testJitDispatchInlineAddRunsNumberFastPath();
   testJitDispatchInlineAddFallbackPreservesStringConcat();
