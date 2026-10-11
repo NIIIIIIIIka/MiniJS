@@ -511,7 +511,7 @@ epilogue:
 | `OP_GREATER` | 无 | Windows x64 number fast path，否则 `minijsBaselineGreater(frame)` | 数字 guard 成功时通过 `ucomisd` / `seta` 写回 Boolean 并同步栈；否则回退完整 helper |
 | `OP_LESS` | 无 | Windows x64 number fast path，否则 `minijsBaselineLess(frame)` | 数字 guard 成功时通过 `ucomisd` / `setb` / `setnp` 写回 Boolean 并同步栈，NaN 结果为 false；否则回退完整 helper |
 | `OP_NOT` | 无 | `minijsBaselineNot(frame)` | 弹出一个值，通过 `isTruthy()` 取反后压入布尔结果 |
-| `OP_JUMP_IF_FALSE` | `jumpOffset` | `minijsBaselinePeekTruthy(frame)` + native conditional branch | 读取栈顶 truthiness，不弹栈；返回 falsey 时跳到 bytecode 目标对应的 native offset |
+| `OP_JUMP_IF_FALSE` | `jumpOffset` | Windows x64 Boolean fast path，否则 `minijsBaselinePeekTruthy(frame)`；随后 native conditional branch | 读取栈顶 truthiness，不弹栈；返回 falsey 时跳到 bytecode 目标对应的 native offset |
 | `OP_JUMP` | `jumpOffset` | native unconditional branch | 无条件跳到 bytecode 目标对应的 native offset |
 | `OP_LOOP` | `jumpOffset` | `minijsBaselineRecordLoopBackedge(frame)` + native unconditional branch | 记录循环回边热度，然后跳回 loop 目标对应的 native offset |
 | `OP_RETURN` | 无 | `minijsBaselineReturn(frame)` | 弹出返回值，关闭 upvalue，把结果写回 `returnSlot`，标记 `completed` |
@@ -759,7 +759,7 @@ CTest 也会通过 `minijs_cli_benchmark_compare_reports_jit_on_and_off` 跑同�
 | `Equal` | 数字 guard 成功后使用 `ucomisd` / `sete` / `setnp`；未命中调用完整 helper | 完整 helper |
 | `Not` | 完整 helper | 完整 helper |
 | `Jump` | native 分支 | native 分支 |
-| `JumpIfFalse` | truthiness helper 加 native 分支 | truthiness helper 加 native 分支 |
+| `JumpIfFalse` | Boolean guard + native 读取和分支；其它情况 truthiness helper | truthiness helper 加 native 分支 |
 | `Loop` | 回边计数 helper 加 native 分支 | 回边计数 helper 加 native 分支 |
 | `Return` | 返回 helper 加统一 epilogue | 返回 helper 加统一 epilogue |
 
@@ -853,6 +853,46 @@ done:
 
 该路径仍需要一次 C++ helper 来构造栈槽和处理 vector 扩容，并非完全无 helper 的压栈。构造已改用 `emplace_back(0.0)`：构造函数接收 double 参数，直接初始化 vector 的新元素，不创建临时 Value，也不通过 `push(Value)` 再移动一次。现有元素的扩容迁移仍由 vector 管理；helper 返回后仍必须重新读取栈地址。测试覆盖特殊数字逐位比较、连续 80 次压栈引发的扩容，以及数字与字符串、布尔值、null/undefined 混合的 JIT on/off 结果。
 
+### Windows x64 布尔条件跳转
+
+`OP_JUMP_IF_FALSE` 现在先检查栈非空且栈顶类型为 Boolean，直接读取布尔载荷作为 `0/1`。数字、字符串、对象等类型仍调用 `minijsBaselinePeekTruthy()`；空栈也交给该 helper 产生原有错误。ARM64 路径保持不变。
+
+先按等价 C++ 理解控制流（下列字段访问是示意，不是公开 Value API）：
+
+```cpp
+if (frame.stackSize == 0 || top.type != Boolean) {
+  state = minijsBaselinePeekTruthy(&frame); // 0 假、1 真、2 失败
+} else {
+  state = top.boolean_ ? 1 : 0;
+}
+if (state == 0) goto bytecodeTarget;
+if (state != 1) goto epilogue;
+// 为真时继续下一条指令。
+```
+
+对应汇编按操作顺序理解：
+
+```asm
+mov rax, [rbx + stackSize]           ; 读取栈深度
+test rax, rax                       ; 检查是否为零
+jz fallback                         ; 空栈交给 helper 报错
+; 计算栈顶 Value*，放入 rcx
+cmp dword ptr [rcx + typeOffset], Boolean
+jne fallback                        ; 非 Boolean 使用完整 truthiness 语义
+movzx eax, byte ptr [rcx + booleanOffset] ; 读取一字节，并将高位清零
+jmp dispatch                        ; 跳过 helper
+fallback:
+mov rcx, rbx                        ; 第一个参数是 BaselineFrame*
+mov rax, peekTruthyHelper
+call rax                            ; 返回 0/1/2
+dispatch:
+; 0 跳到 bytecode 目标，1 继续，其它值退出。
+```
+
+`movzx` 不改变 Boolean 的值，只把一字节的 `0/1` 扩展为寄存器结果。快路径不修改 Value，不弹栈，也无需同步栈深度；后续 `Pop` 或短路表达式负责处理条件值。因此 `false && value` 保留 false，`true || value` 保留 true，不会执行被短路的一侧。
+
+测试覆盖 decoded/native 的真假条件、非 Boolean fallback、JIT on/off 的逻辑运算结果与副作用、比较结果驱动的循环，以及空栈错误。NaN 的真假性沿用当前 MiniJS 的 `Value::isTruthy()`，没有借此修改语言语义。性能对照见 [数字循环性能报告](baseline-numeric-benchmark.md)，目前未证明稳定提速。
+
 ### 后续 Deopt 需要补什么
 
 真正的 deopt 要在 native 执行中恢复普通 VM，并从正确的 bytecode 位置继续。除了现有 `bytecodeOffsetToNativeOffset` 映射，还需要记录恢复点对应的 bytecode offset、操作发生前还是发生后、有效栈深度、局部变量与操作数的位置，以及嵌套调用帧状态。
@@ -862,5 +902,5 @@ done:
 ## 下一步
 
 1. 对现有数字快路径集中验证 guard 命中、类型 fallback、零除数、NaN 和嵌套 helper 调用后的栈快照刷新。
-2. 数字局部变量和数字常量压栈已有快路径，`OP_POP` 已消除丢弃时的 Value 副本，数字槽已改为原地构造；[数字循环性能报告](baseline-numeric-benchmark.md) 记录 Release 前后对照，后续评估条件跳转的 truthiness helper 成本。
+2. 数字局部变量、数字常量和 Boolean 条件跳转已有快路径，`OP_POP` 已消除丢弃时的 Value 副本，数字槽已改为原地构造；[数字循环性能报告](baseline-numeric-benchmark.md) 记录 Release 前后对照，下一步可补齐 Boolean `Not` 的原地取反路径。
 3. 引入执行中恢复需求时，再增加 safepoint 元数据和 deopt 帧恢复协议。

@@ -5,6 +5,7 @@
 #include <memory>
 #include <sstream>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -5736,6 +5737,109 @@ void testDiscardTopPreservesStackUnderflowError() {
   }
 }
 
+void testBaselineBooleanBranchesAndTruthyFallback() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+  runBytecodeProgramOnVm(vm, R"(
+    function truth(value) { if (value) { return 1; } return 0; }
+    truth(true);
+  )");
+  const auto* code = vm.debugGlobalFunctionBaselineCode("truth");
+  EXPECT(code != nullptr);
+  struct Case {
+    minijs::Value value;
+    bool truthy;
+  };
+  const std::vector<Case> cases = {
+      {minijs::Value(true), true}, {minijs::Value(false), false},
+      {minijs::Value(0.0), false}, {minijs::Value(-0.0), false},
+      {minijs::Value(1.0), true}, {minijs::Value(-1.0), true},
+      {minijs::Value(std::numeric_limits<double>::quiet_NaN()), true},
+      {minijs::Value(std::numeric_limits<double>::infinity()), true},
+      {minijs::Value(std::string()), false}, {minijs::Value(std::string("x")), true},
+      {minijs::Value(), false}, {minijs::Value::undefined(), false},
+      {minijs::Value(std::vector<minijs::Value>{}), true},
+      {minijs::Value(std::unordered_map<std::string, minijs::Value>{}), true}};
+  for (const auto& test : cases) {
+    const std::vector<minijs::Value> arguments = {test.value};
+    const minijs::Value expected(test.truthy ? 1.0 : 0.0);
+    EXPECT(vm.debugExecuteGlobalFunctionBaseline("truth", arguments).equals(expected));
+    if (nativeBaselineBackendAvailable()) {
+      EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("truth", arguments, code->entry)
+                 .equals(expected));
+    }
+  }
+}
+
+void testJitBooleanBranchesPreserveLogicalOperandsAndSideEffects() {
+  for (const bool enabled : {false, true}) {
+    minijs::VM vm;
+    vm.setJitEnabled(enabled);
+    vm.setJitCallThreshold(1);
+    const auto result = runBytecodeProgramOnVm(vm, R"(
+      let probes = 0;
+      function probe(value) { probes = probes + 1; return value; }
+      function logic(left, right) { return [left && right, left || right]; }
+      function loop() {
+        let i = 0;
+        let total = 0;
+        while (i < 6) {
+          if (i == 2 || i > 3) { total = total + 1; }
+          i = i + 1;
+        }
+        return total;
+      }
+      logic(true, 7);
+      loop();
+      let left = probe(false) && probe(true);
+      let right = probe(true) || probe(false);
+      let object = {};
+      [logic(false, 7), logic(true, 7), loop(), probes, left, right,
+       logic("", 8), logic(0, 8), (object || 9) == object];
+    )");
+    EXPECT(result.toString() ==
+           "[[false, 7], [7, true], 3, 2, false, true, [, 8], [0, 8], true]");
+    if (enabled) {
+      EXPECT(vm.debugGlobalFunctionJitFeedback("logic")->baselineEntryCount >= 4);
+      EXPECT(vm.debugGlobalFunctionJitFeedback("loop")->baselineEntryCount == 1);
+    }
+  }
+}
+
+void testBooleanBranchFallbackPreservesStackUnderflow() {
+  minijs::VM vm;
+  minijs::Chunk chunk;
+  chunk.writeOpcode(minijs::Opcode::JumpIfFalse);
+  chunk.writeByte(0);
+  chunk.writeByte(0);
+  chunk.writeOpcode(minijs::Opcode::Return);
+  try {
+    vm.run(chunk);
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: bytecode stack underflow");
+  }
+  if (!nativeBaselineBackendAvailable()) {
+    return;
+  }
+  runBytecodeProgramOnVm(vm, "function truth() { return true; }");
+  minijs::BytecodeFunction invalid;
+  invalid.chunk.writeOpcode(minijs::Opcode::Pop);
+  invalid.chunk.writeOpcode(minijs::Opcode::JumpIfFalse);
+  invalid.chunk.writeByte(0);
+  invalid.chunk.writeByte(0);
+  invalid.chunk.writeOpcode(minijs::Opcode::Return);
+  const auto compiled = minijs::BaselineCompiler().compile(invalid);
+  EXPECT(compiled.succeeded());
+  try {
+    vm.debugExecuteGlobalFunctionBaselineEntry("truth", {}, compiled.code->entry);
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: bytecode stack underflow");
+  }
+}
+
 void testJitDispatchInlineNegateFallbackPreservesTypeError() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -6471,6 +6575,9 @@ void runBytecodeTests() {
   testJitNumberConstantsComposeWithOtherConstantTypes();
   testDiscardedValuesPreserveSurvivorsAcrossExecutors();
   testDiscardTopPreservesStackUnderflowError();
+  testBaselineBooleanBranchesAndTruthyFallback();
+  testJitBooleanBranchesPreserveLogicalOperandsAndSideEffects();
+  testBooleanBranchFallbackPreservesStackUnderflow();
   testJitDispatchInlineNegateFallbackPreservesTypeError();
   testJitDispatchInlineAddRunsNumberFastPath();
   testJitDispatchInlineAddFallbackPreservesStringConcat();

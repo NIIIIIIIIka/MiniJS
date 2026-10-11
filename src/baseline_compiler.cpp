@@ -341,6 +341,38 @@ class WindowsX64Emitter {
     emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackData)));
   }
 
+  // Boolean 直接返回 0/1，其它类型交给三态 helper；不弹出条件值。
+  bool emitBooleanTruthyOrRuntimeCall(std::uintptr_t helperAddress, std::string& error) {
+    if (!validateInlineValueSize("boolean truthiness", error)) {
+      return false;
+    }
+    // 等价 C++：if (frame.stackSize == 0) goto fallback;
+    emit({0x48, 0x8B, 0x83});  // mov rax, [rbx + stackSize]
+    emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackSize)));
+    emit({0x48, 0x85, 0xC0});  // test rax, rax
+    const std::size_t emptyStack = emitJzPlaceholder();
+    emitLoadTopPointer();
+    // 等价 C++：if (top.type != Boolean) goto fallback;
+    emit({0x81, 0xB9});  // cmp dword ptr [rcx + typeOffset], Boolean
+    emit32(static_cast<std::uint32_t>(Value::typeOffset()));
+    emit32(Value::booleanTypeTag());
+    const std::size_t nonBoolean = emitJnePlaceholder();
+    // 等价 C++：eax = top.boolean_ ? 1 : 0；不修改 Value 或栈深度。
+    emit({0x0F, 0xB6, 0x81});  // movzx eax, byte ptr [rcx + booleanOffset]
+    emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
+    const std::size_t done = emitJumpPlaceholder();
+
+    const std::size_t fallback = offset();
+    if (!patchBranchTo(emptyStack, fallback, true, error) ||
+        !patchBranchTo(nonBoolean, fallback, true, error)) {
+      return false;
+    }
+    emitMoveFrameToFirstArg();
+    emitLoadHelper(helperAddress);
+    emitCallHelper();  // 返回 0/1/2：falsey、truthy、失败。
+    return patchBranchTo(done, offset(), false, error);
+  }
+
   // 编译时已确认常量是数字；运行时先构造栈槽，再写入 double 的原始位。
   bool emitNumberConstant(std::uint64_t numberBits, std::uintptr_t pushNumberSlotAddress,
                           std::string& error) {
@@ -1232,7 +1264,17 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
         break;
 
       case Opcode::JumpIfFalse:
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+      {
+        std::string inlineError;
+        if (!emitter.emitBooleanTruthyOrRuntimeCall(
+                reinterpret_cast<std::uintptr_t>(&minijsBaselinePeekTruthy), inlineError)) {
+          return failure(inlineError);
+        }
+      }
+#else
         emitRuntimeCall(emitter, reinterpret_cast<std::uintptr_t>(&minijsBaselinePeekTruthy));
+#endif
         branchPatches.push_back({emitter.emitJumpIfZeroPlaceholder(), instruction.jumpTarget,
                                  NativeBranchKind::Zero});
         epiloguePatches.push_back({emitter.emitJumpIfNotOnePlaceholder(),

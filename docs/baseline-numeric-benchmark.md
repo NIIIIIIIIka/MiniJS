@@ -129,4 +129,18 @@ JIT on 三组运行中位数分别降低约 45.5%、44.0%、47.2%；普通 VM �
 
 复用既有回归测试验证数字位编码、连续压栈扩容、递归、类型 fallback 和 GC：CTest 17/17 通过。该变化不增加 opcode、字段布局或新的 Runtime ABI，native 代码仍调用一次栈槽 helper，再重新读取地址并写入数字载荷。
 
-下一步候选是 `JumpIfFalse` 的 Boolean truthiness 快路径：数字比较已产生 Boolean，但条件分支仍调用完整 truthiness helper。先核对返回值协议和空栈错误，再做前后性能对照。
+### 布尔条件跳转对照
+
+Windows x64 的 `JumpIfFalse` 现在对 Boolean 直接读取载荷，省去 truthiness helper；非 Boolean 和空栈仍走原有 helper。快路径不弹栈、不修改条件值，返回结果仍遵守 `0/1/2` 三态协议。
+
+修改前程序来自提交 `36abe9f` 的 Release 构建，保存在本机忽略的 `build-verify-release/boolean-branch-before-36abe9f.exe`。每组每版本使用 3 轮预热和 15 轮正式采样，第二组交换执行顺序：
+
+| 对照组 | 修改前 JIT on | 修改后 JIT on | 前 / 后 | 修改前 JIT off | 修改后 JIT off |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 41.091 ms | 43.845 ms | 0.937x | 169.658 ms | 158.525 ms |
+| 2 | 44.342 ms | 38.450 ms | 1.153x | 162.485 ms | 159.486 ms |
+| 3 | 46.627 ms | 42.446 ms | 1.099x | 165.800 ms | 162.149 ms |
+
+JIT on 一组耗时上升约 6.7%，另两组降低约 13.3%、9.0%；普通 VM 计时也有波动。这些数据不足以证明稳定收益，不能将最好一组当作固定加速比。所有计算结果均为 `125025000`，baseline 入口计数均为 19。
+
+本次保留 Boolean 条件的 native 读取路径，收益仍需后续验证。CTest 17/17 通过，覆盖条件真假、非 Boolean fallback、短路求值保留操作数、循环与空栈错误。下一步候选是 Boolean `Not` 原地取反，继续保留其它类型的完整 helper 语义。
