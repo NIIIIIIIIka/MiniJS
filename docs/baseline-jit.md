@@ -799,5 +799,5 @@ CTest 也会通过 `minijs_cli_benchmark_compare_reports_jit_on_and_off` 跑同�
 ## 下一步
 
 1. 对现有数字快路径集中验证 guard 命中、类型 fallback、零除数、NaN 和嵌套 helper 调用后的栈快照刷新。
-2. 数字比较快路径已覆盖 `Greater`、`Less` 和 `Equal`；下一步测量算术与比较循环的性能，再评估局部变量访问快路径。
+2. 数字比较快路径已覆盖 `Greater`、`Less` 和 `Equal`；[数字循环性能报告](baseline-numeric-benchmark.md) 已记录三组 Release 测量和复现方法，下一步评估局部变量访问快路径。
 3. 引入执行中恢复需求时，再增加 safepoint 元数据和 deopt 帧恢复协议。
