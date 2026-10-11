@@ -1146,8 +1146,9 @@ bool VM::baselineRuntimeGetLocal(BaselineFrame& frame, std::uint32_t slot) {
 
 bool VM::baselineRuntimePushNumberSlot(BaselineFrame& frame) {
   validateBaselineRuntimeFrame(frame);
-  // 先构造完整 Value；机器码只负责覆盖数字载荷，不访问未构造的容量。
-  push(Value(0.0));
+  // 直接在 vector 的新栈槽构造完整 Number，省去临时 Value 及其移动。
+  // 扩容和成员初始化仍由 C++ 管理，机器码只覆盖已构造槽的数字载荷。
+  stack_.emplace_back(0.0);
   refreshBaselineFrameStack(frame);
   return true;
 }

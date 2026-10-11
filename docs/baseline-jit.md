@@ -797,7 +797,7 @@ CTest 也会通过 `minijs_cli_benchmark_compare_reports_jit_on_and_off` 跑同�
 
 `GetLocal` 和 `SetLocal` 都先计算 `slotStart + slot`，检查编号加法溢出和栈边界，再访问 Value。越界时交给完整 helper 报错，不提前读取非法地址。
 
-数字 `GetLocal` 仍需调用 `minijsBaselinePushNumberSlot()`。它通过 C++ 构造 `Value(0.0)` 并压栈，刷新 `stackData` 和 `stackSize`。机器码随后重新计算局部槽和栈顶地址，用 `movsd` 复制 double 载荷。不跨 helper 保存裸栈指针，也不把 vector 的预留容量当作已构造 Value；栈槽构造失败时直接退出，不再调用完整 helper 重试。
+数字 `GetLocal` 仍需调用 `minijsBaselinePushNumberSlot()`。它通过 `stack_.emplace_back(0.0)` 在新栈槽直接构造 Number，刷新 `stackData` 和 `stackSize`。机器码随后重新计算局部槽和栈顶地址，用 `movsd` 复制 double 载荷。不跨 helper 保存裸栈指针，也不把 vector 的预留容量当作已构造 Value；栈槽构造失败时直接退出，不再调用完整 helper 重试。
 
 数字 `SetLocal` 要求目标槽和栈顶都是 Number，直接用 `movsd` 写入目标载荷，不弹栈、不改变类型标签，也不需要同步栈深度。目标槽原先持有对象或字符串、或者源值不是数字时，完整 helper 执行正常 Value 赋值，负责资源生命周期和类型转换。
 
@@ -830,7 +830,7 @@ native `OP_POP` 仍调用完整 helper，因此这项优化适用于所有值类
 
 ```cpp
 // 运行时通过 helper 构造完整 Value 并更新 stackData / stackSize。
-push(Value(0.0));
+stack_.emplace_back(0.0);
 // helper 成功后重新定位栈顶，将编译时保存的数字位编码复制到 number_。
 ```
 
@@ -851,7 +851,7 @@ done:
 
 `numberBits` 是 double 的位编码，不是把整数转换成浮点数；因此负零、无穷大、非规格化数和 NaN payload 都能原样保留。机器码没有保存常量池对象地址，也没有跨 helper 保存栈指针。helper 失败时不再重试完整常量 helper，避免重复压栈。
 
-该路径仍需要一次 C++ helper 来构造栈槽和处理 vector 扩容，并非完全无 helper 的压栈。测试覆盖特殊数字逐位比较、连续 80 次压栈引发的扩容，以及数字与字符串、布尔值、null/undefined 混合的 JIT on/off 结果。
+该路径仍需要一次 C++ helper 来构造栈槽和处理 vector 扩容，并非完全无 helper 的压栈。构造已改用 `emplace_back(0.0)`：构造函数接收 double 参数，直接初始化 vector 的新元素，不创建临时 Value，也不通过 `push(Value)` 再移动一次。现有元素的扩容迁移仍由 vector 管理；helper 返回后仍必须重新读取栈地址。测试覆盖特殊数字逐位比较、连续 80 次压栈引发的扩容，以及数字与字符串、布尔值、null/undefined 混合的 JIT on/off 结果。
 
 ### 后续 Deopt 需要补什么
 
@@ -862,5 +862,5 @@ done:
 ## 下一步
 
 1. 对现有数字快路径集中验证 guard 命中、类型 fallback、零除数、NaN 和嵌套 helper 调用后的栈快照刷新。
-2. 数字局部变量和数字常量压栈已有快路径，`OP_POP` 已消除丢弃时的 Value 副本；[数字循环性能报告](baseline-numeric-benchmark.md) 记录 Release 前后对照，后续评估数字栈槽构造成本。
+2. 数字局部变量和数字常量压栈已有快路径，`OP_POP` 已消除丢弃时的 Value 副本，数字槽已改为原地构造；[数字循环性能报告](baseline-numeric-benchmark.md) 记录 Release 前后对照，后续评估条件跳转的 truthiness helper 成本。
 3. 引入执行中恢复需求时，再增加 safepoint 元数据和 deopt 帧恢复协议。

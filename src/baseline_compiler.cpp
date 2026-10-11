@@ -347,7 +347,7 @@ class WindowsX64Emitter {
     if (!validateInlineValueSize("number constant", error)) {
       return false;
     }
-    // 等价 C++：push(Value(0.0)); refreshBaselineFrameStack(frame);
+    // helper 内部：stack_.emplace_back(0.0); refreshBaselineFrameStack(frame);
     emitMoveFrameToFirstArg();
     emitLoadHelper(pushNumberSlotAddress);
     emitCallHelper();
