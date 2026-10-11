@@ -484,7 +484,7 @@ Value VM::run(const Chunk& chunk) {
         break;
       }
       case Opcode::Pop:
-        pop();
+        discardTop();
         break;
       case Opcode::Not: {
         push(Value(!pop().isTruthy()));
@@ -1082,6 +1082,13 @@ Value VM::pop() {
   return value;
 }
 
+void VM::discardTop() {
+  if (stack_.empty()) {
+    throw RuntimeError("bytecode stack underflow");
+  }
+  stack_.pop_back();
+}
+
 const Value& VM::peek() const {
   if (stack_.empty()) {
     throw RuntimeError("bytecode stack underflow");
@@ -1158,7 +1165,7 @@ bool VM::baselineRuntimeSetLocal(BaselineFrame& frame, std::uint32_t slot) {
 
 bool VM::baselineRuntimePop(BaselineFrame& frame) {
   validateBaselineRuntimeFrame(frame);
-  pop();
+  discardTop();
   refreshBaselineFrameStack(frame);
   return true;
 }
@@ -2319,7 +2326,7 @@ Value VM::executeBaselineCode(const BaselineCode& code, CallFrame& frame) {
         break;
       }
       case Opcode::Pop:
-        pop();
+        discardTop();
         ++ip;
         break;
       case Opcode::Equal: {

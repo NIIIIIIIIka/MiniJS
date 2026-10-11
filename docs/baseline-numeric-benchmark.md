@@ -97,4 +97,20 @@ Windows x64 的数字 `OP_CONSTANT` 现在在编译时把 double 位编码嵌入
 
 本次保留该功能以提供数字常量的 native 位编码写入路径，收益需继续验证。功能测试逐位核对负零、无穷大、最小非规格化数和带 payload 的 NaN，并覆盖连续压栈扩容和混合类型常量。
 
-下一步候选是栈清理，以及数字栈槽构造的 helper 成本。先使用更稳定的测量环境或 profiler 定位成本，再决定是否扩大内联范围。
+### OP_POP 无复制栈清理对照
+
+源码检查发现 `OP_POP` 原先调用 `pop()` 取出完整 Value 后立刻丢弃返回值。普通 VM、decoded baseline 和 native runtime helper 现已使用 `discardTop()`，直接执行带空栈检查的 `stack_.pop_back()`。该优化覆盖所有 Value 类型，没有新增数字 guard 或修改机器码调用约定。
+
+对照程序为修改前提交 `144803f` 的 Release 构建，保存在本机忽略的 `build-verify-release/discard-before-144803f.exe`。采样仍为每组每版本 3 轮预热和 15 轮正式采样，第二组交换前后版本的执行顺序：
+
+| 对照组 | 修改前 JIT on | 修改后 JIT on | 前 / 后 | 修改前 JIT off | 修改后 JIT off |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 89.086 ms | 75.934 ms | 1.173x | 175.023 ms | 156.800 ms |
+| 2 | 100.773 ms | 79.825 ms | 1.262x | 176.120 ms | 181.125 ms |
+| 3 | 83.689 ms | 79.331 ms | 1.055x | 171.445 ms | 153.109 ms |
+
+三组 JIT on 中位数分别降低约 14.8%、20.8%、5.2%，结果均为 `125025000`，baseline 入口计数均为 19。JIT off 有两组降低、一组上升，说明波动仍然存在；这不是固定加速比。该测量配合明确减少 Value 复制的源码变化支持保留优化。
+
+测试覆盖三条执行路径丢弃不同类型临时值、GC 后存活闭包继续访问捕获对象，以及普通 VM 和 native helper 的空栈错误。native `OP_POP` 仍调用 runtime helper，helper 成功后刷新 frame 栈快照。
+
+下一步候选是数字栈槽构造的 helper 成本，例如直接在 vector 中构造 Number，减少临时 Value 的构造和移动。继续使用同配置前后对照，并结合 profiler 验证收益。

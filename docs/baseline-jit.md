@@ -479,7 +479,7 @@ epilogue:
 | `OP_CONSTANT` | `constantIndex` | Windows x64 数字常量内嵌 + `minijsBaselinePushNumberSlot(frame)`，否则 `minijsBaselinePushConstant(frame, constantIndex)` | 数字在编译时复制位编码，运行时构造栈槽后直接写载荷；非数字保留完整 helper |
 | `OP_GET_LOCAL` | `slot` | Windows x64 Number guard + `minijsBaselinePushNumberSlot(frame)`，否则 `minijsBaselineGetLocal(frame, slot)` | 窄 helper 构造压栈槽并刷新地址，机器码复制数字载荷；非数字或越界走完整 helper |
 | `OP_SET_LOCAL` | `slot` | Windows x64 number fast path，否则 `minijsBaselineSetLocal(frame, slot)` | 目标局部槽和栈顶都是数字时直接复制 double；类型变化走完整 Value 赋值；栈顶保留 |
-| `OP_POP` | 无 | `minijsBaselinePop(frame)` | 弹出栈顶值 |
+| `OP_POP` | 无 | `minijsBaselinePop(frame)` | 使用 `discardTop()` 直接销毁栈顶 Value，不构造无用副本，再刷新栈快照 |
 | `OP_DEFINE_GLOBAL` | `nameIndex` | `minijsBaselineDefineGlobal(frame, nameIndex)` | 从当前函数常量池读取变量名，把栈顶值弹出并写入 `globals_` |
 | `OP_GET_GLOBAL` | `nameIndex` | `minijsBaselineGetGlobal(frame, nameIndex)` | 从 `globals_` 读取变量并压栈；变量不存在时保留 VM 的运行时错误 |
 | `OP_SET_GLOBAL` | `nameIndex` | `minijsBaselineSetGlobal(frame, nameIndex)` | 把栈顶值写入已有全局变量；变量不存在时保留 VM 的运行时错误，栈顶值不弹出 |
@@ -803,6 +803,25 @@ CTest 也会通过 `minijs_cli_benchmark_compare_reports_jit_on_and_off` 跑同�
 
 局部槽可能被 open upvalue 引用，原地修改仍会被闭包读到；当前调用帧的 `slotStart` 也保证普通函数和方法使用各自的槽编号。类型切换、捕获槽更新、方法 receiver 偏移和递归扩容均由回归测试覆盖。
 
+### OP_POP 无复制丢弃
+
+`pop()` 的语义是取出并返回栈顶 Value；算术、返回等操作需要该值。`OP_POP` 只需要丢弃栈顶，原先调用 `pop()` 会复制一个随后立即销毁的 Value。
+
+普通 VM、decoded baseline 和 native runtime helper 的 `OP_POP` 现在统一使用 `discardTop()`：
+
+```cpp
+if (stack_.empty()) {
+  throw RuntimeError("bytecode stack underflow");
+}
+stack_.pop_back();
+```
+
+`std::vector` 负责销毁最后一个 Value；字符串和 shared_ptr 等成员仍执行正常析构。GC 管理对象不会被直接 delete，移除的只是该栈槽中的引用，存活对象仍由其它根保护。空栈错误文本和 helper 的异常退出协议保持一致。
+
+native `OP_POP` 仍调用完整 helper，因此这项优化适用于所有值类型，以及 ARM64 和 Windows x64 的 helper 路径。没有新增 Number guard 或直接修改 vector 布局；helper 成功后照常刷新栈地址和深度。
+
+测试分别调用普通 VM、decoded executor 和 native entry，丢弃数字、字符串、数组、对象、布尔值和闭包临时值，再触发 GC 验证存活的捕获对象，同时检查普通 VM 和 native helper 的空栈错误。
+
 ### Windows x64 数字常量
 
 编译 `OP_CONSTANT constantIndex` 时，verifier 已检查常量索引。Windows x64 后端直接查看常量类型；Number 使用 `memcpy` 获取 double 的 64 位原始编码并嵌入机器码，运行时无需再次访问常量池或检查类型。非数字继续调用完整 `minijsBaselinePushConstant()`，保留字符串的 GC 分配语义。
@@ -843,5 +862,5 @@ done:
 ## 下一步
 
 1. 对现有数字快路径集中验证 guard 命中、类型 fallback、零除数、NaN 和嵌套 helper 调用后的栈快照刷新。
-2. 数字局部变量和数字常量压栈已有快路径；[数字循环性能报告](baseline-numeric-benchmark.md) 记录 Release 前后对照，后续继续评估栈清理成本。
+2. 数字局部变量和数字常量压栈已有快路径，`OP_POP` 已消除丢弃时的 Value 副本；[数字循环性能报告](baseline-numeric-benchmark.md) 记录 Release 前后对照，后续评估数字栈槽构造成本。
 3. 引入执行中恢复需求时，再增加 safepoint 元数据和 deopt 帧恢复协议。

@@ -276,6 +276,8 @@ class VM {
 
   void push(Value value);
   Value pop();
+  // 丢弃栈顶，不复制即将销毁的 Value；需要返回值时仍使用 pop()。
+  void discardTop();
   const Value& peek() const;
   void refreshBaselineFrameStack(BaselineFrame& frame);
   void validateBaselineRuntimeFrame(const BaselineFrame& frame) const;

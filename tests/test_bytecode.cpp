@@ -5660,6 +5660,82 @@ void testJitNumberConstantsComposeWithOtherConstantTypes() {
   }
 }
 
+void testDiscardedValuesPreserveSurvivorsAcrossExecutors() {
+  for (const bool enabled : {false, true}) {
+    minijs::VM vm;
+    vm.setJitEnabled(enabled);
+    vm.setJitCallThreshold(1);
+    const minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+      let survivor = null;
+      function discard(value) {
+        let object = {value: value};
+        function read() { return object.value; }
+        survivor = read;
+        value;
+        object;
+        [value];
+        "unused";
+        true;
+        null;
+        undefined;
+        read;
+        { let transient = 99; transient; }
+        return object.value;
+      }
+      discard(1);
+      discard(42);
+    )");
+    EXPECT(result.equals(minijs::Value(42.0)));
+    vm.collectGarbage();
+    EXPECT(runBytecodeProgramOnVm(vm, "survivor();").equals(minijs::Value(42.0)));
+    if (enabled) {
+      const auto* code = vm.debugGlobalFunctionBaselineCode("discard");
+      EXPECT(code != nullptr);
+      EXPECT(vm.debugExecuteGlobalFunctionBaseline("discard", {minijs::Value(43.0)})
+                 .equals(minijs::Value(43.0)));
+      vm.collectGarbage();
+      EXPECT(runBytecodeProgramOnVm(vm, "survivor();").equals(minijs::Value(43.0)));
+      if (nativeBaselineBackendAvailable()) {
+        EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry(
+                     "discard", {minijs::Value(44.0)}, code->entry)
+                   .equals(minijs::Value(44.0)));
+        vm.collectGarbage();
+        EXPECT(runBytecodeProgramOnVm(vm, "survivor();").equals(minijs::Value(44.0)));
+      }
+    }
+  }
+}
+
+void testDiscardTopPreservesStackUnderflowError() {
+  minijs::VM vm;
+  minijs::Chunk chunk;
+  chunk.writeOpcode(minijs::Opcode::Pop);
+  chunk.writeOpcode(minijs::Opcode::Return);
+  try {
+    vm.run(chunk);
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: bytecode stack underflow");
+  }
+  if (!nativeBaselineBackendAvailable()) {
+    return;
+  }
+  runBytecodeProgramOnVm(vm, "function discard() { return 0; }");
+  minijs::BytecodeFunction invalid;
+  // 测试入口先压入 callee；第一次 Pop 删除它，第二次 Pop 遇到空栈。
+  invalid.chunk.writeOpcode(minijs::Opcode::Pop);
+  invalid.chunk.writeOpcode(minijs::Opcode::Pop);
+  invalid.chunk.writeOpcode(minijs::Opcode::Return);
+  const auto compiled = minijs::BaselineCompiler().compile(invalid);
+  EXPECT(compiled.succeeded());
+  try {
+    vm.debugExecuteGlobalFunctionBaselineEntry("discard", {}, compiled.code->entry);
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: bytecode stack underflow");
+  }
+}
+
 void testJitDispatchInlineNegateFallbackPreservesTypeError() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -6393,6 +6469,8 @@ void runBytecodeTests() {
   testNativeNumberLocalsPreservePayloadAndRejectInvalidSlots();
   testNativeNumberConstantsPreserveExactBits();
   testJitNumberConstantsComposeWithOtherConstantTypes();
+  testDiscardedValuesPreserveSurvivorsAcrossExecutors();
+  testDiscardTopPreservesStackUnderflowError();
   testJitDispatchInlineNegateFallbackPreservesTypeError();
   testJitDispatchInlineAddRunsNumberFastPath();
   testJitDispatchInlineAddFallbackPreservesStringConcat();
