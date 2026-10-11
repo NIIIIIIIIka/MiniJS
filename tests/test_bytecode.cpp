@@ -1,5 +1,6 @@
 #include <iostream>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <sstream>
@@ -5586,6 +5587,79 @@ void testNativeNumberLocalsPreservePayloadAndRejectInvalidSlots() {
   }
 }
 
+void testNativeNumberConstantsPreserveExactBits() {
+#if !defined(_WIN32) || (!defined(_M_X64) && !defined(__x86_64__))
+  // 手工常量 chunk 的位编码内嵌测试只针对 Windows x64 后端。
+  return;
+#endif
+  minijs::VM vm;
+  runBytecodeProgramOnVm(vm, "function constant() { return 0; }");
+  const std::uint64_t payloads[] = {
+      0x0000000000000000ULL, 0x8000000000000000ULL, 0x3FF8000000000000ULL,
+      0x7FF0000000000000ULL, 0xFFF0000000000000ULL, 0x0000000000000001ULL,
+      0x7FF8000000001234ULL, 0xFFF8000000005678ULL};
+  for (const std::uint64_t expected : payloads) {
+    double number = 0;
+    std::memcpy(&number, &expected, sizeof(number));
+    minijs::BytecodeFunction function;
+    function.chunk.addConstant(minijs::Value(number));
+    function.chunk.writeOpcode(minijs::Opcode::Constant);
+    function.chunk.writeByte(0);
+    function.chunk.writeOpcode(minijs::Opcode::Return);
+    const auto compiled = minijs::BaselineCompiler().compile(function);
+    EXPECT(compiled.succeeded());
+    const minijs::Value result = vm.debugExecuteGlobalFunctionBaselineEntry(
+        "constant", {}, compiled.code->entry);
+    EXPECT(result.isNumber());
+    const double actual = result.asNumber();
+    std::uint64_t actualBits = 0;
+    std::memcpy(&actualBits, &actual, sizeof(actualBits));
+    EXPECT(actualBits == expected);
+  }
+
+  // 连续压入数字常量，覆盖 vector 扩容后重新计算栈顶地址。
+  minijs::BytecodeFunction many;
+  for (std::uint8_t index = 0; index < 80; ++index) {
+    many.chunk.addConstant(minijs::Value(static_cast<double>(index)));
+    many.chunk.writeOpcode(minijs::Opcode::Constant);
+    many.chunk.writeByte(index);
+  }
+  many.chunk.writeOpcode(minijs::Opcode::Array);
+  many.chunk.writeByte(80);
+  many.chunk.writeOpcode(minijs::Opcode::Return);
+  const auto compiled = minijs::BaselineCompiler().compile(many);
+  EXPECT(compiled.succeeded());
+  const minijs::Value result = vm.debugExecuteGlobalFunctionBaselineEntry(
+      "constant", {}, compiled.code->entry);
+  EXPECT(result.asArray().size() == 80);
+  for (std::size_t index = 0; index < result.asArray().size(); ++index) {
+    EXPECT(result.asArray()[index].equals(minijs::Value(static_cast<double>(index))));
+  }
+}
+
+void testJitNumberConstantsComposeWithOtherConstantTypes() {
+  for (const bool enabled : {false, true}) {
+    minijs::VM vm;
+    vm.setJitEnabled(enabled);
+    vm.setJitCallThreshold(1);
+    const minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+      function constants() {
+        let number = 1.5;
+        if (number == 1.5) { number = number + 2; }
+        return [number, "ok", true, false, null, undefined, 17];
+      }
+      constants();
+      constants();
+    )");
+    EXPECT(result.toString() == "[3.5, ok, true, false, null, undefined, 17]");
+    if (enabled) {
+      const auto* feedback = vm.debugGlobalFunctionJitFeedback("constants");
+      EXPECT(feedback != nullptr);
+      EXPECT(feedback->baselineEntryCount == 1);
+    }
+  }
+}
+
 void testJitDispatchInlineNegateFallbackPreservesTypeError() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -6317,6 +6391,8 @@ void runBytecodeTests() {
   testJitNumberLocalsPreserveTypeChangesAndCapturedSlots();
   testJitNumberLocalsSurviveGrowingRecursiveStack();
   testNativeNumberLocalsPreservePayloadAndRejectInvalidSlots();
+  testNativeNumberConstantsPreserveExactBits();
+  testJitNumberConstantsComposeWithOtherConstantTypes();
   testJitDispatchInlineNegateFallbackPreservesTypeError();
   testJitDispatchInlineAddRunsNumberFastPath();
   testJitDispatchInlineAddFallbackPreservesStringConcat();

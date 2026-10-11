@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <initializer_list>
 #include <limits>
 #include <memory>
@@ -338,6 +339,30 @@ class WindowsX64Emitter {
     emit32(static_cast<std::uint32_t>(sizeof(Value)));
     emit({0x48, 0x03, 0x8B});  // add rcx, [rbx + stackData]
     emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackData)));
+  }
+
+  // 编译时已确认常量是数字；运行时先构造栈槽，再写入 double 的原始位。
+  bool emitNumberConstant(std::uint64_t numberBits, std::uintptr_t pushNumberSlotAddress,
+                          std::string& error) {
+    if (!validateInlineValueSize("number constant", error)) {
+      return false;
+    }
+    // 等价 C++：push(Value(0.0)); refreshBaselineFrameStack(frame);
+    emitMoveFrameToFirstArg();
+    emitLoadHelper(pushNumberSlotAddress);
+    emitCallHelper();
+    const std::size_t failed = emitJumpIfFalsePlaceholder();
+
+    // 等价 C++：rcx = &stack_[stack_.size() - 1]; 地址必须在 helper 后重新读取。
+    emitLoadTopPointer();
+    // 等价 C++：将常量的 64 位编码复制到栈顶 number_，不做整数到 double 转换。
+    emit({0x48, 0xBA});  // mov rdx, numberBits
+    emit64(numberBits);
+    emit({0x48, 0x89, 0x91});  // mov [rcx + numberOffset], rdx
+    emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+    emit({0xB8, 0x01, 0x00, 0x00, 0x00});  // mov eax, 1：本条 opcode 执行成功。
+    // 构造失败时保持 false 返回值，跳过写入，由外层检查退出 native entry。
+    return patchBranchTo(failed, offset(), true, error);
   }
 
   bool emitNumberLocalOrRuntimeCall(std::uint32_t slot, bool read,
@@ -857,6 +882,23 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
 
     switch (instruction.opcode) {
       case Opcode::Constant:
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+        if (function.chunk.constant(instruction.operands[0]).isNumber()) {
+          const double number = function.chunk.constant(instruction.operands[0]).asNumber();
+          std::uint64_t numberBits = 0;
+          static_assert(sizeof(numberBits) == sizeof(number), "double must have 64 bits");
+          // 复制位编码，保留负零和 NaN payload，并避免违反严格别名规则。
+          std::memcpy(&numberBits, &number, sizeof(numberBits));
+          std::string inlineError;
+          if (!emitter.emitNumberConstant(
+                  numberBits, reinterpret_cast<std::uintptr_t>(&minijsBaselinePushNumberSlot),
+                  inlineError)) {
+            return failure(inlineError);
+          }
+          epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+          break;
+        }
+#endif
         emitter.emitMoveFrameToFirstArg();
         emitter.emitMoveU32ToSecondArg(instruction.operands[0]);
         emitter.emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselinePushConstant));
