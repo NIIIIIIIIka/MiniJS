@@ -477,8 +477,8 @@ epilogue:
 | Opcode | 操作数 | Runtime helper | 结果 |
 | --- | --- | --- | --- |
 | `OP_CONSTANT` | `constantIndex` | `minijsBaselinePushConstant(frame, constantIndex)` | 从常量池取值并压入 VM 栈 |
-| `OP_GET_LOCAL` | `slot` | `minijsBaselineGetLocal(frame, slot)` | 读取 `slotStart + slot` 的局部槽并压栈 |
-| `OP_SET_LOCAL` | `slot` | `minijsBaselineSetLocal(frame, slot)` | 把栈顶值写入 `slotStart + slot` 的局部槽，栈顶值保留给后续 `OP_POP` |
+| `OP_GET_LOCAL` | `slot` | Windows x64 Number guard + `minijsBaselinePushNumberSlot(frame)`，否则 `minijsBaselineGetLocal(frame, slot)` | 窄 helper 构造压栈槽并刷新地址，机器码复制数字载荷；非数字或越界走完整 helper |
+| `OP_SET_LOCAL` | `slot` | Windows x64 number fast path，否则 `minijsBaselineSetLocal(frame, slot)` | 目标局部槽和栈顶都是数字时直接复制 double；类型变化走完整 Value 赋值；栈顶保留 |
 | `OP_POP` | 无 | `minijsBaselinePop(frame)` | 弹出栈顶值 |
 | `OP_DEFINE_GLOBAL` | `nameIndex` | `minijsBaselineDefineGlobal(frame, nameIndex)` | 从当前函数常量池读取变量名，把栈顶值弹出并写入 `globals_` |
 | `OP_GET_GLOBAL` | `nameIndex` | `minijsBaselineGetGlobal(frame, nameIndex)` | 从 `globals_` 读取变量并压栈；变量不存在时保留 VM 的运行时错误 |
@@ -750,7 +750,9 @@ CTest 也会通过 `minijs_cli_benchmark_compare_reports_jit_on_and_off` 跑同�
 | `Negate` | 检查栈深度和 Number 标签，直接翻转 double 符号位；未命中调用完整 helper | 完整 helper |
 | `Add`、`Sub`、`Mul`、`Div` | 检查两个 Number，使用 SSE double 运算；成功后同步栈深度；未命中调用完整 helper | 完整 helper |
 | `Mod` | 数字 guard 成功后调用 `minijsBaselineModNumber()`；未命中调用完整 helper | 完整 helper |
-| 常量、local/global、array/index、object/property | 完整 helper | 完整 helper |
+| `GetLocal` | Number guard + 数字槽构造 helper + native 载荷复制；其它情况完整 helper | 完整 helper |
+| `SetLocal` | 源、目标都是 Number 时 native 载荷复制；其它情况完整 helper | 完整 helper |
+| 常量、global、array/index、object/property | 完整 helper | 完整 helper |
 | closure/upvalue、class/method/inherit、call/method-call/super-call | 完整 helper | 完整 helper |
 | `Greater`、`Less` | 数字 guard 成功后使用 `ucomisd` 并写回 Boolean；未命中调用完整 helper | 完整 helper |
 | `Equal` | 数字 guard 成功后使用 `ucomisd` / `sete` / `setnp`；未命中调用完整 helper | 完整 helper |
@@ -790,6 +792,16 @@ CTest 也会通过 `minijs_cli_benchmark_compare_reports_jit_on_and_off` 跑同�
 
 现有 helper 调用是后续 safepoint 设计可以利用的边界，尤其是对象/数组/闭包/类创建和函数调用；`Loop` 的回边 helper 也是未来中断检查的候选位置。目前没有独立 safepoint 表、寄存器根映射或从 native PC 恢复语言帧的协议，不能把这些候选位置当成已经实现的 deopt 点。
 
+### Windows x64 数字局部变量
+
+`GetLocal` 和 `SetLocal` 都先计算 `slotStart + slot`，检查编号加法溢出和栈边界，再访问 Value。越界时交给完整 helper 报错，不提前读取非法地址。
+
+数字 `GetLocal` 仍需调用 `minijsBaselinePushNumberSlot()`。它通过 C++ 构造 `Value(0.0)` 并压栈，刷新 `stackData` 和 `stackSize`。机器码随后重新计算局部槽和栈顶地址，用 `movsd` 复制 double 载荷。不跨 helper 保存裸栈指针，也不把 vector 的预留容量当作已构造 Value；栈槽构造失败时直接退出，不再调用完整 helper 重试。
+
+数字 `SetLocal` 要求目标槽和栈顶都是 Number，直接用 `movsd` 写入目标载荷，不弹栈、不改变类型标签，也不需要同步栈深度。目标槽原先持有对象或字符串、或者源值不是数字时，完整 helper 执行正常 Value 赋值，负责资源生命周期和类型转换。
+
+局部槽可能被 open upvalue 引用，原地修改仍会被闭包读到；当前调用帧的 `slotStart` 也保证普通函数和方法使用各自的槽编号。类型切换、捕获槽更新、方法 receiver 偏移和递归扩容均由回归测试覆盖。
+
 ### 后续 Deopt 需要补什么
 
 真正的 deopt 要在 native 执行中恢复普通 VM，并从正确的 bytecode 位置继续。除了现有 `bytecodeOffsetToNativeOffset` 映射，还需要记录恢复点对应的 bytecode offset、操作发生前还是发生后、有效栈深度、局部变量与操作数的位置，以及嵌套调用帧状态。
@@ -799,5 +811,5 @@ CTest 也会通过 `minijs_cli_benchmark_compare_reports_jit_on_and_off` 跑同�
 ## 下一步
 
 1. 对现有数字快路径集中验证 guard 命中、类型 fallback、零除数、NaN 和嵌套 helper 调用后的栈快照刷新。
-2. 数字比较快路径已覆盖 `Greater`、`Less` 和 `Equal`；[数字循环性能报告](baseline-numeric-benchmark.md) 已记录三组 Release 测量和复现方法，下一步评估局部变量访问快路径。
+2. 数字局部变量快路径已覆盖 `GetLocal`、`SetLocal`；[数字循环性能报告](baseline-numeric-benchmark.md) 记录 Release 前后对照，后续继续评估栈清理和常量压栈的成本。
 3. 引入执行中恢复需求时，再增加 safepoint 元数据和 deopt 帧恢复协议。

@@ -9,6 +9,8 @@ extern "C" bool minijsBaselinePush(minijs::BaselineFrame* frame, const minijs::V
 extern "C" bool minijsBaselinePushConstant(minijs::BaselineFrame* frame,
                                             std::uint32_t constantIndex);
 extern "C" bool minijsBaselineGetLocal(minijs::BaselineFrame* frame, std::uint32_t slot);
+// 构造数字压栈槽并刷新栈快照，供 native GetLocal 写入载荷。
+extern "C" bool minijsBaselinePushNumberSlot(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineSetLocal(minijs::BaselineFrame* frame, std::uint32_t slot);
 extern "C" bool minijsBaselinePop(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineDefineGlobal(minijs::BaselineFrame* frame,

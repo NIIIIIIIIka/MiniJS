@@ -65,6 +65,20 @@ failed=0
 
 CTest 的 `minijs_cli_numeric_benchmark_enters_baseline` 使用一轮无预热 smoke 测试，确认脚本能完成 JIT on/off 对照并产生非零 baseline 入口计数。CLI 自身检查两种模式的计算结果相等。测试不设置耗时或加速比门槛，避免机器性能和调度波动导致失败。
 
-代码中 `GetLocal`、`SetLocal` 和栈操作仍调用完整 runtime helper；算术与比较快路径也仍需要栈深度同步。下一步可以从 Windows x64 的 Number-only `GetLocal` / `SetLocal` 快路径开始，保持容量检查、GC 根和栈快照契约，使用本脚本进行修改前后对照。
+Windows x64 已加入 Number-only `GetLocal` / `SetLocal` 快路径。`GetLocal` 仍由窄 helper 构造压栈槽，随后 native 代码复制 double；`SetLocal` 在源和目标都是数字时直接复制载荷，避免完整 Value 赋值。非数字、类型变化和越界继续调用原来的 helper。
 
-局部变量 helper 是从代码得出的优化候选，尚未通过 profiler 确认为最大热点。实施时应记录前后 Release 数据，确认减少 helper 调用确实带来收益。
+### 数字局部变量修改前后对照
+
+从修改前提交 `6a1b5fe` 隔离构建同编译器、同 `-O3 -DNDEBUG` 配置的可执行文件，与本次修改后的 Release 版本交替执行。每个版本、每组均为 3 轮预热和 15 轮采样。第一、三组先运行修改前版本，第二组先运行修改后版本。
+
+| 对照组 | 修改前 JIT on | 修改后 JIT on | 前 / 后 | 修改前 JIT off | 修改后 JIT off |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 110.341 ms | 101.880 ms | 1.083x | 179.899 ms | 178.823 ms |
+| 2 | 108.952 ms | 97.631 ms | 1.116x | 191.756 ms | 180.352 ms |
+| 3 | 105.083 ms | 95.682 ms | 1.098x | 183.348 ms | 183.548 ms |
+
+三组 JIT on 运行中位数分别降低约 7.7%、10.4%、8.9%。所有运行结果均为 `125025000`，baseline 入口计数仍为 19。本次同机对照支持保留该优化；普通 VM 计时也有波动，数据不能当作其它机器或工作负载上的固定收益。
+
+隔离的修改前构建位于本机忽略的 `build-verify-release/numeric-before-build` 目录，不参与源码提交。最初的三组 JIT 开关数据和本次对照在不同时间执行，绝对耗时不能直接交叉归因；评价本次修改应使用上表的配对数据。
+
+下一步候选是栈清理和常量压栈。它们仍有 helper 成本，但尚未通过 profiler 确认为最大热点，实施后需要继续记录同配置前后对照。

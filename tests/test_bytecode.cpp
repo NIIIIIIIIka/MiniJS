@@ -1,4 +1,5 @@
 #include <iostream>
+#include <cmath>
 #include <limits>
 #include <memory>
 #include <sstream>
@@ -5476,6 +5477,115 @@ void testJitInlineEqualFallbackAndBranching() {
   }
 }
 
+void testJitNumberLocalsPreserveTypeChangesAndCapturedSlots() {
+  for (const bool enabled : {false, true}) {
+    minijs::VM vm;
+    vm.setJitEnabled(enabled);
+    vm.setJitCallThreshold(1);
+    const minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+      function locals() {
+        let value = 1;
+        function read() { return value; }
+        value = 42;
+        let number = read();
+        value = {x: 7};
+        let object = read();
+        value = 9;
+        let final = read();
+        value = "ok";
+        return [number, object.x, final, value];
+      }
+      class Box {
+        read(n) { n = n + 1; let copy = n; return copy; }
+      }
+      locals();
+      let box = Box();
+      box.read(1);
+      [locals(), box.read(40)];
+    )");
+    EXPECT(result.toString() == "[[42, 7, 9, ok], 41]");
+    if (enabled) {
+      const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("locals");
+      EXPECT(feedback != nullptr);
+      EXPECT(feedback->baselineEntryCount == 1);
+    }
+  }
+}
+
+void testJitNumberLocalsSurviveGrowingRecursiveStack() {
+  for (const bool enabled : {false, true}) {
+    minijs::VM vm;
+    vm.setJitEnabled(enabled);
+    vm.setJitCallThreshold(1);
+    const minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+      function recurse(n) {
+        if (n == 0) { return 0; }
+        let copy = n;
+        let child = recurse(n - 1);
+        copy = copy + child;
+        return copy;
+      }
+      recurse(1);
+      recurse(80);
+    )");
+    EXPECT(result.equals(minijs::Value(3240.0)));
+    if (enabled) {
+      const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("recurse");
+      EXPECT(feedback != nullptr);
+      EXPECT(feedback->baselineEntryCount > 80);
+    }
+  }
+}
+
+void testNativeNumberLocalsPreservePayloadAndRejectInvalidSlots() {
+  if (!nativeBaselineBackendAvailable()) {
+    return;
+  }
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+  runBytecodeProgramOnVm(vm, R"(
+    function copy(value) { let result = 1; result = value; return result; }
+    copy(1);
+  )");
+  const auto* code = vm.debugGlobalFunctionBaselineCode("copy");
+  EXPECT(code != nullptr);
+  EXPECT(code->entry != nullptr);
+  for (const double value : {0.0, -0.0, std::numeric_limits<double>::infinity(),
+                             -std::numeric_limits<double>::infinity(),
+                             std::numeric_limits<double>::quiet_NaN()}) {
+    const minijs::Value result = vm.debugExecuteGlobalFunctionBaselineEntry(
+        "copy", {minijs::Value(value)}, code->entry);
+    EXPECT(result.isNumber());
+    if (std::isnan(value)) {
+      EXPECT(std::isnan(result.asNumber()));
+    } else {
+      EXPECT(result.asNumber() == value);
+      EXPECT(std::signbit(result.asNumber()) == std::signbit(value));
+    }
+  }
+  for (const minijs::Opcode opcode : {minijs::Opcode::GetLocal, minijs::Opcode::SetLocal}) {
+    minijs::BytecodeFunction invalid;
+    invalid.params = {"value"};
+    if (opcode == minijs::Opcode::SetLocal) {
+      invalid.chunk.writeOpcode(minijs::Opcode::GetLocal);
+      invalid.chunk.writeByte(0);
+    }
+    invalid.chunk.writeOpcode(opcode);
+    invalid.chunk.writeByte(255);
+    invalid.chunk.writeOpcode(minijs::Opcode::Return);
+    const auto compiled = minijs::BaselineCompiler().compile(invalid);
+    EXPECT(compiled.succeeded());
+    try {
+      vm.debugExecuteGlobalFunctionBaselineEntry("copy", {minijs::Value(1.0)},
+                                                 compiled.code->entry);
+      EXPECT(false);
+    } catch (const minijs::RuntimeError& error) {
+      EXPECT(std::string_view(error.what()) == "RuntimeError: local slot out of bounds");
+    }
+  }
+}
+
 void testJitDispatchInlineNegateFallbackPreservesTypeError() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -6204,6 +6314,9 @@ void runBytecodeTests() {
   testBaselineNumberComparisonsHandleSpecialValues();
   testJitNumberComparisonsComposeWithControlFlowAndCalls();
   testJitInlineEqualFallbackAndBranching();
+  testJitNumberLocalsPreserveTypeChangesAndCapturedSlots();
+  testJitNumberLocalsSurviveGrowingRecursiveStack();
+  testNativeNumberLocalsPreservePayloadAndRejectInvalidSlots();
   testJitDispatchInlineNegateFallbackPreservesTypeError();
   testJitDispatchInlineAddRunsNumberFastPath();
   testJitDispatchInlineAddFallbackPreservesStringConcat();

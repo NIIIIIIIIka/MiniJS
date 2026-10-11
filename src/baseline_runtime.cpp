@@ -104,6 +104,21 @@ extern "C" bool minijsBaselineGetLocal(minijs::BaselineFrame* frame, std::uint32
   }
 }
 
+extern "C" bool minijsBaselinePushNumberSlot(minijs::BaselineFrame* frame) {
+  if (!frameCanRun(frame)) {
+    return false;
+  }
+  try {
+    return frame->vm->baselineRuntimePushNumberSlot(*frame);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
+  } catch (...) {
+    return markFailed(frame);
+  }
+}
+
 extern "C" bool minijsBaselineSetLocal(minijs::BaselineFrame* frame, std::uint32_t slot) {
   if (!frameCanRun(frame)) {
     return false;

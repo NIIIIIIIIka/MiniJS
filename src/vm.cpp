@@ -1137,6 +1137,14 @@ bool VM::baselineRuntimeGetLocal(BaselineFrame& frame, std::uint32_t slot) {
   return true;
 }
 
+bool VM::baselineRuntimePushNumberSlot(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  // 先构造完整 Value；机器码只负责覆盖数字载荷，不访问未构造的容量。
+  push(Value(0.0));
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
 bool VM::baselineRuntimeSetLocal(BaselineFrame& frame, std::uint32_t slot) {
   validateBaselineRuntimeFrame(frame);
   const std::size_t absoluteSlot = frame.slotStart + slot;

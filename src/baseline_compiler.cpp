@@ -314,6 +314,93 @@ class WindowsX64Emitter {
     return patchOffset;
   }
 
+  // slot 是相对当前调用帧的编号；rax 保存绝对槽编号，保留加法进位供 guard 检查。
+  void emitLoadLocalAddress(std::uint32_t slot) {
+    emit({0x48, 0x8B, 0x83});  // mov rax, [rbx + slotStart]
+    emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, slotStart)));
+    emit({0x48, 0x05});  // add rax, slot
+    emit32(slot);
+  }
+
+  void emitLocalPointerFromIndex() {
+    emit({0x48, 0x69, 0xC0});  // imul rax, rax, sizeof(Value)
+    emit32(static_cast<std::uint32_t>(sizeof(Value)));
+    emit({0x48, 0x8B, 0x93});  // mov rdx, [rbx + stackData]
+    emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackData)));
+    emit({0x48, 0x01, 0xC2});  // add rdx, rax
+  }
+
+  void emitLoadTopPointer() {
+    emit({0x48, 0x8B, 0x8B});  // mov rcx, [rbx + stackSize]
+    emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackSize)));
+    emit({0x48, 0xFF, 0xC9});  // dec rcx
+    emit({0x48, 0x69, 0xC9});  // imul rcx, rcx, sizeof(Value)
+    emit32(static_cast<std::uint32_t>(sizeof(Value)));
+    emit({0x48, 0x03, 0x8B});  // add rcx, [rbx + stackData]
+    emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackData)));
+  }
+
+  bool emitNumberLocalOrRuntimeCall(std::uint32_t slot, bool read,
+                                   std::uintptr_t helperAddress,
+                                   std::uintptr_t pushNumberSlotAddress,
+                                   std::string& error) {
+    if (!validateInlineValueSize("local access", error)) {
+      return false;
+    }
+    std::vector<std::size_t> fallbacks;
+    emitLoadLocalAddress(slot);
+    fallbacks.push_back(emitJbPlaceholder());  // add 的进位表示绝对槽编号溢出。
+    emit({0x48, 0x3B, 0x83});  // cmp rax, [rbx + stackSize]
+    emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackSize)));
+    fallbacks.push_back(emitJaePlaceholder());
+    emitLocalPointerFromIndex();
+    emit({0x81, 0xBA});  // cmp dword ptr [rdx + typeOffset], Number
+    emit32(static_cast<std::uint32_t>(Value::typeOffset()));
+    emit32(Value::numberTypeTag());
+    fallbacks.push_back(emitJnePlaceholder());
+
+    std::size_t pushFailed = 0;
+    if (read) {
+      // vector 扩容和 Value 构造仍由 C++ 管理，调用后必须重算地址。
+      emitMoveFrameToFirstArg();
+      emitLoadHelper(pushNumberSlotAddress);
+      emitCallHelper();
+      pushFailed = emitJumpIfFalsePlaceholder();
+      emitLoadLocalAddress(slot);
+      emitLocalPointerFromIndex();
+    }
+    // 有效的局部槽保证栈非空；写入还必须确认栈顶也是 Number。
+    emitLoadTopPointer();
+    if (!read) {
+      emit({0x81, 0xB9});  // cmp dword ptr [rcx + typeOffset], Number
+      emit32(static_cast<std::uint32_t>(Value::typeOffset()));
+      emit32(Value::numberTypeTag());
+      fallbacks.push_back(emitJnePlaceholder());
+    }
+    emit({0xF2, 0x0F, 0x10, static_cast<std::uint8_t>(read ? 0x82 : 0x81)});
+    emit32(static_cast<std::uint32_t>(Value::numberOffset()));  // movsd xmm0, [源 + numberOffset]
+    emit({0xF2, 0x0F, 0x11, static_cast<std::uint8_t>(read ? 0x81 : 0x82)});
+    emit32(static_cast<std::uint32_t>(Value::numberOffset()));  // movsd [目标 + numberOffset], xmm0
+    emit({0xB8, 0x01, 0x00, 0x00, 0x00});  // mov eax, 1
+    const std::size_t done = emitJumpPlaceholder();
+
+    const std::size_t fallback = offset();
+    for (const std::size_t patch : fallbacks) {
+      if (!patchBranchTo(patch, fallback, true, error)) {
+        return false;
+      }
+    }
+    emitMoveFrameToFirstArg();
+    emitMoveU32ToSecondArg(slot);
+    emitLoadHelper(helperAddress);
+    emitCallHelper();
+    const std::size_t end = offset();
+    if (read && !patchBranchTo(pushFailed, end, true, error)) {
+      return false;
+    }
+    return patchBranchTo(done, end, false, error);
+  }
+
   // 如果栈顶是个数字，就把它变成负数；否则，回退到运行时。
   bool emitInlineNumberNegateOrRuntimeCall(std::uintptr_t functionAddress, std::string& error) {
     // 准备一个“符号位掩码”。double 的最高位就是符号位，异或 signMask = 取负。
@@ -657,6 +744,13 @@ class WindowsX64Emitter {
   }
 
   // 生成 CF=1 时跳转的占位符，用于无符号比较后的 below 分支。
+  std::size_t emitJaePlaceholder() {
+    const std::size_t patchOffset = offset();
+    emit({0x0F, 0x83});  // jae rel32
+    emit32(0);
+    return patchOffset;
+  }
+
   std::size_t emitJbPlaceholder() {
     const std::size_t patchOffset = offset();
     emit({0x0F, 0x82});  // jb rel32
@@ -771,18 +865,30 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
         break;
 
       case Opcode::GetLocal:
-        emitRuntimeCallWithU32(emitter,
-                               reinterpret_cast<std::uintptr_t>(&minijsBaselineGetLocal),
-                               instruction.operands[0]);
-        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
-        break;
-
       case Opcode::SetLocal:
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+      {
+        const bool read = instruction.opcode == Opcode::GetLocal;
+        std::string inlineError;
+        if (!emitter.emitNumberLocalOrRuntimeCall(
+                instruction.operands[0], read,
+                read ? reinterpret_cast<std::uintptr_t>(&minijsBaselineGetLocal)
+                     : reinterpret_cast<std::uintptr_t>(&minijsBaselineSetLocal),
+                reinterpret_cast<std::uintptr_t>(&minijsBaselinePushNumberSlot), inlineError)) {
+          return failure(inlineError);
+        }
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        break;
+      }
+#else
         emitRuntimeCallWithU32(emitter,
-                               reinterpret_cast<std::uintptr_t>(&minijsBaselineSetLocal),
+                               instruction.opcode == Opcode::GetLocal
+                                   ? reinterpret_cast<std::uintptr_t>(&minijsBaselineGetLocal)
+                                   : reinterpret_cast<std::uintptr_t>(&minijsBaselineSetLocal),
                                instruction.operands[0]);
         epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
         break;
+#endif
 
       case Opcode::Pop:
         emitRuntimeCall(emitter, reinterpret_cast<std::uintptr_t>(&minijsBaselinePop));
