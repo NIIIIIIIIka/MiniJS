@@ -5367,8 +5367,10 @@ void testBaselineNumberComparisonsHandleSpecialValues() {
   runBytecodeProgramOnVm(vm, R"(
     function greater(a, b) { return a > b; }
     function less(a, b) { return a < b; }
+    function equal(a, b) { return a == b; }
     greater(2, 1);
     less(1, 2);
+    equal(1, 1);
   )");
 
   const double nan = std::numeric_limits<double>::quiet_NaN();
@@ -5377,13 +5379,14 @@ void testBaselineNumberComparisonsHandleSpecialValues() {
       {1, 2}, {2, 1}, {2, 2}, {-2, -1}, {0.0, -0.0}, {-0.0, 0.0},
       {inf, 1}, {-inf, 1}, {1, inf}, {1, -inf}, {inf, inf}, {-inf, inf},
       {nan, 1}, {1, nan}, {nan, nan}};
-  for (const std::string name : {"greater", "less"}) {
+  for (const std::string name : {"greater", "less", "equal"}) {
     const minijs::BaselineCode* code = vm.debugGlobalFunctionBaselineCode(name);
     EXPECT(code != nullptr);
     EXPECT(code->entry != nullptr);
     for (const auto& pair : pairs) {
       const std::vector<minijs::Value> args = {minijs::Value(pair[0]), minijs::Value(pair[1])};
-      const bool expected = name == "greater" ? pair[0] > pair[1] : pair[0] < pair[1];
+      const bool expected = name == "equal" ? pair[0] == pair[1]
+                            : name == "greater" ? pair[0] > pair[1] : pair[0] < pair[1];
       const minijs::Value decoded = vm.debugExecuteGlobalFunctionBaseline(name, args);
       const minijs::Value native =
           vm.debugExecuteGlobalFunctionBaselineEntry(name, args, code->entry);
@@ -5395,9 +5398,12 @@ void testBaselineNumberComparisonsHandleSpecialValues() {
     for (const auto& args : {std::vector<minijs::Value>{minijs::Value(std::string("x")), minijs::Value(1.0)},
                             std::vector<minijs::Value>{minijs::Value(1.0), minijs::Value(std::string("x"))}}) {
       try {
-        vm.debugExecuteGlobalFunctionBaselineEntry(name, args, code->entry);
-        EXPECT(false);
+        const minijs::Value result =
+            vm.debugExecuteGlobalFunctionBaselineEntry(name, args, code->entry);
+        EXPECT(name == "equal");
+        EXPECT(result.equals(minijs::Value(false)));
       } catch (const minijs::RuntimeError& error) {
+        EXPECT(name != "equal");
         EXPECT(std::string_view(error.what()) == "RuntimeError: value is not a number");
       }
     }
@@ -5428,6 +5434,44 @@ void testJitNumberComparisonsComposeWithControlFlowAndCalls() {
       const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("count");
       EXPECT(feedback != nullptr);
       EXPECT(feedback->baselineEntryCount == 1);
+    }
+  }
+}
+
+void testJitInlineEqualFallbackAndBranching() {
+  for (const bool enabled : {false, true}) {
+    minijs::VM vm;
+    vm.setJitEnabled(enabled);
+    vm.setJitCallThreshold(1);
+    const minijs::Value result = runBytecodeProgramOnVm(vm, R"(
+      function equal(a, b) { return a == b; }
+      function branch(a, b) {
+        if (equal(a, b)) { return 7; }
+        return 9;
+      }
+      equal(1, 1);
+      branch(1, 1);
+      let object = {x: 1};
+      let array = [1];
+      function identity() { return 1; }
+      [equal(2, 2), equal(2, 3), equal("x", "x"), equal("x", "y"),
+       equal(true, true), equal(true, false), equal(null, null),
+       equal(undefined, undefined), equal(null, undefined),
+       equal(object, object), equal(object, {x: 1}),
+       equal(array, array), equal(array, [1]),
+       equal(identity, identity), equal(1, true), equal("1", 1),
+       equal(1, "1"), branch(4, 4), branch(4, 5)];
+    )");
+    EXPECT(result.toString() ==
+           "[true, false, true, false, true, false, true, true, false, "
+           "true, false, true, false, true, false, false, false, 7, 9]");
+    if (enabled) {
+      const minijs::JitFeedback* feedback = vm.debugGlobalFunctionJitFeedback("equal");
+      EXPECT(feedback != nullptr);
+      EXPECT(feedback->baselineEntryCount > 0);
+      const minijs::JitFeedback* branchFeedback = vm.debugGlobalFunctionJitFeedback("branch");
+      EXPECT(branchFeedback != nullptr);
+      EXPECT(branchFeedback->baselineEntryCount == 2);
     }
   }
 }
@@ -6159,6 +6203,7 @@ void runBytecodeTests() {
   testJitDispatchComparisonHelpersPreserveTypeErrors();
   testBaselineNumberComparisonsHandleSpecialValues();
   testJitNumberComparisonsComposeWithControlFlowAndCalls();
+  testJitInlineEqualFallbackAndBranching();
   testJitDispatchInlineNegateFallbackPreservesTypeError();
   testJitDispatchInlineAddRunsNumberFastPath();
   testJitDispatchInlineAddFallbackPreservesStringConcat();

@@ -388,7 +388,7 @@ fallback:
 
 ### Windows x64 数字比较快路径
 
-`OP_GREATER` 和 `OP_LESS` 先检查栈深度及两个操作数的 Number 标签。guard 未命中时调用原来的完整 helper，保留类型错误；成功时直接比较 double，把左操作数槽改为 Boolean，再减少一个栈槽并调用 `minijsBaselineSyncStackSize()`。
+`OP_GREATER`、`OP_LESS` 和 `OP_EQUAL` 先检查栈深度及两个操作数的 Number 标签。guard 未命中时调用原来的完整 helper，保留类型错误或非数字相等语义；成功时直接比较 double，把左操作数槽改为 Boolean，再减少一个栈槽并调用 `minijsBaselineSyncStackSize()`。
 
 ```asm
 movsd xmm0, [rdx + Value::numberOffset]   ; rdx 指向左操作数
@@ -409,7 +409,15 @@ setnp cl                                ; PF=0，比较结果必须有序
 and al, cl                              ; 排除 NaN 的 unordered 情况
 ```
 
-任一操作数为 NaN 时，`ucomisd` 会设置 CF、ZF、PF，因此 `seta` 自然得到 false，而小于比较需要额外用 `setnp` 排除 NaN。`+0` 和 `-0` 比较相等，两种严格比较都为 false；无穷大遵循 double 比较规则。
+相等比较使用：
+
+```asm
+sete al                                 ; ZF=1，包括 unordered 情况
+setnp cl                                ; PF=0，排除 NaN
+and al, cl                              ; 只有有序且相等时为 true
+```
+
+任一操作数为 NaN 时，`ucomisd` 会设置 CF、ZF、PF，因此 `seta` 自然得到 false，而小于和相等比较需要额外用 `setnp` 排除 NaN。`+0` 和 `-0` 比较相等，两种严格比较都为 false，相等比较为 true；无穷大遵循 double 比较规则。这与 `Value::equals()` 使用的 double `==` 一致。
 
 结果写回时分别更新 `Value::booleanOffset()` 和 `Value::typeOffset()`。小于路径中的 `setnp cl` 会改写 rcx 的低字节，此时右操作数地址已不再使用；左操作数地址仍保存在 rdx。两个输入经过 Number guard，不持有需要释放的对象资源，因此可以原地转换为 Boolean。
 
@@ -499,7 +507,7 @@ epilogue:
 | `OP_DIV` | 无 | Windows x64 number fast path，否则 `minijsBaselineDiv(frame)` | 两个操作数都是数字且除数非 0 时直接执行 double 除法并同步栈高度；否则回退 helper 保留 VM 语义 |
 | `OP_MOD` | 无 | Windows x64 guarded number helper，否则 `minijsBaselineMod(frame)` | 两个操作数都是数字且除数非 0 时调用 `minijsBaselineModNumber(frame)`；否则回退 helper 保留 VM 语义 |
 | `OP_NEGATE` | 无 | Windows x64 number fast path，否则 `minijsBaselineNegate(frame)` | 栈顶是数字时直接翻转符号位；否则回退 helper 保留 VM 语义 |
-| `OP_EQUAL` | 无 | `minijsBaselineEqual(frame)` | 弹出两个值，通过 `Value::equals()` 比较后压入布尔结果 |
+| `OP_EQUAL` | 无 | Windows x64 number fast path，否则 `minijsBaselineEqual(frame)` | 数字 guard 成功时通过 `ucomisd` / `sete` / `setnp` 写回 Boolean 并同步栈；否则通过 `Value::equals()` 保留字符串、布尔值和引用身份比较语义 |
 | `OP_GREATER` | 无 | Windows x64 number fast path，否则 `minijsBaselineGreater(frame)` | 数字 guard 成功时通过 `ucomisd` / `seta` 写回 Boolean 并同步栈；否则回退完整 helper |
 | `OP_LESS` | 无 | Windows x64 number fast path，否则 `minijsBaselineLess(frame)` | 数字 guard 成功时通过 `ucomisd` / `setb` / `setnp` 写回 Boolean 并同步栈，NaN 结果为 false；否则回退完整 helper |
 | `OP_NOT` | 无 | `minijsBaselineNot(frame)` | 弹出一个值，通过 `isTruthy()` 取反后压入布尔结果 |
@@ -745,7 +753,8 @@ CTest 也会通过 `minijs_cli_benchmark_compare_reports_jit_on_and_off` 跑同�
 | 常量、local/global、array/index、object/property | 完整 helper | 完整 helper |
 | closure/upvalue、class/method/inherit、call/method-call/super-call | 完整 helper | 完整 helper |
 | `Greater`、`Less` | 数字 guard 成功后使用 `ucomisd` 并写回 Boolean；未命中调用完整 helper | 完整 helper |
-| `Equal`、`Not` | 完整 helper | 完整 helper |
+| `Equal` | 数字 guard 成功后使用 `ucomisd` / `sete` / `setnp`；未命中调用完整 helper | 完整 helper |
+| `Not` | 完整 helper | 完整 helper |
 | `Jump` | native 分支 | native 分支 |
 | `JumpIfFalse` | truthiness helper 加 native 分支 | truthiness helper 加 native 分支 |
 | `Loop` | 回边计数 helper 加 native 分支 | 回边计数 helper 加 native 分支 |
@@ -790,5 +799,5 @@ CTest 也会通过 `minijs_cli_benchmark_compare_reports_jit_on_and_off` 跑同�
 ## 下一步
 
 1. 对现有数字快路径集中验证 guard 命中、类型 fallback、零除数、NaN 和嵌套 helper 调用后的栈快照刷新。
-2. 数字比较快路径已覆盖 `Greater` 和 `Less`；下一步评估 `Equal` 的数字快路径，并保留完整引用和字符串相等语义。
+2. 数字比较快路径已覆盖 `Greater`、`Less` 和 `Equal`；下一步测量算术与比较循环的性能，再评估局部变量访问快路径。
 3. 引入执行中恢复需求时，再增加 safepoint 元数据和 deopt 帧恢复协议。

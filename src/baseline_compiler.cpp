@@ -498,7 +498,7 @@ class WindowsX64Emitter {
   // 数字比较将左操作数槽改为 Boolean，再同步二元运算的弹栈效果。
   bool emitInlineNumberComparisonOrRuntimeCall(std::uintptr_t functionAddress,
                                                std::uintptr_t syncStackSizeAddress,
-                                               bool greater,
+                                               Opcode comparison,
                                                std::string& error) {
     BinaryNumberGuardPatches patches;
     if (!emitLoadBinaryNumberOperands(patches, "inline comparison", error)) {
@@ -510,12 +510,16 @@ class WindowsX64Emitter {
     emit32(static_cast<std::uint32_t>(Value::numberOffset()));
     emit({0x66, 0x0F, 0x2E, 0x81});  // ucomisd xmm0, [rcx + numberOffset]
     emit32(static_cast<std::uint32_t>(Value::numberOffset()));
-    if (greater) {
+    if (comparison == Opcode::Greater) {
       emit({0x0F, 0x97, 0xC0});  // seta al：CF=0 且 ZF=0，NaN 时自然为 false。
     } else {
-      emit({0x0F, 0x92, 0xC0});  // setb al：CF=1，包括 unordered。
+      if (comparison == Opcode::Equal) {
+        emit({0x0F, 0x94, 0xC0});  // sete al：ZF=1，包括 unordered。
+      } else {
+        emit({0x0F, 0x92, 0xC0});  // setb al：CF=1，包括 unordered。
+      }
       emit({0x0F, 0x9B, 0xC1});  // setnp cl：PF=0，排除任一操作数为 NaN。
-      emit({0x20, 0xC8});        // and al, cl：只有有序且小于时为 true。
+      emit({0x20, 0xC8});        // and al, cl：排除 NaN，相等或小于条件才有效。
     }
     emit({0x88, 0x82});  // mov byte ptr [rdx + booleanOffset], al
     emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
@@ -1047,28 +1051,27 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
 #endif
 
       case Opcode::Equal:
-        emitRuntimeCall(emitter, reinterpret_cast<std::uintptr_t>(&minijsBaselineEqual));
-        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
-        break;
-
       case Opcode::Greater:
       case Opcode::Less:
 #if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
       {
         std::string inlineError;
-        const bool greater = instruction.opcode == Opcode::Greater;
+        const auto helper = instruction.opcode == Opcode::Equal ? &minijsBaselineEqual
+                            : instruction.opcode == Opcode::Greater ? &minijsBaselineGreater
+                                                                    : &minijsBaselineLess;
         if (!emitter.emitInlineNumberComparisonOrRuntimeCall(
-                greater ? reinterpret_cast<std::uintptr_t>(&minijsBaselineGreater)
-                        : reinterpret_cast<std::uintptr_t>(&minijsBaselineLess),
+                reinterpret_cast<std::uintptr_t>(helper),
                 reinterpret_cast<std::uintptr_t>(&minijsBaselineSyncStackSize),
-                greater, inlineError)) {
+                instruction.opcode, inlineError)) {
           return failure(inlineError);
         }
         epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
         break;
       }
 #else
-        emitRuntimeCall(emitter, instruction.opcode == Opcode::Greater
+        emitRuntimeCall(emitter, instruction.opcode == Opcode::Equal
+                                     ? reinterpret_cast<std::uintptr_t>(&minijsBaselineEqual)
+                                 : instruction.opcode == Opcode::Greater
                                      ? reinterpret_cast<std::uintptr_t>(&minijsBaselineGreater)
                                      : reinterpret_cast<std::uintptr_t>(&minijsBaselineLess));
         epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
