@@ -1273,6 +1273,19 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
     code->bytecodeOffsetToNativeOffset[bytecodeOffset] = emitter.offset();
 
 #if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+    if (instruction.opcode == Opcode::GetLocal && index + 1 < code->instructions.size() &&
+        code->instructions[index + 1].opcode == Opcode::Return &&
+        !branchTargets[verification.instructionOffsets[index + 1]]) {
+      emitRuntimeCallWithU32(emitter, reinterpret_cast<std::uintptr_t>(&minijsBaselineReturnLocal),
+                             instruction.operands[0]);
+      // 成功已完成返回；失败已记录异常，两种情况都进入统一 epilogue。
+      epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+      epiloguePatches.push_back({emitter.emitJumpPlaceholder(), false});
+      code->bytecodeOffsetToNativeOffset[verification.instructionOffsets[index + 1]] =
+          code->bytecodeOffsetToNativeOffset[bytecodeOffset];
+      ++index;
+      continue;
+    }
     if (instruction.opcode == Opcode::GetLocal && index + 4 < code->instructions.size()) {
       const auto& rightOperand = code->instructions[index + 1];
       const auto& arithmetic = code->instructions[index + 2];

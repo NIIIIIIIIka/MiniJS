@@ -811,6 +811,20 @@ extern "C" bool minijsBaselineSyncStackSize(minijs::BaselineFrame* frame) {
   }
 }
 
+extern "C" bool minijsBaselineReturnLocal(minijs::BaselineFrame* frame, std::uint32_t slot) {
+  if (!frameCanRun(frame)) return false;
+  try {
+    HelperProfileScope profile(*frame->vm, __func__);
+    return frame->vm->baselineRuntimeReturnLocal(*frame, slot);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
+  } catch (...) {
+    return markFailed(frame);
+  }
+}
+
 extern "C" bool minijsBaselineReturn(minijs::BaselineFrame* frame) {
   if (!frameCanRun(frame)) {
     return false;

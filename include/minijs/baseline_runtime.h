@@ -66,3 +66,4 @@ extern "C" std::uint8_t minijsBaselinePeekTruthy(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineRecordLoopBackedge(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineSyncStackSize(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineReturn(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineReturnLocal(minijs::BaselineFrame* frame, std::uint32_t slot);

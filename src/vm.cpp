@@ -1496,7 +1496,19 @@ bool VM::baselineRuntimeSyncStackSize(BaselineFrame& frame) {
 
 bool VM::baselineRuntimeReturn(BaselineFrame& frame) {
   validateBaselineRuntimeFrame(frame);
-  Value result = pop();
+  return finishBaselineReturn(frame, pop());
+}
+
+bool VM::baselineRuntimeReturnLocal(BaselineFrame& frame, std::uint32_t slot) {
+  validateBaselineRuntimeFrame(frame);
+  if (frame.slotStart >= stack_.size() || slot >= stack_.size() - frame.slotStart) {
+    throw RuntimeError("local slot out of bounds");
+  }
+  // 按值保存局部值，再关闭 upvalue 和缩栈；不能把即将失效的栈引用传给收尾。
+  return finishBaselineReturn(frame, stack_[frame.slotStart + slot]);
+}
+
+bool VM::finishBaselineReturn(BaselineFrame& frame, Value result) {
   if (frame.returnsReceiver) {
     result = stack_[frame.slotStart];
   }

@@ -1163,6 +1163,42 @@ mov eax, 1
 
 专项测试覆盖七种运算、特殊浮点数、负零、源值不变、别名、连续 80 次构造导致的扩容、非数字 fallback、对象身份、GC、动态除零、独立运算入口及非法右槽。新增 `examples/baseline_local_expression_benchmark.js` 和 CLI baseline smoke 测试，配对数据见 [性能报告](baseline-numeric-benchmark.md)。
 
+### Windows x64 直接返回局部值
+
+相邻的 `GetLocal slot; Return`，且 Return 不是独立跳转入口时，合并为一次 `minijsBaselineReturnLocal(frame, slot)` 调用。它支持所有 Value 类型，不只是 Number；无需先把局部值复制到临时栈顶，再立即 pop 取出。
+
+等价 C++ 如下：
+
+```cpp
+// 检查局部槽的合法性，错误保持 "local slot out of bounds"。
+Value result = stack_[frame.slotStart + slot]; // 按值保存，不能留下栈引用
+// 与普通 Return 复用同一个收尾函数：
+if (frame.returnsReceiver) result = stack_[frame.slotStart];
+closeUpvalues(frame.slotStart);
+stack_.resize(frame.returnSlot);
+push(result);
+frame.completed = true;
+refreshBaselineFrameStack(frame);
+```
+
+实际实现还在缩栈前检查 returnSlot 的有效范围，失败不继续关闭或整理。普通 `baselineRuntimeReturn()` 仍从栈顶 pop，但同样进入 `finishBaselineReturn()`，保持返回槽、receiver、upvalue 关闭与完成协议一致。
+
+调用机器码仍为标准 Windows x64 helper ABI：
+
+```asm
+mov rcx, rbx                         ; BaselineFrame*
+mov edx, slot                        ; 相对当前帧的局部槽编号
+mov rax, returnLocalHelper
+call rax
+; helper 失败跳到 epilogue，成功已 completed，也跳到 epilogue。
+```
+
+局部 Value 的副本必须在关闭 upvalue 和缩栈之前保存；闭包、对象、实例等仍保持运行时身份。此过程不分配新的 GC 对象，C++ Value 复制或 vector 压栈可能分配宿主内存；它不是绕过 GC 根协议的新返回通道。返回到宿主的 copyOutValue 规则不变。
+
+局部槽非法时使用原有错误文本，C ABI 捕获异常并记录 failed/errorMessage。若 Return 是独立分支目标，不合并，仍按原有栈顶 Return 语义执行。两个 decoded 指令保留，native offset 指向同一合并单元；ARM64/decoded 仍逐条执行，只复用一致的 VM 收尾逻辑。
+
+测试覆盖数字与特殊值、字符串/数组/对象、返回闭包后的 GC、方法返回 this 和对象身份、receiver 返回规则、合并 helper 计数、非法局部槽及独立 Return 入口。`examples/baseline_local_return_benchmark.js` 专门覆盖高频局部返回，已纳入 CTest。当前对照确认调用次数减少，但没有证明稳定提速，见 [性能报告](baseline-numeric-benchmark.md)。
+
 ### 栈同步边界验证
 
 `minijsBaselineSyncStackSize()` 仍使用通用 `stack_.resize(frame.stackSize)`。数字二元快路径先减少 frame 的快照深度，再调用该 helper 正常销毁右操作数槽，最后刷新栈地址和真实深度。helper 不允许扩大栈；超界时通过 C ABI 记录 `baseline stack size out of bounds` 并退出。

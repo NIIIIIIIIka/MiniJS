@@ -6822,6 +6822,111 @@ void testLocalPairExpressionPreservesIndependentOperationEntry() {
   }
 }
 
+void testNativeLocalReturnPreservesValuesAndUsesMergedHelper() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+  runBytecodeProgramOnVm(vm, "function identity(value) { return value; } identity(0);");
+  const auto* code = vm.debugGlobalFunctionBaselineCode("identity");
+  const std::vector<minijs::Value> values = {
+      minijs::Value(-0.0), minijs::Value(std::numeric_limits<double>::quiet_NaN()),
+      minijs::Value(std::numeric_limits<double>::infinity()), minijs::Value(true), minijs::Value(false),
+      minijs::Value(), minijs::Value::undefined(), minijs::Value(std::string("kept")),
+      minijs::Value(std::vector<minijs::Value>{minijs::Value(9.0)}),
+      minijs::Value(std::unordered_map<std::string,minijs::Value>{{"n",minijs::Value(7.0)}})};
+  vm.setBaselineHelperProfilingEnabled(true);
+  for (const auto& value : values) {
+    const auto expected = vm.debugExecuteGlobalFunctionBaseline("identity", {value});
+    if (!nativeBaselineBackendAvailable()) continue;
+    const auto actual = vm.debugExecuteGlobalFunctionBaselineEntry("identity", {value}, code->entry);
+    if (value.isNumber() && std::isnan(value.asNumber())) {
+      EXPECT(std::isnan(actual.asNumber()));
+    } else if (value.isArray() || value.isObject()) {
+      EXPECT(actual.toString() == expected.toString());
+    } else {
+      EXPECT(actual.equals(expected));
+    }
+    if (value.isNumber() && value.asNumber() == 0.0) EXPECT(std::signbit(actual.asNumber()));
+  }
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+  bool found = false;
+  for (const auto& helper : vm.jitRuntimeStats().helpers) {
+    EXPECT(helper.name != "minijsBaselinePushNumberSlot");
+    EXPECT(helper.name != "minijsBaselineGetLocal");
+    if (helper.name == "minijsBaselineReturnLocal") {
+      found = true;
+      EXPECT(helper.calls == values.size());
+    }
+  }
+  EXPECT(found);
+  EXPECT(code->bytecodeOffsetToNativeOffset[0] == code->bytecodeOffsetToNativeOffset[2]);
+#endif
+}
+
+void testLocalReturnKeepsIdentityClosuresMethodsAndReceiverRule() {
+  for (const bool enabled : {false,true}) {
+    minijs::VM vm;
+    vm.setJitEnabled(enabled);
+    vm.setJitCallThreshold(1);
+    const auto result = runBytecodeProgramOnVm(vm, R"(
+      function identity(value) { return value; }
+      function outer() { let object = { n: 9 }; function read() { return object; } return read; }
+      class Box { init(value) { this.n = value; } self() { return this; } echo(value) { return value; } }
+      identity(0); outer();
+      let box = Box(7);
+      box.self(); box.echo(0);
+      let object = { n: 8 };
+      let read = outer();
+      [identity(object) == object, identity(read) == read, read().n,
+       box.self() == box, box.echo(object) == object, box.n];
+    )");
+    EXPECT(result.toString() == "[true, true, 9, true, true, 7]");
+    vm.collectGarbage();
+    EXPECT(runBytecodeProgramOnVm(vm, "read().n;").equals(minijs::Value(9.0)));
+  }
+  minijs::VM vm;
+  runBytecodeProgramOnVm(vm, "function receiver(a,b) { return a; }");
+  const auto entry = +[](minijs::BaselineFrame* frame) {
+    frame->returnsReceiver = true;
+    EXPECT(minijsBaselineReturnLocal(frame, 1));
+    EXPECT(frame->completed && !frame->failed);
+  };
+  EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry(
+             "receiver", {minijs::Value(7.0),minijs::Value(9.0)}, entry).equals(minijs::Value(7.0)));
+}
+
+void testLocalReturnIndependentEntryAndInvalidSlot() {
+  if (!nativeBaselineBackendAvailable()) return;
+  minijs::VM vm;
+  runBytecodeProgramOnVm(vm, "function entry(value) { return value; }");
+  minijs::BytecodeFunction function;
+  function.chunk.writeOpcode(minijs::Opcode::GetLocal);
+  function.chunk.writeByte(0);
+  function.chunk.writeOpcode(minijs::Opcode::Jump);
+  function.chunk.writeByte(0);
+  function.chunk.writeByte(2);
+  function.chunk.writeOpcode(minijs::Opcode::GetLocal);
+  function.chunk.writeByte(255);
+  function.chunk.writeOpcode(minijs::Opcode::Return);
+  const auto compiled = minijs::BaselineCompiler().compile(function);
+  EXPECT(compiled.succeeded());
+  EXPECT(compiled.code->bytecodeOffsetToNativeOffset[5] != compiled.code->bytecodeOffsetToNativeOffset[7]);
+  EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("entry", {minijs::Value(7.0)}, compiled.code->entry)
+             .equals(minijs::Value(7.0)));
+  minijs::BytecodeFunction invalid;
+  invalid.chunk.writeOpcode(minijs::Opcode::GetLocal);
+  invalid.chunk.writeByte(255);
+  invalid.chunk.writeOpcode(minijs::Opcode::Return);
+  const auto bad = minijs::BaselineCompiler().compile(invalid);
+  EXPECT(bad.succeeded());
+  try {
+    vm.debugExecuteGlobalFunctionBaselineEntry("entry", {minijs::Value(7.0)}, bad.code->entry);
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: local slot out of bounds");
+  }
+}
+
 void testJitDispatchInlineNegateFallbackPreservesTypeError() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -7583,6 +7688,9 @@ void runBytecodeTests() {
   testNativeLocalPairExpressionsSpecialNumbersAndExpansion();
   testLocalPairExpressionsKeepSourcesAndFallbackValues();
   testLocalPairExpressionPreservesIndependentOperationEntry();
+  testNativeLocalReturnPreservesValuesAndUsesMergedHelper();
+  testLocalReturnKeepsIdentityClosuresMethodsAndReceiverRule();
+  testLocalReturnIndependentEntryAndInvalidSlot();
   testJitDispatchInlineNegateFallbackPreservesTypeError();
   testJitDispatchInlineAddRunsNumberFastPath();
   testJitDispatchInlineAddFallbackPreservesStringConcat();

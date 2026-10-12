@@ -77,6 +77,7 @@ extern "C" std::uint8_t minijsBaselinePeekTruthy(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineRecordLoopBackedge(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineSyncStackSize(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineReturn(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineReturnLocal(minijs::BaselineFrame* frame, std::uint32_t slot);
 
 namespace minijs {
 
@@ -256,6 +257,7 @@ class VM {
   friend bool ::minijsBaselineRecordLoopBackedge(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineSyncStackSize(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineReturn(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineReturnLocal(minijs::BaselineFrame* frame, std::uint32_t slot);
 
   class TemporaryRootScope {
    public:
@@ -348,6 +350,8 @@ class VM {
   bool baselineRuntimeRecordLoopBackedge(BaselineFrame& frame);
   bool baselineRuntimeSyncStackSize(BaselineFrame& frame);
   bool baselineRuntimeReturn(BaselineFrame& frame);
+  bool baselineRuntimeReturnLocal(BaselineFrame& frame, std::uint32_t slot);
+  bool finishBaselineReturn(BaselineFrame& frame, Value result);
   void executeDefineGlobal(const Chunk& chunk, std::size_t nameIndex);
   void executeGetGlobal(const Chunk& chunk, std::size_t nameIndex);
   void executeSetGlobal(const Chunk& chunk, std::size_t nameIndex);

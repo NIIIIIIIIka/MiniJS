@@ -339,3 +339,31 @@ Windows x64 合并 `GetLocal + GetLocal + 二元运算`，两个源值均为 Num
 压栈和同步各减少 190,019 次，合计减少 380,038 次 helper 调用。结果仍保留，条件或语句末尾的 Pop 未消除。减少量包括内部 `i + offset` 和循环条件 `i < count` 的双局部值组合。
 
 CTest 21/21 通过，新增样例已纳入 CLI baseline smoke；专项测试覆盖所有七种运算、NaN/无穷大/非规格化数/负零、源值不变、别名、连续 80 个结果槽的扩容、类型 fallback、GC 与对象身份、除零、非法槽和独立运算入口。
+
+### 直接返回局部值对照
+
+新增 `examples/baseline_local_return_benchmark.js`，通过 `identity(value) { return value; }` 的 100,000 次调用累计结果，20 轮、每轮 5000 次，预期结果为 `249950000`。该样例专门观察调用与局部返回，不应与其它循环的绝对耗时交叉比较。
+
+Windows x64 将非独立 Return 入口的 `GetLocal + Return` 合并为 `ReturnLocal` helper，省去临时返回值压栈。所有 Value 类型沿用正常复制，普通返回和局部直接返回共享 upvalue 关闭、receiver 和返回槽整理。修改前来自提交 `7bacecc` 的 Release 程序，保存为本机忽略的 `build-verify-release/local-return-before-7bacecc.exe`。
+
+关闭 helper 采样，每组每版本 3 轮预热、15 轮正式采样，第二组交换执行顺序：
+
+| 对照组 | 修改前 JIT on | 修改后 JIT on | 前 / 后 | 修改前 JIT off | 修改后 JIT off |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 30.392 ms | 29.814 ms | 1.019x | 87.870 ms | 82.739 ms |
+| 2 | 31.845 ms | 32.300 ms | 0.986x | 74.266 ms | 77.382 ms |
+| 3 | 31.102 ms | 33.387 ms | 0.932x | 85.546 ms | 104.413 ms |
+
+JIT on 一组降低约 1.9%，另两组增加约 1.4%、7.3%；普通 VM 数据也有波动。不能据此宣称稳定提速。所有计算结果为 `249950000`，baseline 入口计数为 100,018。
+
+单独开启采样、单轮核对调用次数：
+
+| helper | 修改前调用 | 修改后调用 |
+| --- | ---: | ---: |
+| `PushNumberSlot` | 385,075 | 285,057 |
+| `Return` | 100,018 | 0 |
+| `ReturnLocal` | 0 | 100,018 |
+
+数字压栈减少 100,018 次，返回 helper 的数量未变，但换成不需要临时栈槽的合并入口。减少量包括 identity 的 99,999 次 baseline 返回及循环函数的 19 次 baseline 返回。调用数减少不等于整体耗时同比下降，采样耗时不用于计算收益。
+
+本次保留已验证的直接局部返回机制和统一收尾逻辑，不将它列为已证实的提速。CTest 22/22 通过；专项测试覆盖各类 Value、身份、闭包/GC、方法 this、receiver 返回规则、合并计数、独立 Return 入口与非法局部槽错误。
