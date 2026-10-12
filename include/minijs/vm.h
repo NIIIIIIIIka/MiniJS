@@ -127,6 +127,13 @@ struct JitOptions {
   std::uint32_t backedgeThreshold = 1000;
 };
 
+// 可选的 native C ABI helper 采样；耗时包含嵌套调用，不能相加当作总耗时。
+struct BaselineHelperStats {
+  std::string name;
+  std::uint64_t calls = 0;
+  std::uint64_t nanoseconds = 0;
+};
+
 struct JitRuntimeStats {
   std::size_t functions = 0;
   std::size_t cold = 0;
@@ -138,6 +145,8 @@ struct JitRuntimeStats {
   std::uint64_t baselineEntries = 0;
   std::size_t nativeEntries = 0;
   std::size_t decodedEntries = 0;
+  bool helperProfilingEnabled = false;
+  std::vector<BaselineHelperStats> helpers;
 };
 
 // 执行 Chunk 的栈式虚拟机。
@@ -157,6 +166,11 @@ class VM {
   void setJitCallThreshold(std::uint32_t threshold);
   void setJitBackedgeThreshold(std::uint32_t threshold);
   JitRuntimeStats jitRuntimeStats() const;
+  void setBaselineHelperProfilingEnabled(bool enabled) { helperProfilingEnabled_ = enabled; }
+  bool baselineHelperProfilingEnabled() const { return helperProfilingEnabled_; }
+  void resetBaselineHelperProfile() { helperProfile_.clear(); }
+  // 诊断统计不能让异常穿过 C ABI，也不能改变脚本的执行结果。
+  void recordBaselineHelperProfile(const char* name, std::uint64_t nanoseconds) noexcept;
 
   void collectGarbage();
 
@@ -401,6 +415,8 @@ class VM {
   PropertyInlineCacheStats propertyInlineCacheStats_;
   bool inlineCachesEnabled_ = true;
   JitOptions jitOptions_;
+  bool helperProfilingEnabled_ = false;
+  std::unordered_map<std::string, BaselineHelperStats> helperProfile_;
 
   template <typename T, typename... Args>
   T* allocateObject(Args&&... args);

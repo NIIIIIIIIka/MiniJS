@@ -5935,6 +5935,65 @@ void testBooleanNotFallbackPreservesStackUnderflow() {
   }
 }
 
+void testBaselineHelperProfileIsOptionalAndTracksFallback() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+  runBytecodeProgramOnVm(vm, "function invert(value) { return !value; } invert(true);");
+  EXPECT(!vm.jitRuntimeStats().helperProfilingEnabled);
+  EXPECT(vm.jitRuntimeStats().helpers.empty());
+  vm.setBaselineHelperProfilingEnabled(true);
+  EXPECT(vm.debugExecuteGlobalFunctionBaseline("invert", {minijs::Value(false)})
+             .equals(minijs::Value(true)));
+  // decoded executor 不经过 native C ABI helper，不能混进此次采样。
+  EXPECT(vm.jitRuntimeStats().helpers.empty());
+  if (!nativeBaselineBackendAvailable()) {
+    return;
+  }
+  const auto* code = vm.debugGlobalFunctionBaselineCode("invert");
+  const auto calls = [&vm](const std::string& name) {
+    for (const auto& helper : vm.jitRuntimeStats().helpers) {
+      if (helper.name == name) return helper.calls;
+    }
+    return std::uint64_t{0};
+  };
+  EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("invert", {minijs::Value(false)}, code->entry)
+             .equals(minijs::Value(true)));
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+  EXPECT(calls("minijsBaselineNot") == 0); // Boolean 快路径绕过完整 helper。
+#else
+  EXPECT(calls("minijsBaselineNot") == 1);
+#endif
+  EXPECT(calls("minijsBaselineReturn") == 1);
+  vm.resetBaselineHelperProfile();
+  EXPECT(vm.jitRuntimeStats().helpers.empty());
+  EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry(
+             "invert", {minijs::Value(std::string("x"))}, code->entry)
+             .equals(minijs::Value(false)));
+  EXPECT(calls("minijsBaselineNot") == 1);
+  EXPECT(calls("minijsBaselineReturn") == 1);
+  vm.setBaselineHelperProfilingEnabled(false);
+  vm.debugExecuteGlobalFunctionBaselineEntry("invert", {minijs::Value(std::string())}, code->entry);
+  EXPECT(calls("minijsBaselineNot") == 1); // 关闭后保留快照，但停止增加。
+  vm.resetBaselineHelperProfile();
+  vm.setBaselineHelperProfilingEnabled(true);
+  runBytecodeProgramOnVm(vm, "function profileEmpty() { return true; }");
+  minijs::BytecodeFunction invalid;
+  invalid.chunk.writeOpcode(minijs::Opcode::Pop);
+  invalid.chunk.writeOpcode(minijs::Opcode::Not);
+  invalid.chunk.writeOpcode(minijs::Opcode::Return);
+  const auto compiled = minijs::BaselineCompiler().compile(invalid);
+  EXPECT(compiled.succeeded());
+  try {
+    vm.debugExecuteGlobalFunctionBaselineEntry("profileEmpty", {}, compiled.code->entry);
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: bytecode stack underflow");
+  }
+  EXPECT(calls("minijsBaselineNot") == 1);
+  EXPECT(calls("minijsBaselineReturn") == 0);
+}
+
 void testJitDispatchInlineNegateFallbackPreservesTypeError() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -6676,6 +6735,7 @@ void runBytecodeTests() {
   testBaselineBooleanNotAndTruthyFallback();
   testJitBooleanNotComposesWithBranchesAndSideEffects();
   testBooleanNotFallbackPreservesStackUnderflow();
+  testBaselineHelperProfileIsOptionalAndTracksFallback();
   testJitDispatchInlineNegateFallbackPreservesTypeError();
   testJitDispatchInlineAddRunsNumberFastPath();
   testJitDispatchInlineAddFallbackPreservesStringConcat();

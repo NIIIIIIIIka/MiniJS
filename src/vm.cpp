@@ -651,8 +651,27 @@ void VM::setJitBackedgeThreshold(std::uint32_t threshold) {
   jitOptions_.backedgeThreshold = threshold;
 }
 
+void VM::recordBaselineHelperProfile(const char* name, std::uint64_t nanoseconds) noexcept {
+  try {
+    auto& stats = helperProfile_[name];
+    stats.name = name;
+    ++stats.calls;
+    stats.nanoseconds += nanoseconds;
+  } catch (...) {
+    // 统计分配失败时丢弃该次诊断数据，不干扰语言异常或返回值。
+  }
+}
+
 JitRuntimeStats VM::jitRuntimeStats() const {
   JitRuntimeStats stats;
+  stats.helperProfilingEnabled = helperProfilingEnabled_;
+  for (const auto& entry : helperProfile_) {
+    stats.helpers.push_back(entry.second);
+  }
+  std::sort(stats.helpers.begin(), stats.helpers.end(),
+            [](const BaselineHelperStats& left, const BaselineHelperStats& right) {
+              return left.name < right.name;
+            });
 
   for (const Obj* object = objects_; object != nullptr; object = object->next) {
     if (object->type != ObjType::Function) {

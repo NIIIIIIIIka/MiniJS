@@ -1,6 +1,7 @@
 #include "minijs/baseline_runtime.h"
 
 #include <exception>
+#include <chrono>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -9,6 +10,29 @@
 #include "minijs/vm.h"
 
 namespace {
+
+// 只在显式开启时读时钟；异常退出也计入一次 helper 调用。
+class HelperProfileScope {
+ public:
+  HelperProfileScope(minijs::VM& vm, const char* name) noexcept
+      : vm_(vm.baselineHelperProfilingEnabled() ? &vm : nullptr), name_(name) {
+    if (vm_ != nullptr) {
+      start_ = std::chrono::steady_clock::now();
+    }
+  }
+  ~HelperProfileScope() noexcept {
+    if (vm_ != nullptr) {
+      const auto elapsed = std::chrono::steady_clock::now() - start_;
+      vm_->recordBaselineHelperProfile(name_, static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count()));
+    }
+  }
+
+ private:
+  minijs::VM* vm_;
+  const char* name_;
+  std::chrono::steady_clock::time_point start_;
+};
 
 bool frameCanRun(minijs::BaselineFrame* frame) {
   if (frame == nullptr || frame->vm == nullptr) {
@@ -61,6 +85,7 @@ extern "C" bool minijsBaselinePush(minijs::BaselineFrame* frame, const minijs::V
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimePush(*frame, *value);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -78,6 +103,7 @@ extern "C" bool minijsBaselinePushConstant(minijs::BaselineFrame* frame,
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimePushConstant(*frame, constantIndex);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -94,6 +120,7 @@ extern "C" bool minijsBaselineGetLocal(minijs::BaselineFrame* frame, std::uint32
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeGetLocal(*frame, slot);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -109,6 +136,7 @@ extern "C" bool minijsBaselinePushNumberSlot(minijs::BaselineFrame* frame) {
     return false;
   }
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimePushNumberSlot(*frame);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -125,6 +153,7 @@ extern "C" bool minijsBaselineSetLocal(minijs::BaselineFrame* frame, std::uint32
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeSetLocal(*frame, slot);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -141,6 +170,7 @@ extern "C" bool minijsBaselinePop(minijs::BaselineFrame* frame) {
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimePop(*frame);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -158,6 +188,7 @@ extern "C" bool minijsBaselineDefineGlobal(minijs::BaselineFrame* frame,
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeDefineGlobal(*frame, nameIndex);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -175,6 +206,7 @@ extern "C" bool minijsBaselineGetGlobal(minijs::BaselineFrame* frame,
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeGetGlobal(*frame, nameIndex);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -192,6 +224,7 @@ extern "C" bool minijsBaselineSetGlobal(minijs::BaselineFrame* frame,
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeSetGlobal(*frame, nameIndex);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -208,6 +241,7 @@ extern "C" bool minijsBaselineArray(minijs::BaselineFrame* frame, std::uint32_t 
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeArray(*frame, count);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -224,6 +258,7 @@ extern "C" bool minijsBaselineGetIndex(minijs::BaselineFrame* frame) {
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeGetIndex(*frame);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -240,6 +275,7 @@ extern "C" bool minijsBaselineSetIndex(minijs::BaselineFrame* frame) {
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeSetIndex(*frame);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -256,6 +292,7 @@ extern "C" bool minijsBaselineObject(minijs::BaselineFrame* frame, std::uint32_t
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeObject(*frame, namesIndex);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -274,6 +311,7 @@ extern "C" bool minijsBaselineGetProperty(minijs::BaselineFrame* frame,
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeGetProperty(*frame, nameIndex, feedbackSlotIndex);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -292,6 +330,7 @@ extern "C" bool minijsBaselineSetProperty(minijs::BaselineFrame* frame,
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeSetProperty(*frame, nameIndex, feedbackSlotIndex);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -308,6 +347,7 @@ extern "C" bool minijsBaselineClass(minijs::BaselineFrame* frame, std::uint32_t 
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeClass(*frame, nameIndex);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -324,6 +364,7 @@ extern "C" bool minijsBaselineMethod(minijs::BaselineFrame* frame, std::uint32_t
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeMethod(*frame, nameIndex);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -341,6 +382,7 @@ extern "C" bool minijsBaselineStaticMethod(minijs::BaselineFrame* frame,
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeStaticMethod(*frame, nameIndex);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -357,6 +399,7 @@ extern "C" bool minijsBaselineInherit(minijs::BaselineFrame* frame) {
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeInherit(*frame);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -373,6 +416,7 @@ extern "C" bool minijsBaselineGetUpvalue(minijs::BaselineFrame* frame, std::uint
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeGetUpvalue(*frame, slot);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -389,6 +433,7 @@ extern "C" bool minijsBaselineSetUpvalue(minijs::BaselineFrame* frame, std::uint
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeSetUpvalue(*frame, slot);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -405,6 +450,7 @@ extern "C" bool minijsBaselineCloseUpvalue(minijs::BaselineFrame* frame) {
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeCloseUpvalue(*frame);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -421,6 +467,7 @@ extern "C" bool minijsBaselineGetCurrentClosure(minijs::BaselineFrame* frame) {
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeGetCurrentClosure(*frame);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -439,6 +486,7 @@ extern "C" bool minijsBaselineClosure(minijs::BaselineFrame* frame,
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeClosure(*frame, functionIndex, bytecodeOffset);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -455,6 +503,7 @@ extern "C" bool minijsBaselineCall(minijs::BaselineFrame* frame, std::uint32_t a
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeCall(*frame, argCount);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -474,6 +523,7 @@ extern "C" bool minijsBaselineMethodCall(minijs::BaselineFrame* frame,
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeMethodCall(*frame, nameIndex, argCount, feedbackSlotIndex);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -492,6 +542,7 @@ extern "C" bool minijsBaselineSuperCall(minijs::BaselineFrame* frame,
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeSuperCall(*frame, nameIndex, argCount);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -508,6 +559,7 @@ extern "C" bool minijsBaselineAdd(minijs::BaselineFrame* frame) {
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeAdd(*frame);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -524,6 +576,7 @@ extern "C" bool minijsBaselineSub(minijs::BaselineFrame* frame) {
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeSub(*frame);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -540,6 +593,7 @@ extern "C" bool minijsBaselineMul(minijs::BaselineFrame* frame) {
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeMul(*frame);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -556,6 +610,7 @@ extern "C" bool minijsBaselineDiv(minijs::BaselineFrame* frame) {
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeDiv(*frame);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -572,6 +627,7 @@ extern "C" bool minijsBaselineMod(minijs::BaselineFrame* frame) {
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeMod(*frame);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -588,6 +644,7 @@ extern "C" bool minijsBaselineModNumber(minijs::BaselineFrame* frame) {
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeModNumber(*frame);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -604,6 +661,7 @@ extern "C" bool minijsBaselineNegate(minijs::BaselineFrame* frame) {
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeNegate(*frame);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -620,6 +678,7 @@ extern "C" bool minijsBaselineEqual(minijs::BaselineFrame* frame) {
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeEqual(*frame);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -636,6 +695,7 @@ extern "C" bool minijsBaselineGreater(minijs::BaselineFrame* frame) {
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeGreater(*frame);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -652,6 +712,7 @@ extern "C" bool minijsBaselineLess(minijs::BaselineFrame* frame) {
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeLess(*frame);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -668,6 +729,7 @@ extern "C" bool minijsBaselineNot(minijs::BaselineFrame* frame) {
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeNot(*frame);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -684,6 +746,7 @@ extern "C" std::uint8_t minijsBaselinePeekTruthy(minijs::BaselineFrame* frame) {
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimePeekTruthy(*frame);
   } catch (const minijs::RuntimeError& error) {
     markFailedFromException(frame, error);
@@ -703,6 +766,7 @@ extern "C" bool minijsBaselineRecordLoopBackedge(minijs::BaselineFrame* frame) {
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeRecordLoopBackedge(*frame);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -719,6 +783,7 @@ extern "C" bool minijsBaselineSyncStackSize(minijs::BaselineFrame* frame) {
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeSyncStackSize(*frame);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);
@@ -735,6 +800,7 @@ extern "C" bool minijsBaselineReturn(minijs::BaselineFrame* frame) {
   }
 
   try {
+    HelperProfileScope profile(*frame->vm, __func__);
     return frame->vm->baselineRuntimeReturn(*frame);
   } catch (const minijs::RuntimeError& error) {
     return markFailedFromException(frame, error);

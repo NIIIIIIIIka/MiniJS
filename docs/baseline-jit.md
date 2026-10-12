@@ -727,6 +727,24 @@ JSON 输出会保留 `result`、`speedup`、采样轮数、编译/运行耗时�
 
 CTest 也会通过 `minijs_cli_benchmark_compare_reports_jit_on_and_off` 跑同一份脚本，确认 JIT 开关不改变结果，并输出 `without_jit_run_us`、`with_jit_run_us` 和 `speedup`。同一份输出还包含 JIT 调度统计：`jit functions` 显示函数处于 `cold/scheduled/compiled/failed` 的数量，`jit counters` 显示函数调用次数、回边次数和 `baseline_entries`，`jit code` 显示最终进入 native entry 还是 decoded baseline executor。
 
+### 可选 Helper 采样
+
+使用下面的命令观察剩余 native runtime helper 热点，默认不采样：
+
+```text
+minijs --benchmark-compare-jit examples/baseline_numeric_benchmark.js --benchmark-helper-profile on --benchmark-samples 3 --benchmark-warmup 1 --benchmark-format json
+```
+
+`--benchmark-helper-profile` 接受 `on` 或 `off`；开启仅适用于 `--benchmark-compare-jit`。文本输出增加 helper 名称、`calls` 和 `elapsed_ns`；JSON 在 `jit.helper_profile.helpers` 中输出相同字段，按名称排序。未开启时保留原来的输出格式。
+
+采样只覆盖实际进入的 native C ABI helper，内联成功的 opcode、普通 VM 和 decoded executor 不计入。有效 frame 上的 helper 异常退出也计一次；无效 frame 被入口检查拒绝时不计入。窄 helper（数字槽构造、栈深度同步等）独立列出，不与完整 opcode helper 混淆。
+
+`elapsed_ns` 为 helper 内 VM 操作的包含子调用耗时（inclusive），不含入口检查、异常包装和退出时更新统计容器的耗时，但读时钟本身会影响运行。`Call`、`SuperCall` 等会包含嵌套函数执行，不能把所有项相加当作总耗时，也不能直接用采样模式的 `speedup` 衡量优化收益。短 helper 的计时尤其容易受到采样开销和系统噪声影响，应结合调用次数判断，再关闭采样做前后性能对照。
+
+每轮仍使用新 VM。报告中的 helper 数据来自最后一轮正式采样，不是各轮耗时中位数；预热数据被丢弃。VM 可通过 `setBaselineHelperProfilingEnabled()` 开关采样，通过 `resetBaselineHelperProfile()` 清空数据；关闭只停止新增，原有快照保留。统计分配失败会丢弃该条诊断数据，不改变语言异常或 helper 返回值。
+
+关闭时不读时钟、不更新容器，只保留作用域开关检查。当前采样数据和下一步建议见 [性能报告](baseline-numeric-benchmark.md)。这是开发诊断工具，不是新的 bytecode 或执行语义。
+
 ## Native Fast Path 与 Fallback 边界
 
 以下描述当前实现；可恢复执行的 deopt 属于后续设计，尚未实现。

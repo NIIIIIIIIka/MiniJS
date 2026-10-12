@@ -35,6 +35,7 @@ struct BenchmarkConfig {
   int samples = BenchmarkSamples;
   int warmupSamples = 0;
   BenchmarkFormat format = BenchmarkFormat::Text;
+  bool helperProfile = false;
 };
 
 void printUsage(std::ostream& output) {
@@ -49,6 +50,7 @@ void printUsage(std::ostream& output) {
          << "       minijs --benchmark-compare <file> [--benchmark-samples <n>] [--benchmark-warmup <n>] [--benchmark-format text|json]\n"
          << "       minijs --benchmark-compare-jit <file> [--benchmark-samples <n>] [--benchmark-warmup <n>] [--benchmark-format text|json]\n"
          << "       minijs --help\n"
+         << "       JIT benchmark option: --benchmark-helper-profile on|off (default: off)\n"
          << "       minijs --version\n";
 }
 
@@ -100,8 +102,18 @@ BenchmarkConfig parseBenchmarkConfig(int argc, char* argv[], int firstOption) {
       }
       throw std::runtime_error("--benchmark-format expects text or json");
     }
+    if (option == "--benchmark-helper-profile") {
+      if (value != "on" && value != "off") {
+        throw std::runtime_error("--benchmark-helper-profile expects on or off");
+      }
+      config.helperProfile = value == "on";
+      continue;
+    }
 
     throw std::runtime_error("unknown benchmark option: " + option);
+  }
+  if (config.helperProfile && std::string_view(argv[1]) != "--benchmark-compare-jit") {
+    throw std::runtime_error("--benchmark-helper-profile on requires --benchmark-compare-jit");
   }
   return config;
 }
@@ -224,6 +236,13 @@ void printJitRuntimeStats(const minijs::JitRuntimeStats& stats) {
             << " baseline_entries=" << stats.baselineEntries << '\n'
             << "jit code: native_entries=" << stats.nativeEntries
             << " decoded_entries=" << stats.decodedEntries << '\n';
+  if (stats.helperProfilingEnabled) {
+    std::cout << "jit helper profile (inclusive):\n";
+    for (const auto& helper : stats.helpers) {
+      std::cout << "  " << helper.name << " calls=" << helper.calls
+                << " elapsed_ns=" << helper.nanoseconds << '\n';
+    }
+  }
 }
 
 std::string jsonEscape(std::string_view value) {
@@ -289,8 +308,18 @@ void printJsonJitRuntimeStats(std::ostream& output, const minijs::JitRuntimeStat
          << ", \"backedges\": " << stats.backedges
          << ", \"baseline_entries\": " << stats.baselineEntries << "},\n"
          << pad << "  \"code\": {\"native_entries\": " << stats.nativeEntries
-         << ", \"decoded_entries\": " << stats.decodedEntries << "}\n"
-         << pad << "}";
+         << ", \"decoded_entries\": " << stats.decodedEntries << "}";
+  if (stats.helperProfilingEnabled) {
+    output << ",\n" << pad << "  \"helper_profile\": {\"inclusive\": true, \"helpers\": [";
+    for (std::size_t index = 0; index < stats.helpers.size(); ++index) {
+      const auto& helper = stats.helpers[index];
+      if (index != 0) output << ", ";
+      output << "{\"name\": \"" << jsonEscape(helper.name) << "\", \"calls\": "
+             << helper.calls << ", \"elapsed_ns\": " << helper.nanoseconds << "}";
+    }
+    output << "]}";
+  }
+  output << '\n' << pad << "}";
 }
 
 struct BenchmarkResult {
@@ -309,7 +338,7 @@ long long medianMicros(std::vector<long long> values) {
 }
 
 BenchmarkResult runBenchmarkSample(const minijs::Program& program, bool inlineCachesEnabled,
-                                   bool jitEnabled) {
+                                   bool jitEnabled, bool helperProfile) {
   const auto compileStart = std::chrono::steady_clock::now();
   minijs::Compiler compiler;
   const minijs::Chunk chunk = compiler.compileProgram(program);
@@ -318,6 +347,7 @@ BenchmarkResult runBenchmarkSample(const minijs::Program& program, bool inlineCa
   minijs::VM vm;
   vm.setInlineCachesEnabled(inlineCachesEnabled);
   vm.setJitEnabled(jitEnabled);
+  vm.setBaselineHelperProfilingEnabled(helperProfile);
   vm.setJitCallThreshold(1);
   vm.setJitBackedgeThreshold(1'000'000);
   const auto runStart = std::chrono::steady_clock::now();
@@ -345,11 +375,12 @@ BenchmarkResult runBenchmark(const minijs::Program& program, bool inlineCachesEn
   runMicros.reserve(config.samples);
 
   for (int sample = 0; sample < config.warmupSamples; ++sample) {
-    (void)runBenchmarkSample(program, inlineCachesEnabled, jitEnabled);
+    (void)runBenchmarkSample(program, inlineCachesEnabled, jitEnabled, config.helperProfile);
   }
 
   for (int sample = 0; sample < config.samples; ++sample) {
-    BenchmarkResult result = runBenchmarkSample(program, inlineCachesEnabled, jitEnabled);
+    BenchmarkResult result = runBenchmarkSample(program, inlineCachesEnabled, jitEnabled,
+                                               config.helperProfile);
     if (!samples.empty() && !result.result.equals(samples.front().result)) {
       throw std::runtime_error("benchmark result changed between samples");
     }

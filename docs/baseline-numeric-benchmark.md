@@ -159,4 +159,25 @@ Windows x64 的 Boolean `Not` 通过异或 1 原地翻转载荷，不调用 help
 
 三组 JIT on 中位数降低约 37.2%、36.4%、36.5%。第一组普通 VM 数据也明显波动，因此不能将整个差值都归因于该 opcode；后两组方向一致的数据支持此样例上的收益，但不代表所有脚本都有固定提速。所有计算结果为 `50020`，baseline 入口计数为 19。
 
-功能测试覆盖 decoded/native 取反、非 Boolean fallback、连续取反与分支、实例和函数值、调用副作用以及空栈错误；布尔样例也纳入 CLI baseline smoke 测试。后续先测量剩余 helper 的成本，再决定新的内联目标。
+功能测试覆盖 decoded/native 取反、非 Boolean fallback、连续取反与分支、实例和函数值、调用副作用以及空栈错误；布尔样例也纳入 CLI baseline smoke 测试。后续 helper 成本采样见下一节。
+
+### 剩余 Helper 热点采样
+
+在 Windows x64 Release 上，对三个样例分别开启 `--benchmark-helper-profile on`，3 轮正式采样、1 轮预热。下表是最后一轮的包含子调用耗时，不是三轮中位数；开启采样会增加开销，数据用于找候选热点而不是宣称加速。
+
+| 样例 | helper | 调用次数 | 包含子调用耗时 |
+| --- | --- | ---: | ---: |
+| 数字循环 | `PushNumberSlot` | 1,330,133 | 39.952 ms |
+| 数字循环 | `SyncStackSize` | 807,538 | 24.758 ms |
+| 数字循环 | `Pop` | 522,519 | 15.685 ms |
+| 数字循环 | `RecordLoopBackedge` | 95,000 | 2.694 ms |
+| 布尔循环 | `PushNumberSlot` | 1,045,133 | 32.043 ms |
+| 布尔循环 | `SyncStackSize` | 617,538 | 19.286 ms |
+| 布尔循环 | `Pop` | 427,538 | 13.098 ms |
+| 综合样例 | `SuperCall` | 299 | 0.217 ms |
+| 综合样例 | `Return` | 1,896 | 0.144 ms |
+| 综合样例 | `PushNumberSlot` | 3,493 | 0.126 ms |
+
+三个样例的结果分别为 `125025000`、`50020`、`23305`，JIT on/off 均一致；baseline 入口计数分别为 19、19、1896。普通 VM 的 helper 列表为空。数字和布尔样例中没有完整算术或 Boolean `Not` helper 调用，与已实现的内联路径一致。
+
+下一步优先研究数字栈槽构造的 helper 边界：它在两个循环样例中都最频繁。可以先考察批量构造或减少重复压栈的方案，再关闭采样做前后对照。不能为了省一次 helper 直接写入 vector 未构造的容量，也不能跨可能扩容的调用保存旧 `Value*`；GC、Value 生命周期和栈快照契约必须保持。`SyncStackSize` 和 `Pop` 也是候选热点，但暂不同时改动，便于归因。

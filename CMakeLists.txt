@@ -250,5 +250,12 @@ if(MINIJS_BUILD_TESTS)
         set_tests_properties(minijs_cli_boolean_benchmark_enters_baseline PROPERTIES
             PASS_REGULAR_EXPRESSION "baseline_entries=[1-9][0-9]*"
         )
+        add_test(
+            NAME minijs_cli_benchmark_helper_profile_json
+            COMMAND minijs --benchmark-compare-jit "${CMAKE_CURRENT_SOURCE_DIR}/examples/baseline_boolean_benchmark.js" --benchmark-samples 1 --benchmark-helper-profile on --benchmark-format json
+        )
+        set_tests_properties(minijs_cli_benchmark_helper_profile_json PROPERTIES
+            PASS_REGULAR_EXPRESSION "helper_profile"
+        )
     endif()
 endif()
