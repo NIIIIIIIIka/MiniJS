@@ -6158,6 +6158,126 @@ void testBaselineStackSyncPreservesOversizeError() {
   }
 }
 
+void testNativeConstantBinaryFusionNumbersAndComparisons() {
+#if !defined(_WIN32) || !(defined(_M_X64) || defined(__x86_64__))
+  return; // 手工模板的数字常量只在本次 Windows x64 内联后端嵌入机器码。
+#endif
+  if (!nativeBaselineBackendAvailable()) return;
+  minijs::VM vm;
+  runBytecodeProgramOnVm(vm, "function apply(value) { return value; }");
+  vm.setBaselineHelperProfilingEnabled(true);
+  const std::vector<double> numbers = {-0.0, 2.0, -3.0,
+      std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity(),
+      std::numeric_limits<double>::denorm_min()};
+  for (const auto op : {minijs::Opcode::Add, minijs::Opcode::Sub, minijs::Opcode::Mul,
+                        minijs::Opcode::Div, minijs::Opcode::Equal,
+                        minijs::Opcode::Greater, minijs::Opcode::Less}) {
+    for (const double right : numbers) {
+      if (op == minijs::Opcode::Div && right == 0.0) continue;
+      minijs::BytecodeFunction function;
+      function.chunk.addConstant(minijs::Value(right));
+      function.chunk.writeOpcode(minijs::Opcode::GetLocal);
+      function.chunk.writeByte(0);
+      function.chunk.writeOpcode(minijs::Opcode::Constant);
+      function.chunk.writeByte(0);
+      function.chunk.writeOpcode(op);
+      function.chunk.writeOpcode(minijs::Opcode::Return);
+      const auto compiled = minijs::BaselineCompiler().compile(function);
+      EXPECT(compiled.succeeded());
+      for (const double left : numbers) {
+        const auto result = vm.debugExecuteGlobalFunctionBaselineEntry(
+            "apply", {minijs::Value(left)}, compiled.code->entry);
+        if (op == minijs::Opcode::Equal || op == minijs::Opcode::Greater || op == minijs::Opcode::Less) {
+          const bool expected = op == minijs::Opcode::Equal ? left == right
+                                : op == minijs::Opcode::Greater ? left > right : left < right;
+          EXPECT(result.equals(minijs::Value(expected)));
+        } else {
+          const double expected = op == minijs::Opcode::Add ? left + right
+                                  : op == minijs::Opcode::Sub ? left - right
+                                  : op == minijs::Opcode::Mul ? left * right : left / right;
+          EXPECT(result.isNumber());
+          EXPECT(std::isnan(expected) ? std::isnan(result.asNumber()) : result.asNumber() == expected);
+          if (expected == 0.0) EXPECT(std::signbit(result.asNumber()) == std::signbit(expected));
+        }
+      }
+    }
+  }
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+  for (const auto& helper : vm.jitRuntimeStats().helpers) {
+    EXPECT(helper.name != "minijsBaselineSyncStackSize");
+    EXPECT(helper.name != "minijsBaselineGetLocalAndPushNumberSlot");
+  }
+#endif
+}
+
+void testConstantBinaryFusionPreservesFallbackErrorsAndBranchEntry() {
+  for (const std::string source : {
+      "function f(x) { return x - 2; } f(1); f(\"bad\");",
+      "function f(x) { return x / 0; } f(1);",
+      "function f(x) { return x / -0; } f(1);"}) {
+    std::string expectedError;
+    for (const bool enabled : {false, true}) {
+      minijs::VM vm;
+      vm.setJitEnabled(enabled);
+      vm.setJitCallThreshold(0); // 首次调用也进入 baseline，避免错误发生在预热阶段。
+      try {
+        runBytecodeProgramOnVm(vm, source);
+        EXPECT(false);
+      } catch (const minijs::RuntimeError& error) {
+        if (!enabled) expectedError = error.what();
+        else EXPECT(expectedError == error.what());
+      }
+    }
+  }
+  for (const bool enabled : {false, true}) {
+    minijs::VM vm;
+    vm.setJitEnabled(enabled);
+    vm.setJitCallThreshold(1);
+    const auto result = runBytecodeProgramOnVm(vm, R"(
+      function eq(x) { return x == 2; }
+      function add(x) { return x + 2; }
+      eq(0);
+      add(0);
+      [eq("2"), eq(true), eq(null), eq({}), eq(2), add("x")];
+    )");
+    EXPECT(result.toString() == "[false, false, false, false, true, x2]");
+  }
+#if !defined(_WIN32) || !(defined(_M_X64) || defined(__x86_64__))
+  return;
+#endif
+  if (!nativeBaselineBackendAvailable()) return;
+  minijs::VM vm;
+  runBytecodeProgramOnVm(vm, "function entry() { return 0; }");
+  minijs::BytecodeFunction function;
+  for (const double value : {6.0, 2.0, 99.0}) function.chunk.addConstant(minijs::Value(value));
+  function.chunk.writeOpcode(minijs::Opcode::Constant); function.chunk.writeByte(0);
+  function.chunk.writeOpcode(minijs::Opcode::Constant); function.chunk.writeByte(1);
+  function.chunk.writeOpcode(minijs::Opcode::Jump);
+  function.chunk.writeByte(0); function.chunk.writeByte(2);
+  function.chunk.writeOpcode(minijs::Opcode::Constant); function.chunk.writeByte(2);
+  function.chunk.writeOpcode(minijs::Opcode::Sub);
+  function.chunk.writeOpcode(minijs::Opcode::Return);
+  const auto compiled = minijs::BaselineCompiler().compile(function);
+  EXPECT(compiled.succeeded());
+  EXPECT(compiled.code->bytecodeOffsetToNativeOffset[7] != compiled.code->bytecodeOffsetToNativeOffset[9]);
+  EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("entry", {}, compiled.code->entry)
+             .equals(minijs::Value(4.0)));
+  minijs::BytecodeFunction invalid;
+  invalid.chunk.addConstant(minijs::Value(2.0));
+  invalid.chunk.writeOpcode(minijs::Opcode::Pop);
+  invalid.chunk.writeOpcode(minijs::Opcode::Constant); invalid.chunk.writeByte(0);
+  invalid.chunk.writeOpcode(minijs::Opcode::Add);
+  invalid.chunk.writeOpcode(minijs::Opcode::Return);
+  const auto bad = minijs::BaselineCompiler().compile(invalid);
+  EXPECT(bad.succeeded());
+  try {
+    vm.debugExecuteGlobalFunctionBaselineEntry("entry", {}, bad.code->entry);
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: bytecode stack underflow");
+  }
+}
+
 void testJitDispatchInlineNegateFallbackPreservesTypeError() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -6905,6 +7025,8 @@ void runBytecodeTests() {
   testJitPairedPushExpansionAndObjectIdentity();
   testBaselineStackSyncPreservesSingleMultipleAndEmptyShrink();
   testBaselineStackSyncPreservesOversizeError();
+  testNativeConstantBinaryFusionNumbersAndComparisons();
+  testConstantBinaryFusionPreservesFallbackErrorsAndBranchEntry();
   testJitDispatchInlineNegateFallbackPreservesTypeError();
   testJitDispatchInlineAddRunsNumberFastPath();
   testJitDispatchInlineAddFallbackPreservesStringConcat();

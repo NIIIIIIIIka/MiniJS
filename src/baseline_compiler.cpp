@@ -436,6 +436,65 @@ class WindowsX64Emitter {
     return patchBranchTo(failed, offset(), true, error);
   }
 
+  // 合并 Constant + 二元运算：常量只进入寄存器，不构造临时栈槽。
+  bool emitNumberConstantBinaryOrRuntimeCall(std::uint64_t bits, Opcode operation,
+                                             std::uintptr_t helperAddress,
+                                             std::string& error) {
+    if (!validateInlineValueSize("constant binary", error)) return false;
+    emit({0x48, 0x8B, 0x83});  // mov rax, [rbx + stackSize]
+    emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackSize)));
+    emit({0x48, 0x85, 0xC0});  // test rax, rax：空栈走原始两条指令。
+    const std::size_t empty = emitJzPlaceholder();
+    emitLoadTopPointer();
+    emit({0x81, 0xB9});  // cmp dword ptr [rcx + typeOffset], Number
+    emit32(static_cast<std::uint32_t>(Value::typeOffset()));
+    emit32(Value::numberTypeTag());
+    const std::size_t nonNumber = emitJnePlaceholder();
+    // 等价 C++：left = top.number_；right = 常量的 double 位编码。
+    emit({0xF2, 0x0F, 0x10, 0x81});  // movsd xmm0, [rcx + numberOffset]
+    emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+    emit({0x48, 0xBA});  // mov rdx, bits
+    emit64(bits);
+    emit({0x66, 0x48, 0x0F, 0x6E, 0xCA});  // movq xmm1, rdx：复制位，不转换整数。
+    if (operation == Opcode::Equal || operation == Opcode::Greater || operation == Opcode::Less) {
+      emit({0x66, 0x0F, 0x2E, 0xC1});  // ucomisd xmm0, xmm1
+      if (operation == Opcode::Greater) {
+        emit({0x0F, 0x97, 0xC0});  // seta al：有序且大于。
+      } else {
+        // sete al 或 setb al：先取相等/小于条件，再用 PF 排除 unordered。
+        emit({0x0F, operation == Opcode::Equal ? std::uint8_t{0x94} : std::uint8_t{0x92}, 0xC0});
+        emit({0x0F, 0x9B, 0xC2});  // setnp dl：排除 NaN；不能写 cl，它属于栈顶指针。
+        emit({0x20, 0xD0});        // and al, dl
+      }
+      emit({0x88, 0x81});  // mov byte ptr [rcx + booleanOffset], al
+      emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
+      emit({0xC7, 0x81});  // mov dword ptr [rcx + typeOffset], Boolean
+      emit32(static_cast<std::uint32_t>(Value::typeOffset()));
+      emit32(Value::booleanTypeTag());
+    } else {
+      const std::uint8_t opcode = operation == Opcode::Add ? 0x58 : operation == Opcode::Sub ? 0x5C
+                                 : operation == Opcode::Mul ? 0x59 : 0x5E;
+      emit({0xF2, 0x0F, opcode, 0xC1});  // addsd/subsd/mulsd/divsd xmm0, xmm1
+      emit({0xF2, 0x0F, 0x11, 0x81});  // movsd [rcx + numberOffset], xmm0
+      emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+    }
+    emit({0xB8});  // mov eax, 1：成功；整个组合的净栈深度变化为 0。
+    emit32(1);
+    const std::size_t done = emitJumpPlaceholder();
+    const std::size_t fallback = offset();
+    if (!patchBranchTo(empty, fallback, true, error) ||
+        !patchBranchTo(nonNumber, fallback, true, error)) return false;
+    // guard 失败前未改栈，先正常压入常量，再执行完整运算 helper。
+    if (!emitNumberConstant(bits, reinterpret_cast<std::uintptr_t>(&minijsBaselinePushNumberSlot),
+                            error)) return false;
+    const std::size_t pushFailed = emitJumpIfFalsePlaceholder();
+    emitMoveFrameToFirstArg();
+    emitLoadHelper(helperAddress);
+    emitCallHelper();
+    return patchBranchTo(pushFailed, offset(), true, error) &&
+           patchBranchTo(done, offset(), false, error);
+  }
+
   bool emitNumberLocalOrRuntimeCall(std::uint32_t slot, bool read,
                                    std::uintptr_t helperAddress,
                                    std::uintptr_t pushNumberSlotAddress,
@@ -955,6 +1014,27 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
       branchTargets[instruction.jumpTarget] = true;
     }
   }
+  const auto constantBinaryHelper = [&](std::size_t index) -> std::uintptr_t {
+    if (index + 1 >= code->instructions.size()) return 0;
+    const auto& first = code->instructions[index];
+    const auto& second = code->instructions[index + 1];
+    if (first.opcode != Opcode::Constant ||
+        !function.chunk.constant(first.operands[0]).isNumber() ||
+        branchTargets[verification.instructionOffsets[index + 1]]) return 0;
+    switch (second.opcode) {
+      case Opcode::Add: return reinterpret_cast<std::uintptr_t>(&minijsBaselineAdd);
+      case Opcode::Sub: return reinterpret_cast<std::uintptr_t>(&minijsBaselineSub);
+      case Opcode::Mul: return reinterpret_cast<std::uintptr_t>(&minijsBaselineMul);
+      case Opcode::Div:
+        // +0/-0 的除零错误仍执行原始路径；NaN 不按零处理。
+        return function.chunk.constant(first.operands[0]).asNumber() == 0.0 ? 0
+            : reinterpret_cast<std::uintptr_t>(&minijsBaselineDiv);
+      case Opcode::Equal: return reinterpret_cast<std::uintptr_t>(&minijsBaselineEqual);
+      case Opcode::Greater: return reinterpret_cast<std::uintptr_t>(&minijsBaselineGreater);
+      case Opcode::Less: return reinterpret_cast<std::uintptr_t>(&minijsBaselineLess);
+      default: return 0;
+    }
+  };
 #endif
 
   // bytecodeOffsetToNativeOffset 记录每条 bytecode 指令对应的机器码起点；
@@ -965,11 +1045,28 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
     code->bytecodeOffsetToNativeOffset[bytecodeOffset] = emitter.offset();
 
 #if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+    const std::uintptr_t binaryHelper = constantBinaryHelper(index);
+    if (binaryHelper != 0) {
+      const double number = function.chunk.constant(instruction.operands[0]).asNumber();
+      std::uint64_t bits = 0;
+      std::memcpy(&bits, &number, sizeof(bits));
+      std::string inlineError;
+      if (!emitter.emitNumberConstantBinaryOrRuntimeCall(
+              bits, code->instructions[index + 1].opcode, binaryHelper, inlineError)) {
+        return failure(inlineError);
+      }
+      epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+      code->bytecodeOffsetToNativeOffset[verification.instructionOffsets[index + 1]] =
+          code->bytecodeOffsetToNativeOffset[bytecodeOffset];
+      ++index;
+      continue;
+    }
     if (instruction.opcode == Opcode::GetLocal && index + 1 < code->instructions.size()) {
       const auto& next = code->instructions[index + 1];
       const std::size_t nextOffset = verification.instructionOffsets[index + 1];
       if (next.opcode == Opcode::Constant && !branchTargets[nextOffset] &&
-          function.chunk.constant(next.operands[0]).isNumber()) {
+          function.chunk.constant(next.operands[0]).isNumber() &&
+          constantBinaryHelper(index + 1) == 0) {
         const double number = function.chunk.constant(next.operands[0]).asNumber();
         std::uint64_t bits = 0;
         std::memcpy(&bits, &number, sizeof(bits));

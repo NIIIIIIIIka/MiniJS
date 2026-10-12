@@ -977,6 +977,51 @@ codegen 先收集所有 `Jump`、`JumpIfFalse` 和 `Loop` 目标。如果 `Const
 
 测试覆盖数字、负零、NaN、字符串、布尔值、null、数组，语言内部对象身份、递归扩容、直接跳转到第二条，以及非法局部槽错误。采样证明调用次数减少，但关闭采样的三组性能对照未证明稳定提速，具体数据见 [性能报告](baseline-numeric-benchmark.md)。
 
+### Windows x64 数字常量与二元运算合并
+
+以下 bytecode 在 Windows x64 native 编译时可作为一个单元执行：
+
+```text
+OP_CONSTANT numberIndex
+OP_ADD / OP_SUB / OP_MUL / OP_DIV / OP_EQUAL / OP_GREATER / OP_LESS
+```
+
+例如栈顶已经是 `i`，执行 `Constant 1; Add` 的原路径会压入一个常量槽，再计算、减少栈深度并调用 `SyncStackSize`。新路径先检查原栈非空、栈顶是 Number，再把常量的位编码装入 SSE 寄存器，直接更新原栈顶。组合的净栈深度变化为 0，因此无需构造常量临时 Value，也无需同步弹栈。
+
+等价 C++ 为：
+
+```cpp
+if (!stack.empty() && stack.back().isNumber()) {
+  // 以加法为例；比较则把此槽改为 Boolean。
+  stack.back().number_ += embeddedConstant;
+} else {
+  // guard 之前没有修改栈，按原顺序执行两条指令。
+  pushNumberConstant();
+  fullBinaryRuntimeHelper();
+}
+```
+
+加法的主要汇编操作如下；寄存器中的常量不属于 VM 栈，也不包含 GC 引用：
+
+```asm
+; 检查栈非空和栈顶 Number，失败跳到 fallback。
+; rcx 指向栈顶 Value。
+movsd xmm0, [rcx + numberOffset]      ; 左操作数
+mov rdx, constantBits                ; 右操作数的 double 位编码
+movq xmm1, rdx                       ; 复制位编码，不做整数转浮点转换
+addsd xmm0, xmm1
+movsd [rcx + numberOffset], xmm0      ; 原地写回，真实栈深度没有改变
+mov eax, 1                           ; 操作成功
+```
+
+减、乘、除分别使用 `subsd`、`mulsd`、`divsd`。比较使用 `ucomisd`，沿用现有有序比较规则，NaN 的相等、大于、小于结果均为 false；小于和相等用 `setnp dl` 排除 NaN，不写 `cl`，避免破坏 rcx 保存的栈顶地址。
+
+除数常量为 `+0` 或 `-0` 时不合并，原路径继续产生现有除零错误。其它类型的栈顶走 fallback，先正常构造数字常量槽，再执行完整运算 helper，保留字符串拼接、非数字相等和类型错误。常量构造失败时直接退出，不重试或执行后面的运算。
+
+二元运算若是独立跳转目标则禁止合并。两个 decoded 指令仍完整保留，native offset 映射指向同一合并单元，不提供独立 deopt 入口。`GetLocal + Constant` 的旧合并只在没有本次常量运算候选时使用，让省去临时槽和同步调用的组合优先。
+
+测试覆盖七种运算、负零符号、NaN、无穷大、非规格化数、字符串拼接和相等 fallback、类型错误、除零、空栈，以及直接跳入运算指令。ARM64 和 decoded executor 的逐条执行行为不变。实际 helper 次数及关闭采样的性能对照见 [性能报告](baseline-numeric-benchmark.md)。
+
 ### 栈同步边界验证
 
 `minijsBaselineSyncStackSize()` 仍使用通用 `stack_.resize(frame.stackSize)`。数字二元快路径先减少 frame 的快照深度，再调用该 helper 正常销毁右操作数槽，最后刷新栈地址和真实深度。helper 不允许扩大栈；超界时通过 C ABI 记录 `baseline stack size out of bounds` 并退出。
