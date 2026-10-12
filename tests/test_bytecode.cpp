@@ -6103,6 +6103,61 @@ void testJitPairedPushExpansionAndObjectIdentity() {
   }
 }
 
+void testBaselineStackSyncPreservesSingleMultipleAndEmptyShrink() {
+  minijs::VM vm;
+  runBytecodeProgramOnVm(vm, "function syncTest() { return 0; }");
+  const auto entry = +[](minijs::BaselineFrame* frame) {
+    const std::size_t initial = frame->stackSize;
+    const minijs::Value number(7.0);
+    const minijs::Value text(std::string("kept"));
+    const minijs::Value array(std::vector<minijs::Value>{minijs::Value(9.0)});
+    EXPECT(minijsBaselinePush(frame, &number));
+    EXPECT(minijsBaselinePush(frame, &text));
+    EXPECT(minijsBaselinePush(frame, &array));
+    // 单槽同步销毁数组栈槽；更早的字符串与数字保持有效。
+    --frame->stackSize;
+    EXPECT(minijsBaselineSyncStackSize(frame));
+    EXPECT(frame->stackSize == initial + 2);
+    EXPECT(frame->stackData[frame->stackSize - 1].asString() == "kept");
+    EXPECT(frame->stackData[initial].equals(number));
+    // 深度不变时，既不丢弃值，也不新增默认 Value。
+    EXPECT(minijsBaselineSyncStackSize(frame));
+    EXPECT(frame->stackSize == initial + 2);
+    frame->stackSize = initial;
+    EXPECT(minijsBaselineSyncStackSize(frame));
+    EXPECT(frame->stackSize == initial);
+    // 通用路径仍允许清空，再正常压入返回值。
+    frame->stackSize = 0;
+    EXPECT(minijsBaselineSyncStackSize(frame));
+    EXPECT(frame->stackSize == 0);
+    EXPECT(minijsBaselinePush(frame, &number));
+    --frame->stackSize;
+    EXPECT(minijsBaselineSyncStackSize(frame));
+    EXPECT(frame->stackSize == 0);
+    EXPECT(minijsBaselinePush(frame, &number));
+    EXPECT(minijsBaselineReturn(frame));
+  };
+  EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("syncTest", {}, entry)
+             .equals(minijs::Value(7.0)));
+}
+
+void testBaselineStackSyncPreservesOversizeError() {
+  minijs::VM vm;
+  runBytecodeProgramOnVm(vm, "function syncTest() { return 0; }");
+  const auto entry = +[](minijs::BaselineFrame* frame) {
+    ++frame->stackSize;
+    EXPECT(!minijsBaselineSyncStackSize(frame));
+    EXPECT(frame->failed);
+    EXPECT(frame->errorMessage == "baseline stack size out of bounds");
+  };
+  try {
+    vm.debugExecuteGlobalFunctionBaselineEntry("syncTest", {}, entry);
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: baseline stack size out of bounds");
+  }
+}
+
 void testJitDispatchInlineNegateFallbackPreservesTypeError() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -6848,6 +6903,8 @@ void runBytecodeTests() {
   testNativePairedLocalAndNumberPushPreservesValues();
   testNativePairedPushDoesNotFuseBranchTarget();
   testJitPairedPushExpansionAndObjectIdentity();
+  testBaselineStackSyncPreservesSingleMultipleAndEmptyShrink();
+  testBaselineStackSyncPreservesOversizeError();
   testJitDispatchInlineNegateFallbackPreservesTypeError();
   testJitDispatchInlineAddRunsNumberFastPath();
   testJitDispatchInlineAddFallbackPreservesStringConcat();

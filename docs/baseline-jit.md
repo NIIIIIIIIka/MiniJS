@@ -977,6 +977,14 @@ codegen 先收集所有 `Jump`、`JumpIfFalse` 和 `Loop` 目标。如果 `Const
 
 测试覆盖数字、负零、NaN、字符串、布尔值、null、数组，语言内部对象身份、递归扩容、直接跳转到第二条，以及非法局部槽错误。采样证明调用次数减少，但关闭采样的三组性能对照未证明稳定提速，具体数据见 [性能报告](baseline-numeric-benchmark.md)。
 
+### 栈同步边界验证
+
+`minijsBaselineSyncStackSize()` 仍使用通用 `stack_.resize(frame.stackSize)`。数字二元快路径先减少 frame 的快照深度，再调用该 helper 正常销毁右操作数槽，最后刷新栈地址和真实深度。helper 不允许扩大栈；超界时通过 C ABI 记录 `baseline stack size out of bounds` 并退出。
+
+新增直接 C ABI 测试覆盖少一个槽、少多个槽、深度不变、清空、空栈重新压入值与返回，以及超界时的失败标志和完整错误文本。测试还检查单槽同步后更早的字符串和数字仍然有效。它们验证的是 helper 契约，不依赖特定机器码后端。
+
+曾尝试对少一个槽的情况改用 `pop_back()`，但关闭采样的三组 Release 对照方向不一致，未证明稳定收益，因此没有保留这个额外分支。实验结果见 [性能报告](baseline-numeric-benchmark.md)。后续应优先考虑减少同步次数，而不是仅替换容器 API；延迟同步必须先设计真实 VM 栈与 GC 根的一致性协议。
+
 ### 后续 Deopt 需要补什么
 
 真正的 deopt 要在 native 执行中恢复普通 VM，并从正确的 bytecode 位置继续。除了现有 `bytecodeOffsetToNativeOffset` 映射，还需要记录恢复点对应的 bytecode offset、操作发生前还是发生后、有效栈深度、局部变量与操作数的位置，以及嵌套调用帧状态。
