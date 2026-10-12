@@ -949,6 +949,34 @@ Boolean 载荷为 0 或 1，异或 1 实现 `!`。类型标签和其它成员不
 
 `examples/baseline_boolean_benchmark.js` 专门覆盖一次取反和连续两次取反。CLI smoke 测试检查 baseline 入口计数；Release 前后对照记录在 [性能报告](baseline-numeric-benchmark.md)。该样例与数字循环不同，二者耗时不能直接交叉比较。
 
+### Windows x64 相邻局部值与数字常量压栈
+
+以下相邻 bytecode 在 Windows x64 native 编译时可以合并：
+
+```text
+OP_GET_LOCAL slot
+OP_CONSTANT numberIndex
+```
+
+原来数字局部值和数字常量各调用一次 `PushNumberSlot`。现在一次 `minijsBaselineGetLocalAndPushNumberSlot(frame, slot)` 完成两个槽的正常构造，随后机器码把常量位编码写入栈顶。没有新增 bytecode，decoded executor 和 ARM64 仍按两条指令执行。
+
+helper 的等价操作如下：
+
+```cpp
+// 检查局部槽有效；先取出局部值，再进行可能扩容的压栈。
+// 数字仅复制 double，非数字保留完整 Value。
+stack_.emplace_back(localNumber); // 非数字使用完整 Value 副本
+stack_.emplace_back(0.0);
+refreshBaselineFrameStack(frame);
+// helper 成功后，native 重新定位栈顶并写入常量的原始 64 位编码。
+```
+
+两次 Value 构造都由 C++ vector 管理，并不是把 `reserve()` 的容量直接当作有效槽。helper 不分配 GC 对象；非数字局部值的复制保留引用身份。若第二次构造失败，第一次压栈可能已完成，符合逐条执行的副作用顺序；错误直接退出，不从头重试。
+
+codegen 先收集所有 `Jump`、`JumpIfFalse` 和 `Loop` 目标。如果 `Constant` 是独立跳转入口，禁止合并，避免跳转时额外执行前面的 `GetLocal`。非数字常量也不合并。两个 decoded 指令和 bytecode 编号均保留；被合并的两个 native offset 映射指向同一单元，不能用第二条的映射作为独立执行或 deopt 入口。目前没有执行中 deopt，因此该映射只用于定位合并单元。
+
+测试覆盖数字、负零、NaN、字符串、布尔值、null、数组，语言内部对象身份、递归扩容、直接跳转到第二条，以及非法局部槽错误。采样证明调用次数减少，但关闭采样的三组性能对照未证明稳定提速，具体数据见 [性能报告](baseline-numeric-benchmark.md)。
+
 ### 后续 Deopt 需要补什么
 
 真正的 deopt 要在 native 执行中恢复普通 VM，并从正确的 bytecode 位置继续。除了现有 `bytecodeOffsetToNativeOffset` 映射，还需要记录恢复点对应的 bytecode offset、操作发生前还是发生后、有效栈深度、局部变量与操作数的位置，以及嵌套调用帧状态。

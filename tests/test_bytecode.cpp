@@ -5994,6 +5994,115 @@ void testBaselineHelperProfileIsOptionalAndTracksFallback() {
   EXPECT(calls("minijsBaselineReturn") == 0);
 }
 
+void testNativePairedLocalAndNumberPushPreservesValues() {
+  if (!nativeBaselineBackendAvailable()) return;
+  minijs::VM vm;
+  runBytecodeProgramOnVm(vm, "function pair(value) { return [value, 1]; }");
+  minijs::BytecodeFunction function;
+  function.chunk.writeOpcode(minijs::Opcode::GetLocal);
+  function.chunk.writeByte(0);
+  function.chunk.addConstant(minijs::Value(-0.0));
+  function.chunk.writeOpcode(minijs::Opcode::Constant);
+  function.chunk.writeByte(0);
+  function.chunk.writeOpcode(minijs::Opcode::Array);
+  function.chunk.writeByte(2);
+  function.chunk.writeOpcode(minijs::Opcode::Return);
+  const auto compiled = minijs::BaselineCompiler().compile(function);
+  EXPECT(compiled.succeeded());
+  EXPECT(compiled.code->instructions.size() == 4);
+  const std::vector<minijs::Value> values = {
+      minijs::Value(-0.0), minijs::Value(std::numeric_limits<double>::quiet_NaN()),
+      minijs::Value(std::string("kept")), minijs::Value(true), minijs::Value(),
+      minijs::Value(std::vector<minijs::Value>{minijs::Value(9.0)})};
+  vm.setBaselineHelperProfilingEnabled(true);
+  for (const auto& value : values) {
+    const auto result = vm.debugExecuteGlobalFunctionBaselineEntry("pair", {value}, compiled.code->entry);
+    const auto& array = result.asArray();
+    EXPECT(array.size() == 2);
+    if (value.isNumber() && std::isnan(value.asNumber())) {
+      EXPECT(std::isnan(array[0].asNumber()));
+    } else if (value.isArray()) {
+      // 返回到宿主时 copyOutValue 重建数组；跨边界比较内容，而非宿主指针。
+      EXPECT(array[0].toString() == value.toString());
+    } else {
+      EXPECT(array[0].equals(value));
+    }
+    if (value.isNumber() && value.asNumber() == 0.0) {
+      EXPECT(std::signbit(array[0].asNumber()) == std::signbit(value.asNumber()));
+    }
+    EXPECT(array[1].isNumber() && std::signbit(array[1].asNumber()));
+  }
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+  bool found = false;
+  for (const auto& helper : vm.jitRuntimeStats().helpers) {
+    if (helper.name == "minijsBaselineGetLocalAndPushNumberSlot") {
+      found = true;
+      EXPECT(helper.calls == values.size());
+    }
+  }
+  EXPECT(found);
+#endif
+}
+
+void testNativePairedPushDoesNotFuseBranchTarget() {
+  if (!nativeBaselineBackendAvailable()) return;
+  minijs::VM vm;
+  runBytecodeProgramOnVm(vm, "function branch() { return 0; }");
+  minijs::BytecodeFunction function;
+  function.chunk.addConstant(minijs::Value(42.0));
+  // Jump 的目标为 offset 5，直接进入 Constant，不能额外执行 offset 3 的 GetLocal。
+  function.chunk.writeOpcode(minijs::Opcode::Jump);
+  function.chunk.writeByte(0);
+  function.chunk.writeByte(2);
+  function.chunk.writeOpcode(minijs::Opcode::GetLocal);
+  function.chunk.writeByte(255);
+  function.chunk.writeOpcode(minijs::Opcode::Constant);
+  function.chunk.writeByte(0);
+  function.chunk.writeOpcode(minijs::Opcode::Return);
+  const auto compiled = minijs::BaselineCompiler().compile(function);
+  EXPECT(compiled.succeeded());
+  EXPECT(compiled.code->bytecodeOffsetToNativeOffset[3] !=
+         compiled.code->bytecodeOffsetToNativeOffset[5]);
+  EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("branch", {}, compiled.code->entry)
+             .equals(minijs::Value(42.0)));
+  minijs::BytecodeFunction invalid;
+  invalid.chunk.addConstant(minijs::Value(42.0));
+  invalid.chunk.writeOpcode(minijs::Opcode::GetLocal);
+  invalid.chunk.writeByte(255);
+  invalid.chunk.writeOpcode(minijs::Opcode::Constant);
+  invalid.chunk.writeByte(0);
+  invalid.chunk.writeOpcode(minijs::Opcode::Return);
+  const auto bad = minijs::BaselineCompiler().compile(invalid);
+  EXPECT(bad.succeeded());
+  try {
+    vm.debugExecuteGlobalFunctionBaselineEntry("branch", {}, bad.code->entry);
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: local slot out of bounds");
+  }
+}
+
+void testJitPairedPushExpansionAndObjectIdentity() {
+  for (const bool enabled : {false, true}) {
+    minijs::VM vm;
+    vm.setJitEnabled(enabled);
+    vm.setJitCallThreshold(1);
+    const auto result = runBytecodeProgramOnVm(vm, R"(
+      function pair(value) { return [value, 1]; }
+      function grow(depth) {
+        let x = depth + 1;
+        if (depth > 0) { return grow(depth - 1) + x; }
+        return x;
+      }
+      pair(0);
+      grow(2);
+      let object = { n: 7 };
+      [pair(object)[0] == object, pair("x")[0], grow(80), object.n];
+    )");
+    EXPECT(result.toString() == "[true, x, 3321, 7]");
+  }
+}
+
 void testJitDispatchInlineNegateFallbackPreservesTypeError() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -6736,6 +6845,9 @@ void runBytecodeTests() {
   testJitBooleanNotComposesWithBranchesAndSideEffects();
   testBooleanNotFallbackPreservesStackUnderflow();
   testBaselineHelperProfileIsOptionalAndTracksFallback();
+  testNativePairedLocalAndNumberPushPreservesValues();
+  testNativePairedPushDoesNotFuseBranchTarget();
+  testJitPairedPushExpansionAndObjectIdentity();
   testJitDispatchInlineNegateFallbackPreservesTypeError();
   testJitDispatchInlineAddRunsNumberFastPath();
   testJitDispatchInlineAddFallbackPreservesStringConcat();

@@ -410,12 +410,16 @@ class WindowsX64Emitter {
 
   // 编译时已确认常量是数字；运行时先构造栈槽，再写入 double 的原始位。
   bool emitNumberConstant(std::uint64_t numberBits, std::uintptr_t pushNumberSlotAddress,
-                          std::string& error) {
+                          std::string& error, int localSlot = -1) {
     if (!validateInlineValueSize("number constant", error)) {
       return false;
     }
     // helper 内部：stack_.emplace_back(0.0); refreshBaselineFrameStack(frame);
     emitMoveFrameToFirstArg();
+    // 合并 GetLocal + Constant 时，helper 先压入局部值，再构造数字栈顶。
+    if (localSlot >= 0) {
+      emitMoveU32ToSecondArg(static_cast<std::uint32_t>(localSlot));
+    }
     emitLoadHelper(pushNumberSlotAddress);
     emitCallHelper();
     const std::size_t failed = emitJumpIfFalsePlaceholder();
@@ -928,6 +932,7 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
   for (std::size_t index = 0; index < verification.instructionOffsets.size(); ++index) {
     const std::size_t bytecodeOffset = verification.instructionOffsets[index];
     code->bytecodeOffsetToInstructionIndex[bytecodeOffset] = index;
+    code->instructions.push_back(decodeInstruction(function.chunk, bytecodeOffset));
   }
 
 #if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
@@ -941,11 +946,48 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
   std::vector<NativeBranchPatch> branchPatches;
   emitter.emitPrologue();
 
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+  // 第二条若是独立跳转入口，不能执行第一条的压栈副作用。
+  std::vector<bool> branchTargets(function.chunk.code().size() + 1, false);
+  for (const auto& instruction : code->instructions) {
+    if (instruction.opcode == Opcode::Jump || instruction.opcode == Opcode::JumpIfFalse ||
+        instruction.opcode == Opcode::Loop) {
+      branchTargets[instruction.jumpTarget] = true;
+    }
+  }
+#endif
+
   // bytecodeOffsetToNativeOffset 记录每条 bytecode 指令对应的机器码起点；
   // 以后做调试、safepoint 或 deopt 时会从这里回到 bytecode 语义位置。
-  for (const std::size_t bytecodeOffset : verification.instructionOffsets) {
-    DecodedInstruction instruction = decodeInstruction(function.chunk, bytecodeOffset);
+  for (std::size_t index = 0; index < code->instructions.size(); ++index) {
+    const std::size_t bytecodeOffset = verification.instructionOffsets[index];
+    const DecodedInstruction& instruction = code->instructions[index];
     code->bytecodeOffsetToNativeOffset[bytecodeOffset] = emitter.offset();
+
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+    if (instruction.opcode == Opcode::GetLocal && index + 1 < code->instructions.size()) {
+      const auto& next = code->instructions[index + 1];
+      const std::size_t nextOffset = verification.instructionOffsets[index + 1];
+      if (next.opcode == Opcode::Constant && !branchTargets[nextOffset] &&
+          function.chunk.constant(next.operands[0]).isNumber()) {
+        const double number = function.chunk.constant(next.operands[0]).asNumber();
+        std::uint64_t bits = 0;
+        std::memcpy(&bits, &number, sizeof(bits));
+        std::string inlineError;
+        if (!emitter.emitNumberConstant(
+                bits, reinterpret_cast<std::uintptr_t>(&minijsBaselineGetLocalAndPushNumberSlot),
+                inlineError, static_cast<int>(instruction.operands[0]))) {
+          return failure(inlineError);
+        }
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        // 两条 bytecode 保留原编号；native 映射指向同一合并单元，不是 deopt 点。
+        code->bytecodeOffsetToNativeOffset[nextOffset] =
+            code->bytecodeOffsetToNativeOffset[bytecodeOffset];
+        ++index;
+        continue;
+      }
+    }
+#endif
 
     switch (instruction.opcode) {
       case Opcode::Constant:
@@ -1350,7 +1392,6 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
                        opcodeName(instruction.opcode));
     }
 
-    code->instructions.push_back(instruction);
   }
 
   const std::size_t epilogueOffset = emitter.offset();

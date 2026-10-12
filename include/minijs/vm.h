@@ -22,6 +22,8 @@ extern "C" bool minijsBaselinePushConstant(minijs::BaselineFrame* frame,
                                             std::uint32_t constantIndex);
 extern "C" bool minijsBaselineGetLocal(minijs::BaselineFrame* frame, std::uint32_t slot);
 extern "C" bool minijsBaselinePushNumberSlot(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineGetLocalAndPushNumberSlot(minijs::BaselineFrame* frame,
+                                                       std::uint32_t slot);
 extern "C" bool minijsBaselineSetLocal(minijs::BaselineFrame* frame, std::uint32_t slot);
 extern "C" bool minijsBaselinePop(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineDefineGlobal(minijs::BaselineFrame* frame,
@@ -199,6 +201,8 @@ class VM {
                                            std::uint32_t constantIndex);
   friend bool ::minijsBaselineGetLocal(minijs::BaselineFrame* frame, std::uint32_t slot);
   friend bool ::minijsBaselinePushNumberSlot(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineGetLocalAndPushNumberSlot(minijs::BaselineFrame* frame,
+                                                       std::uint32_t slot);
   friend bool ::minijsBaselineSetLocal(minijs::BaselineFrame* frame, std::uint32_t slot);
   friend bool ::minijsBaselinePop(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineDefineGlobal(minijs::BaselineFrame* frame,
@@ -299,6 +303,7 @@ class VM {
   bool baselineRuntimePushConstant(BaselineFrame& frame, std::uint32_t constantIndex);
   bool baselineRuntimeGetLocal(BaselineFrame& frame, std::uint32_t slot);
   bool baselineRuntimePushNumberSlot(BaselineFrame& frame);
+  bool baselineRuntimeGetLocalAndPushNumberSlot(BaselineFrame& frame, std::uint32_t slot);
   bool baselineRuntimeSetLocal(BaselineFrame& frame, std::uint32_t slot);
   bool baselineRuntimePop(BaselineFrame& frame);
   bool baselineRuntimeDefineGlobal(BaselineFrame& frame, std::uint32_t nameIndex);

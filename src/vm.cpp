@@ -1172,6 +1172,27 @@ bool VM::baselineRuntimePushNumberSlot(BaselineFrame& frame) {
   return true;
 }
 
+bool VM::baselineRuntimeGetLocalAndPushNumberSlot(BaselineFrame& frame, std::uint32_t slot) {
+  validateBaselineRuntimeFrame(frame);
+  // 先检查再做编号加法，避免溢出；错误保持 GetLocal 的原有文本。
+  if (frame.slotStart >= stack_.size() || slot >= stack_.size() - frame.slotStart) {
+    throw RuntimeError("local slot out of bounds");
+  }
+  const std::size_t absoluteSlot = frame.slotStart + slot;
+  if (stack_[absoluteSlot].isNumber()) {
+    // 先取出载荷，再构造新槽，不能跨 vector 扩容保存局部槽地址。
+    const double number = stack_[absoluteSlot].asNumber();
+    stack_.emplace_back(number);
+  } else {
+    // 非数字保留完整 Value；临时副本保证扩容时源对象仍然有效。
+    Value local = stack_[absoluteSlot];
+    stack_.push_back(std::move(local));
+  }
+  stack_.emplace_back(0.0);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
 bool VM::baselineRuntimeSetLocal(BaselineFrame& frame, std::uint32_t slot) {
   validateBaselineRuntimeFrame(frame);
   const std::size_t absoluteSlot = frame.slotStart + slot;
