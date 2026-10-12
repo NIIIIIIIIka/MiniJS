@@ -568,6 +568,73 @@ class WindowsX64Emitter {
     return patchBranchTo(done, offset(), false, error);
   }
 
+  // 同槽更新的右操作数也是局部值；两个槽都通过 guard 后才写入左槽。
+  bool emitNumberLocalPairUpdateOrRuntimeCall(std::uint32_t leftSlot, std::uint32_t rightSlot,
+                                             Opcode operation, std::uintptr_t helperAddress,
+                                             std::string& error) {
+    if (!validateInlineValueSize("local pair number update", error)) return false;
+    std::vector<std::size_t> fallbacks;
+    for (int side = 0; side < 2; ++side) {
+      const std::uint32_t slot = side == 0 ? leftSlot : rightSlot;
+      emitLoadLocalAddress(slot);
+      fallbacks.push_back(emitJbPlaceholder());
+      emit({0x48, 0x3B, 0x83});  // cmp rax, [rbx + stackSize]
+      emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackSize)));
+      fallbacks.push_back(emitJaePlaceholder());
+      emitLocalPointerFromIndex();
+      emit({0x81, 0xBA});  // cmp dword ptr [rdx + typeOffset], Number
+      emit32(static_cast<std::uint32_t>(Value::typeOffset()));
+      emit32(Value::numberTypeTag());
+      fallbacks.push_back(emitJnePlaceholder());
+      // 同槽时也保存左地址；直到两个值均读取完成才更新。
+      if (side == 0) emit({0x49, 0x89, 0xD0}); // mov r8, rdx
+    }
+    emit({0x48, 0x89, 0xD1});  // mov rcx, rdx：右局部槽。
+    emit({0x4C, 0x89, 0xC2});  // mov rdx, r8：恢复左局部槽。
+    BinaryNumberGuardPatches zero;
+    if (operation == Opcode::Div && !emitRightZeroGuard(zero, error)) return false;
+    emit({0xF2, 0x0F, 0x10, 0x82});  // movsd xmm0, [rdx + numberOffset]
+    emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+    const std::uint8_t opcode = operation == Opcode::Add ? 0x58 : operation == Opcode::Sub ? 0x5C
+                               : operation == Opcode::Mul ? 0x59 : 0x5E;
+    emit({0xF2, 0x0F, opcode, 0x81});  // 算术 xmm0, [rcx + numberOffset]
+    emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+    emit({0xF2, 0x0F, 0x11, 0x82});  // movsd [rdx + numberOffset], xmm0
+    emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+    emit({0xB8});  // mov eax, 1：无临时槽，无需同步栈深度。
+    emit32(1);
+    const std::size_t done = emitJumpPlaceholder();
+    const std::size_t fallback = offset();
+    if (zero.hasRightZero) fallbacks.push_back(zero.rightZero);
+    for (const auto patch : fallbacks) {
+      if (!patchBranchTo(patch, fallback, true, error)) return false;
+    }
+    std::vector<std::size_t> failures;
+    for (const auto slot : {leftSlot, rightSlot}) {
+      emitMoveFrameToFirstArg();
+      emitMoveU32ToSecondArg(slot);
+      emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselineGetLocal));
+      emitCallHelper();
+      failures.push_back(emitJumpIfFalsePlaceholder());
+    }
+    emitMoveFrameToFirstArg();
+    emitLoadHelper(helperAddress);
+    emitCallHelper();
+    failures.push_back(emitJumpIfFalsePlaceholder());
+    emitMoveFrameToFirstArg();
+    emitMoveU32ToSecondArg(leftSlot);
+    emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselineSetLocal));
+    emitCallHelper();
+    failures.push_back(emitJumpIfFalsePlaceholder());
+    emitMoveFrameToFirstArg();
+    emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselinePop));
+    emitCallHelper();
+    for (const auto patch : failures) {
+      if (!patchBranchTo(patch, offset(), true, error)) return false;
+    }
+    return patchBranchTo(done, offset(), false, error);
+  }
+
   // 仅在比较成功后使用：比较一定产生 Boolean，无需重复类型和空栈 guard。
   void emitLoadBooleanTopResult() {
     emitLoadTopPointer();
@@ -1126,7 +1193,7 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
 
 #if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
     if (instruction.opcode == Opcode::GetLocal && index + 4 < code->instructions.size()) {
-      const auto& constant = code->instructions[index + 1];
+      const auto& rightOperand = code->instructions[index + 1];
       const auto& arithmetic = code->instructions[index + 2];
       const auto& assign = code->instructions[index + 3];
       const bool isArithmetic = arithmetic.opcode == Opcode::Add || arithmetic.opcode == Opcode::Sub ||
@@ -1135,17 +1202,30 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
       for (std::size_t inner = 1; inner <= 4; ++inner) {
         independentEntry = independentEntry || branchTargets[verification.instructionOffsets[index + inner]];
       }
-      const std::uintptr_t updateHelper = isArithmetic ? constantBinaryHelper(index + 1) : 0;
-      if (constant.opcode == Opcode::Constant && updateHelper != 0 &&
+      std::uintptr_t updateHelper = isArithmetic ? constantBinaryHelper(index + 1) : 0;
+      if (isArithmetic && rightOperand.opcode == Opcode::GetLocal) {
+        updateHelper = arithmetic.opcode == Opcode::Add ? reinterpret_cast<std::uintptr_t>(&minijsBaselineAdd)
+                     : arithmetic.opcode == Opcode::Sub ? reinterpret_cast<std::uintptr_t>(&minijsBaselineSub)
+                     : arithmetic.opcode == Opcode::Mul ? reinterpret_cast<std::uintptr_t>(&minijsBaselineMul)
+                                                        : reinterpret_cast<std::uintptr_t>(&minijsBaselineDiv);
+      }
+      if (updateHelper != 0 &&
           assign.opcode == Opcode::SetLocal && assign.operands[0] == instruction.operands[0] &&
           code->instructions[index + 4].opcode == Opcode::Pop && !independentEntry) {
-        const double number = function.chunk.constant(constant.operands[0]).asNumber();
-        std::uint64_t bits = 0;
-        std::memcpy(&bits, &number, sizeof(bits));
         std::string inlineError;
-        if (!emitter.emitNumberLocalUpdateOrRuntimeCall(
-                instruction.operands[0], bits, arithmetic.opcode, updateHelper, inlineError)) {
-          return failure(inlineError);
+        if (rightOperand.opcode == Opcode::GetLocal) {
+          if (!emitter.emitNumberLocalPairUpdateOrRuntimeCall(
+                  instruction.operands[0], rightOperand.operands[0], arithmetic.opcode, updateHelper, inlineError)) {
+            return failure(inlineError);
+          }
+        } else {
+          const double number = function.chunk.constant(rightOperand.operands[0]).asNumber();
+          std::uint64_t bits = 0;
+          std::memcpy(&bits, &number, sizeof(bits));
+          if (!emitter.emitNumberLocalUpdateOrRuntimeCall(
+                  instruction.operands[0], bits, arithmetic.opcode, updateHelper, inlineError)) {
+            return failure(inlineError);
+          }
         }
         epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
         for (std::size_t inner = 1; inner <= 4; ++inner) {

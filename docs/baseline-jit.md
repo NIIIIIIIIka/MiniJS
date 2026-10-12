@@ -1087,6 +1087,47 @@ guard 未命中前没有副作用。fallback 按顺序执行完整局部读取�
 
 数字循环中实际减少的是临时局部读取压栈与末尾 `Pop`；常量二元合并此前已经省去了该处的同步，所以本次 `SyncStackSize` 调用数不变。详见 [性能报告](baseline-numeric-benchmark.md)。
 
+### Windows x64 双局部槽数字更新
+
+右操作数也可以是局部值，匹配 `total = total + i;` 这样的五条指令：
+
+```text
+OP_GET_LOCAL leftSlot
+OP_GET_LOCAL rightSlot
+OP_ADD / OP_SUB / OP_MUL / OP_DIV
+OP_SET_LOCAL leftSlot
+OP_POP
+```
+
+要求写回左槽、结果被丢弃、后四条无独立跳转入口。逐个检查两个槽的编号溢出、边界和 Number 标签，所有 guard 完成后才修改左槽；左右为不同槽时右槽不变。`leftSlot == rightSlot` 也合法，先读取两个原操作数再写回，所以 `x = x + x`、`x = x / x` 保留别名语义。
+
+等价 C++（省略已通过的 guard）是：
+
+```cpp
+double left = stack_[frame.slotStart + leftSlot].asNumber();
+double right = stack_[frame.slotStart + rightSlot].asNumber();
+stack_[frame.slotStart + leftSlot].number_ = left + right;
+// 无临时槽，不需要数字压栈、栈同步或末尾 Pop helper。
+```
+
+左槽地址先暂存在 volatile 寄存器 r8，计算右槽地址时不会覆盖它；这些地址只在不调用 helper 的快路径使用。加法的关键汇编如下：
+
+```asm
+; 左槽地址先保存到 r8，右槽地址算出后放在 rdx。
+mov rcx, rdx                         ; 右槽地址
+mov rdx, r8                          ; 左槽地址
+movsd xmm0, [rdx + numberOffset]
+addsd xmm0, [rcx + numberOffset]
+movsd [rdx + numberOffset], xmm0      ; 仅更新左槽
+mov eax, 1
+```
+
+动态除法复用现有零除数 guard：`+0/-0` 都进入完整 helper 产生原有错误，NaN 的 unordered 分支继续运算。类型或边界 guard 未命中前不写入任何槽；fallback 按顺序调用两个完整 `GetLocal`、运算、`SetLocal` 和 `Pop`，每步失败立即退出。字符串拼接、Number 变为字符串的生命周期和非法右槽错误仍由 VM 管理。
+
+Number 快路径不分配 GC 对象，也不改变栈深度。捕获左槽的 open upvalue 立即看到新值，关闭后和 GC 后访问仍保持结果。需要返回赋值值、写入不同目标或进入中间指令的情况不匹配。五条 decoded 指令保留，native offset 指向同一合并单元，ARM64/decoded 行为不变。
+
+专项测试覆盖四种算术和特殊数字、同槽别名、左右非数字 fallback、动态正负零、保留赋值值、不同目标、闭包和 GC，以及内部 Pop 入口和非法右槽。`examples/baseline_local_pair_benchmark.js` 专门验证累加循环，已纳入 CTest；配对数据与调用次数见 [性能报告](baseline-numeric-benchmark.md)。
+
 ### 栈同步边界验证
 
 `minijsBaselineSyncStackSize()` 仍使用通用 `stack_.resize(frame.stackSize)`。数字二元快路径先减少 frame 的快照深度，再调用该 helper 正常销毁右操作数槽，最后刷新栈地址和真实深度。helper 不允许扩大栈；超界时通过 C ABI 记录 `baseline stack size out of bounds` 并退出。
