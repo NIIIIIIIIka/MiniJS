@@ -181,6 +181,21 @@ extern "C" bool minijsBaselineSetLocal(minijs::BaselineFrame* frame, std::uint32
   }
 }
 
+extern "C" bool minijsBaselineCopyLocal(minijs::BaselineFrame* frame, std::uint32_t sourceSlot,
+                                       std::uint32_t targetSlot) {
+  if (!frameCanRun(frame)) return false;
+  try {
+    HelperProfileScope profile(*frame->vm, __func__);
+    return frame->vm->baselineRuntimeCopyLocal(*frame, sourceSlot, targetSlot);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
+  } catch (...) {
+    return markFailed(frame);
+  }
+}
+
 extern "C" bool minijsBaselinePop(minijs::BaselineFrame* frame) {
   if (!frameCanRun(frame)) {
     return false;

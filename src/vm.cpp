@@ -1205,6 +1205,25 @@ bool VM::baselineRuntimeSetLocal(BaselineFrame& frame, std::uint32_t slot) {
   return true;
 }
 
+bool VM::baselineRuntimeCopyLocal(BaselineFrame& frame, std::uint32_t sourceSlot,
+                                  std::uint32_t targetSlot) {
+  validateBaselineRuntimeFrame(frame);
+  if (frame.slotStart > stack_.size() || sourceSlot >= stack_.size() - frame.slotStart) {
+    throw RuntimeError("local slot out of bounds");
+  }
+  if (targetSlot >= stack_.size() - frame.slotStart) {
+    // 手写字节码可能把 GetLocal 新增的临时槽作为目标；保留原顺序和错误时的栈。
+    baselineRuntimeGetLocal(frame, sourceSlot);
+    baselineRuntimeSetLocal(frame, targetSlot);
+    return baselineRuntimePop(frame);
+  }
+  // 先复制再覆盖，兼容同槽赋值和拥有资源的 Value；不触发 VM 堆分配。
+  Value copy = stack_[frame.slotStart + sourceSlot];
+  stack_[frame.slotStart + targetSlot] = std::move(copy);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
 bool VM::baselineRuntimePop(BaselineFrame& frame) {
   validateBaselineRuntimeFrame(frame);
   discardTop();

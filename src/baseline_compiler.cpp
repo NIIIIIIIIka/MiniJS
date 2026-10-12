@@ -597,6 +597,30 @@ class WindowsX64Emitter {
     return true;
   }
 
+  // 等价于 target = source；只有两槽都是数字才直接复制 double 载荷。
+  bool emitLocalCopyOrRuntimeCall(std::uint32_t sourceSlot, std::uint32_t targetSlot,
+                                 std::string& error) {
+    std::vector<std::size_t> fallbacks;
+    if (!emitLoadNumberLocalPair(sourceSlot, targetSlot, fallbacks, error)) return false;
+    emit({0xF2, 0x0F, 0x10, 0x82});  // movsd xmm0, [rdx + numberOffset]：读取源数字。
+    emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+    emit({0xF2, 0x0F, 0x11, 0x81});  // movsd [rcx + numberOffset], xmm0：写入目标数字。
+    emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+    emit({0xB8});  // mov eax, 1：栈深度不变，无需调用同步 helper。
+    emit32(1);
+    const std::size_t done = emitJumpPlaceholder();
+    const std::size_t fallback = offset();
+    for (const auto patch : fallbacks) {
+      if (!patchBranchTo(patch, fallback, true, error)) return false;
+    }
+    emitMoveFrameToFirstArg();
+    emitMoveU32ToSecondArg(sourceSlot);
+    emitMoveU32ToThirdArg(targetSlot);
+    emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselineCopyLocal));
+    emitCallHelper();
+    return patchBranchTo(done, offset(), false, error);
+  }
+
   // 同槽更新的右操作数也是局部值；两个槽都通过 guard 后才写入左槽。
   bool emitNumberLocalPairUpdateOrRuntimeCall(std::uint32_t leftSlot, std::uint32_t rightSlot,
                                              Opcode operation, std::uintptr_t helperAddress,
@@ -1324,6 +1348,22 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
         ++index;
         continue;
       }
+    }
+    if (instruction.opcode == Opcode::GetLocal && index + 2 < code->instructions.size() &&
+        code->instructions[index + 1].opcode == Opcode::SetLocal &&
+        code->instructions[index + 2].opcode == Opcode::Pop &&
+        !branchTargets[verification.instructionOffsets[index + 1]] &&
+        !branchTargets[verification.instructionOffsets[index + 2]]) {
+      std::string inlineError;
+      if (!emitter.emitLocalCopyOrRuntimeCall(instruction.operands[0],
+              code->instructions[index + 1].operands[0], inlineError)) return failure(inlineError);
+      epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+      for (std::size_t inner = 1; inner <= 2; ++inner) {
+        code->bytecodeOffsetToNativeOffset[verification.instructionOffsets[index + inner]] =
+            code->bytecodeOffsetToNativeOffset[bytecodeOffset];
+      }
+      index += 2;
+      continue;
     }
     if (instruction.opcode == Opcode::GetLocal && index + 4 < code->instructions.size()) {
       const auto& rightOperand = code->instructions[index + 1];

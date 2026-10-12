@@ -6836,6 +6836,151 @@ void testLocalPairExpressionPreservesIndependentOperationEntry() {
   }
 }
 
+void testLocalCopyFusionPreservesValuesAndIdentity() {
+  for (const bool enabled : {false, true}) {
+    minijs::VM vm;
+    vm.setJitEnabled(enabled);
+    vm.setJitCallThreshold(1);
+    const auto result = runBytecodeProgramOnVm(vm, R"(
+      function copy(value) { let target = 0; target = value; return target; }
+      function self(value) { value = value; return value; }
+      function retained(value) { let target = 0; return target = value; }
+      function outer(value) {
+        let target = 0;
+        function read() { return target; }
+        target = value;
+        return read;
+      }
+      class Box { self() { let target = 0; target = this; return target; } }
+      copy(0); self(0); retained(0); outer(0);
+      let box = Box(); box.self();
+      let object = { n: 8 };
+      let read = outer(object);
+      [copy(object) == object, copy(read) == read, self(object) == object,
+       copy("kept"), copy(false), copy(null), copy(undefined), retained(7),
+       read() == object, box.self() == box];
+    )");
+    EXPECT(result.toString() == "[true, true, true, kept, false, null, undefined, 7, true, true]");
+    vm.collectGarbage();
+    EXPECT(runBytecodeProgramOnVm(vm, "read().n;").equals(minijs::Value(8.0)));
+  }
+}
+
+void testLocalCopyAbiPreservesFailureStackAndTemporaryTarget() {
+  minijs::VM vm;
+  runBytecodeProgramOnVm(vm, "function copy(source,target) { return source; }");
+  const auto entry = +[](minijs::BaselineFrame* frame) {
+    const auto originalSize = frame->stackSize;
+    EXPECT(minijsBaselineCopyLocal(frame, 0, 2));
+    EXPECT(frame->stackSize == originalSize && !frame->failed);
+    EXPECT(!minijsBaselineCopyLocal(frame, 255, 0));
+    EXPECT(frame->stackSize == originalSize);
+    EXPECT(frame->errorMessage == "local slot out of bounds");
+    frame->failed = false;
+    frame->errorMessage.clear();
+    EXPECT(!minijsBaselineCopyLocal(frame, 0, 255));
+    // 原顺序先成功 GetLocal 再失败 SetLocal，所以新增槽仍留在栈上。
+    EXPECT(frame->stackSize == originalSize + 1);
+    EXPECT(frame->errorMessage == "local slot out of bounds");
+    frame->failed = false;
+    frame->errorMessage.clear();
+    EXPECT(minijsBaselinePop(frame));
+    EXPECT(minijsBaselineReturnLocal(frame, 0));
+  };
+  EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("copy",
+      {minijs::Value(7.0), minijs::Value(0.0)}, entry).equals(minijs::Value(7.0)));
+}
+
+void testNativeLocalCopyPayloadFallbackAndBoundaries() {
+  if (!nativeBaselineBackendAvailable()) return;
+  minijs::VM vm;
+  runBytecodeProgramOnVm(vm, "function copy(source,target) { return source; }");
+  auto compileCopy = [](std::uint8_t source, std::uint8_t target) {
+    minijs::BytecodeFunction function;
+    function.chunk.writeOpcode(minijs::Opcode::GetLocal);
+    function.chunk.writeByte(source);
+    function.chunk.writeOpcode(minijs::Opcode::SetLocal);
+    function.chunk.writeByte(target);
+    function.chunk.writeOpcode(minijs::Opcode::Pop);
+    function.chunk.writeOpcode(minijs::Opcode::GetLocal);
+    function.chunk.writeByte(target < 2 ? target : 0);
+    function.chunk.writeOpcode(minijs::Opcode::Return);
+    return minijs::BaselineCompiler().compile(function);
+  };
+  const auto compiled = compileCopy(0, 1);
+  EXPECT(compiled.succeeded());
+  vm.setBaselineHelperProfilingEnabled(true);
+  for (const double number : {-0.0, std::numeric_limits<double>::quiet_NaN(),
+                              std::numeric_limits<double>::infinity(), 7.0}) {
+    const auto result = vm.debugExecuteGlobalFunctionBaselineEntry(
+        "copy", {minijs::Value(number), minijs::Value(0.0)}, compiled.code->entry);
+    const double actual = result.asNumber();
+    EXPECT(std::memcmp(&number, &actual, sizeof(number)) == 0);
+  }
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+  EXPECT(compiled.code->bytecodeOffsetToNativeOffset[0] == compiled.code->bytecodeOffsetToNativeOffset[2]);
+  EXPECT(compiled.code->bytecodeOffsetToNativeOffset[0] == compiled.code->bytecodeOffsetToNativeOffset[4]);
+  for (const auto& helper : vm.jitRuntimeStats().helpers) {
+    EXPECT(helper.name != "minijsBaselineCopyLocal");
+    EXPECT(helper.name != "minijsBaselinePushNumberSlot");
+    EXPECT(helper.name != "minijsBaselinePop");
+  }
+#endif
+  const std::vector<minijs::Value> values = {
+      minijs::Value(false), minijs::Value(), minijs::Value::undefined(),
+      minijs::Value(std::string("kept")),
+      minijs::Value(std::vector<minijs::Value>{minijs::Value(9.0)}),
+      minijs::Value(std::unordered_map<std::string,minijs::Value>{{"n",minijs::Value(7.0)}})};
+  for (const auto& value : values) {
+    const auto result = vm.debugExecuteGlobalFunctionBaselineEntry(
+        "copy", {value, minijs::Value(0.0)}, compiled.code->entry);
+    EXPECT(result.toString() == value.toString());
+  }
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+  bool found = false;
+  for (const auto& helper : vm.jitRuntimeStats().helpers) {
+    if (helper.name == "minijsBaselineCopyLocal") {
+      found = true;
+      EXPECT(helper.calls == values.size());
+    }
+  }
+  EXPECT(found);
+#endif
+  for (const std::uint8_t target : {std::uint8_t(0), std::uint8_t(1), std::uint8_t(2)}) {
+    const auto code = compileCopy(0, target);
+    EXPECT(code.succeeded());
+    EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("copy",
+        {minijs::Value(7.0), minijs::Value(std::string("old"))}, code.code->entry).equals(minijs::Value(7.0)));
+  }
+  for (const auto& slots : {std::pair<std::uint8_t,std::uint8_t>{255, 0}, {0, 255}}) {
+    const auto code = compileCopy(slots.first, slots.second);
+    EXPECT(code.succeeded());
+    try {
+      vm.debugExecuteGlobalFunctionBaselineEntry("copy",
+          {minijs::Value(7.0), minijs::Value(0.0)}, code.code->entry);
+      EXPECT(false);
+    } catch (const minijs::RuntimeError& error) {
+      EXPECT(std::string_view(error.what()) == "RuntimeError: local slot out of bounds");
+    }
+  }
+  // 跳转直接进入 SetLocal 或 Pop：不能把未执行的读取/赋值融合进去。
+  for (const std::uint8_t jump : {std::uint8_t(2), std::uint8_t(4)}) {
+    minijs::BytecodeFunction branch;
+    branch.chunk.writeOpcode(minijs::Opcode::GetLocal); branch.chunk.writeByte(0);
+    branch.chunk.writeOpcode(minijs::Opcode::Jump); branch.chunk.writeByte(0); branch.chunk.writeByte(jump);
+    branch.chunk.writeOpcode(minijs::Opcode::GetLocal); branch.chunk.writeByte(0);
+    branch.chunk.writeOpcode(minijs::Opcode::SetLocal); branch.chunk.writeByte(1);
+    branch.chunk.writeOpcode(minijs::Opcode::Pop);
+    branch.chunk.writeOpcode(minijs::Opcode::GetLocal); branch.chunk.writeByte(1);
+    branch.chunk.writeOpcode(minijs::Opcode::Return);
+    const auto code = minijs::BaselineCompiler().compile(branch);
+    EXPECT(code.succeeded());
+    EXPECT(code.code->bytecodeOffsetToNativeOffset[5] != code.code->bytecodeOffsetToNativeOffset[5 + jump]);
+    EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("copy",
+        {minijs::Value(7.0), minijs::Value(2.0)}, code.code->entry).equals(minijs::Value(jump == 2 ? 7.0 : 2.0)));
+  }
+}
+
 void testNativeLocalReturnPreservesValuesAndUsesMergedHelper() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -7914,6 +8059,9 @@ void runBytecodeTests() {
   testLocalPairExpressionsKeepSourcesAndFallbackValues();
   testLocalPairExpressionPreservesIndependentOperationEntry();
   testNativeLocalReturnPreservesValuesAndUsesMergedHelper();
+  testLocalCopyFusionPreservesValuesAndIdentity();
+  testLocalCopyAbiPreservesFailureStackAndTemporaryTarget();
+  testNativeLocalCopyPayloadFallbackAndBoundaries();
   testLocalReturnKeepsIdentityClosuresMethodsAndReceiverRule();
   testLocalReturnIndependentEntryAndInvalidSlot();
   testNumberReturnKeepsCapturedValuesAndOtherConstantTypes();

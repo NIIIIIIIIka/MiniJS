@@ -14,6 +14,9 @@ extern "C" bool minijsBaselinePushNumberSlot(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineGetLocalAndPushNumberSlot(minijs::BaselineFrame* frame,
                                                        std::uint32_t slot);
 extern "C" bool minijsBaselineSetLocal(minijs::BaselineFrame* frame, std::uint32_t slot);
+// 合并结果被丢弃的局部赋值；非数字仍复制完整 Value。
+extern "C" bool minijsBaselineCopyLocal(minijs::BaselineFrame* frame, std::uint32_t sourceSlot,
+                                       std::uint32_t targetSlot);
 extern "C" bool minijsBaselinePop(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineDefineGlobal(minijs::BaselineFrame* frame,
                                             std::uint32_t nameIndex);

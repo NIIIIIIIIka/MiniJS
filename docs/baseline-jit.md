@@ -1263,6 +1263,50 @@ call rax
 
 新增 `examples/baseline_literal_return_benchmark.js`，使用实际内置函数 `len(label())` 累计结果；包含字符串创建和 GC，不是纯返回指令微基准。数据与调用数见 [性能报告](baseline-numeric-benchmark.md)。
 
+### Windows x64 局部复制赋值合并
+
+局部赋值语句 `target = source;` 通常生成如下字节码：
+
+```text
+GetLocal sourceSlot
+SetLocal targetSlot
+Pop
+```
+
+当 SetLocal 和 Pop 都不是独立跳转入口时，Windows x64 将三条指令合并。若赋值结果还需使用，例如 `return target = source;`，没有紧邻的 Pop，就不参与本次合并。token、Parser、AST、Interpreter 和 bytecode 格式不变；ARM64/decoded 仍逐条执行。
+
+源槽与目标槽都存在且都是 Number 时，机器码直接复制 double 载荷。等价 C++ 为：
+
+```cpp
+// 先验证两槽边界和类型，验证完成前不修改任何值。
+target.number = source.number;
+// 不新增临时 Value，不改变 stack_ 或 frame.stackSize。
+```
+
+共享双局部槽 guard 输出 rdx=源 Value 地址、rcx=目标 Value 地址。复制部分每条汇编与机器码的对应关系如下；位移是 Value::numberOffset() 的 4 字节小端编码：
+
+```asm
+movsd xmm0, [rdx + numberOffset]      ; F2 0F 10 82 + disp32：把源 double 读入 xmm0
+movsd [rcx + numberOffset], xmm0      ; F2 0F 11 81 + disp32：把 double 写入目标
+mov eax, 1                          ; B8 01 00 00 00：操作成功
+```
+
+这不是浮点运算，只搬运 64 位载荷，所以保留负零和 NaN 位编码，也支持源目标同槽。目标必须已经是 Number，否则直接写数字字段会遗漏旧 Value 的资源释放和类型更新。
+
+guard 未命中时，调用一次 `minijsBaselineCopyLocal(frame, sourceSlot, targetSlot)`。正常目标槽采用完整 Value 复制后移动赋值，支持类型变化、字符串、数组、对象、闭包和实例，不复制它们的运行时身份。该过程不创建 VM GC 对象；源值仍由 VM 栈持有，不需要新增 temporaryRoots。
+
+```asm
+mov rcx, rbx                        ; 第一个参数：BaselineFrame*
+mov edx, sourceSlot                 ; 第二个参数：源相对槽编号
+mov r8d, targetSlot                 ; 第三个参数：目标相对槽编号
+mov rax, copyLocalHelper
+call rax
+```
+
+特殊手写字节码的目标槽可能是 GetLocal 刚压入的临时槽。目标不在原栈中时，helper 按原顺序执行 GetLocal、SetLocal、Pop：临时目标合法时成功，目标仍越界时在成功压栈后报错。源越界则在压栈前报错；均保留 `local slot out of bounds` 及错误时的栈状态。
+
+三个 decoded 指令保留，native offset 指向同一合并单元；独立中间入口禁止合并。测试覆盖载荷逐位复制、完整 Value fallback、类型变化、自赋值、保留结果、捕获槽/GC、this、对象与闭包身份、独立 SetLocal/Pop 入口、非法源/目标槽及新增临时槽边界。新增 `examples/baseline_local_copy_benchmark.js` 与 CLI baseline smoke，Release 配对结果见 [性能报告](baseline-numeric-benchmark.md)。
+
 ### 栈同步边界验证
 
 `minijsBaselineSyncStackSize()` 仍使用通用 `stack_.resize(frame.stackSize)`。数字二元快路径先减少 frame 的快照深度，再调用该 helper 正常销毁右操作数槽，最后刷新栈地址和真实深度。helper 不允许扩大栈；超界时通过 C ABI 记录 `baseline stack size out of bounds` 并退出。

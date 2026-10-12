@@ -425,3 +425,31 @@ Windows x64 合并字符串、Boolean、null/undefined 的 `Constant + Return` �
 两类旧 helper 合并为一次返回 helper，总调用减少 99,999 次。字符串分配数量没有因合并而消失；临时根替代了旧临时栈槽的保护。
 
 CTest 24/24 通过。测试覆盖各类文字常量、数字路径优先级、合并映射和计数、长字符串循环返回后的回收、异常路径的临时根释放、捕获对象和 GC、方法、receiver、索引错误及独立 Return 入口。
+
+### 局部复制赋值对照
+
+新增 `examples/baseline_local_copy_benchmark.js`，循环执行 `copied = i; total = total + copied;`，20 轮、每轮 5000 次，预期结果 `249950000`。Windows x64 合并结果被丢弃的 GetLocal + SetLocal + Pop；数字到数字直接复制载荷，其它类型用一次完整 Value 复制 helper。修改前来自提交 `d3de967`，保存为本机忽略的 `build-verify-release/local-copy-before-d3de967.exe`。
+
+关闭 helper 采样，每组每版本 3 轮预热、15 轮正式采样，第二组交换执行顺序。每次采样使用新的 VM，包含 JIT 编译与前期冷调用：
+
+| 对照组 | 修改前 JIT on | 修改后 JIT on | 前 / 后 | 修改前 JIT off | 修改后 JIT off |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 7.297 ms | 5.579 ms | 1.308x | 56.953 ms | 67.466 ms |
+| 2 | 7.064 ms | 5.427 ms | 1.302x | 56.685 ms | 56.012 ms |
+| 3 | 7.301 ms | 5.629 ms | 1.297x | 58.366 ms | 56.193 ms |
+
+三组 JIT on 中位数降低约 23.5%、23.2%、22.9%。普通 VM 尤其第一组仍有系统噪声；这是该复制循环的同机专项收益，不是任意脚本的固定加速比。所有计算结果为 `249950000`，baseline 入口计数为 19。
+
+另行单轮开启采样，只核对调用次数：
+
+| helper | 修改前调用 | 修改后调用 |
+| --- | ---: | ---: |
+| `PushNumberSlot` | 190,076 | 95,076 |
+| `Pop` | 190,019 | 95,019 |
+| `RecordLoopBackedge` | 95,000 | 95,000 |
+| `ReturnLocal` | 19 | 19 |
+| `CopyLocal` | 0 | 0 |
+
+数字复制在机器码内完成，CopyLocal fallback 未命中；总计减少 190,000 次 helper 调用。循环条件仍构造 Boolean 结果槽并 Pop，没有将剩余调用归零。采样耗时不用于计算提速。
+
+CTest 25/25 通过。专项测试覆盖所有 Value 类别、数字位编码、类型切换、自赋值、赋值结果保留、对象/闭包/实例身份、捕获槽与 GC、独立中间入口、非法槽，以及 GetLocal 新增临时槽作为目标时的原始行为和失败栈状态。
