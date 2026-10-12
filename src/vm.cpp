@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <limits>
 #include <string>
@@ -1506,6 +1507,15 @@ bool VM::baselineRuntimeReturnLocal(BaselineFrame& frame, std::uint32_t slot) {
   }
   // 按值保存局部值，再关闭 upvalue 和缩栈；不能把即将失效的栈引用传给收尾。
   return finishBaselineReturn(frame, stack_[frame.slotStart + slot]);
+}
+
+bool VM::baselineRuntimeReturnNumberBits(BaselineFrame& frame, std::uint64_t bits) {
+  validateBaselineRuntimeFrame(frame);
+  double number = 0.0;
+  static_assert(sizeof(number) == sizeof(bits), "double must have 64 bits");
+  // 还原原始位编码，保留负零、无穷大和 NaN payload；不是整数到浮点转换。
+  std::memcpy(&number, &bits, sizeof(number));
+  return finishBaselineReturn(frame, Value(number));
 }
 
 bool VM::finishBaselineReturn(BaselineFrame& frame, Value result) {

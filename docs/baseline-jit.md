@@ -1199,6 +1199,36 @@ call rax
 
 测试覆盖数字与特殊值、字符串/数组/对象、返回闭包后的 GC、方法返回 this 和对象身份、receiver 返回规则、合并 helper 计数、非法局部槽及独立 Return 入口。`examples/baseline_local_return_benchmark.js` 专门覆盖高频局部返回，已纳入 CTest。当前对照确认调用次数减少，但没有证明稳定提速，见 [性能报告](baseline-numeric-benchmark.md)。
 
+### Windows x64 直接返回数字常量
+
+`Constant numberIndex; Return` 紧邻且 Return 不是独立跳转目标时，合并为 `minijsBaselineReturnNumberBits(frame, bits)`。只匹配 Number；字符串、Boolean、null/undefined 等常量仍执行原路径。
+
+编译器用 `memcpy` 读取 double 的原始 64 位编码，嵌入机器码并按整数参数传入 helper。helper 同样用 `memcpy` 还原，再构造 Number Value 并进入共享的 `finishBaselineReturn()`。不是将整数 bits 转换成 double，不能使用 `static_cast<double>(bits)`；负零、无穷大、非规格化数和 NaN payload 均应逐位保留。
+
+等价 C++ 如下：
+
+```cpp
+double number;
+std::memcpy(&number, &bits, sizeof(number));
+return finishBaselineReturn(frame, Value(number));
+```
+
+Windows x64 的调用汇编为：
+
+```asm
+mov rcx, rbx                         ; 第一个参数：BaselineFrame*
+mov rdx, numberBits                  ; 第二个参数：完整 uint64_t，不是 32 位槽编号
+mov rax, returnNumberBitsHelper
+call rax
+; 成功已完成返回，失败已记录异常；统一进入 epilogue。
+```
+
+这项合并省去常量的临时 VM 栈槽，但仍通过返回 helper 关闭 upvalue、检查并整理 returnSlot、应用 returnsReceiver、压入调用方返回值并刷新栈快照。它不等于直接发出机器 ret，也不绕过 Value 构造或调用帧协议。数字不含 GC 引用，不需要为它另设临时 GC 根；原有局部和捕获对象仍由正常收尾处理。
+
+Return 是独立跳转入口时禁止合并，否则该入口可能应返回另一个已有栈值。两个 decoded 指令保留，native offset 指向同一单元，不提供独立 deopt 入口。ARM64/decoded 不变，普通数字常量压栈仍保留用于其它表达式。
+
+逐位测试同时确认合并映射和 helper 计数。专项测试验证返回时关闭捕获槽、GC 后访问、方法返回常量、非数字常量的原路径、receiver 规则、非法返回槽错误及独立 Return 入口。新增 `examples/baseline_number_return_benchmark.js`，配对数据见 [性能报告](baseline-numeric-benchmark.md)。
+
 ### 栈同步边界验证
 
 `minijsBaselineSyncStackSize()` 仍使用通用 `stack_.resize(frame.stackSize)`。数字二元快路径先减少 frame 的快照深度，再调用该 helper 正常销毁右操作数槽，最后刷新栈地址和真实深度。helper 不允许扩大栈；超界时通过 C ABI 记录 `baseline stack size out of bounds` 并退出。

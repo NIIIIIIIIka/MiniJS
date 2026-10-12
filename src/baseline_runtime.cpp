@@ -825,6 +825,20 @@ extern "C" bool minijsBaselineReturnLocal(minijs::BaselineFrame* frame, std::uin
   }
 }
 
+extern "C" bool minijsBaselineReturnNumberBits(minijs::BaselineFrame* frame, std::uint64_t bits) {
+  if (!frameCanRun(frame)) return false;
+  try {
+    HelperProfileScope profile(*frame->vm, __func__);
+    return frame->vm->baselineRuntimeReturnNumberBits(*frame, bits);
+  } catch (const minijs::RuntimeError& error) {
+    return markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    return markFailedFromException(frame, error);
+  } catch (...) {
+    return markFailed(frame);
+  }
+}
+
 extern "C" bool minijsBaselineReturn(minijs::BaselineFrame* frame) {
   if (!frameCanRun(frame)) {
     return false;

@@ -408,6 +408,11 @@ class WindowsX64Emitter {
     return patchBranchTo(done, offset(), false, error);
   }
 
+  void emitMoveU64ToSecondArg(std::uint64_t value) {
+    emit({0x48, 0xBA});  // mov rdx, imm64：第二个整数参数，保留全部 64 位。
+    emit64(value);
+  }
+
   // 编译时已确认常量是数字；运行时先构造栈槽，再写入 double 的原始位。
   bool emitNumberConstant(std::uint64_t numberBits, std::uintptr_t pushNumberSlotAddress,
                           std::string& error, int localSlot = -1) {
@@ -1273,6 +1278,25 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
     code->bytecodeOffsetToNativeOffset[bytecodeOffset] = emitter.offset();
 
 #if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+    if (instruction.opcode == Opcode::Constant && index + 1 < code->instructions.size() &&
+        function.chunk.constant(instruction.operands[0]).isNumber() &&
+        code->instructions[index + 1].opcode == Opcode::Return &&
+        !branchTargets[verification.instructionOffsets[index + 1]]) {
+      const double number = function.chunk.constant(instruction.operands[0]).asNumber();
+      std::uint64_t bits = 0;
+      static_assert(sizeof(number) == sizeof(bits), "double must have 64 bits");
+      std::memcpy(&bits, &number, sizeof(bits));
+      emitter.emitMoveFrameToFirstArg();
+      emitter.emitMoveU64ToSecondArg(bits);
+      emitter.emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselineReturnNumberBits));
+      emitter.emitCallHelper();
+      epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+      epiloguePatches.push_back({emitter.emitJumpPlaceholder(), false});
+      code->bytecodeOffsetToNativeOffset[verification.instructionOffsets[index + 1]] =
+          code->bytecodeOffsetToNativeOffset[bytecodeOffset];
+      ++index;
+      continue;
+    }
     if (instruction.opcode == Opcode::GetLocal && index + 1 < code->instructions.size() &&
         code->instructions[index + 1].opcode == Opcode::Return &&
         !branchTargets[verification.instructionOffsets[index + 1]]) {

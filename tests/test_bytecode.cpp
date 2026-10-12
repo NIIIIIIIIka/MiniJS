@@ -5595,6 +5595,7 @@ void testNativeNumberConstantsPreserveExactBits() {
 #endif
   minijs::VM vm;
   runBytecodeProgramOnVm(vm, "function constant() { return 0; }");
+  vm.setBaselineHelperProfilingEnabled(true);
   const std::uint64_t payloads[] = {
       0x0000000000000000ULL, 0x8000000000000000ULL, 0x3FF8000000000000ULL,
       0x7FF0000000000000ULL, 0xFFF0000000000000ULL, 0x0000000000000001ULL,
@@ -5611,12 +5612,25 @@ void testNativeNumberConstantsPreserveExactBits() {
     EXPECT(compiled.succeeded());
     const minijs::Value result = vm.debugExecuteGlobalFunctionBaselineEntry(
         "constant", {}, compiled.code->entry);
+    EXPECT(compiled.code->bytecodeOffsetToNativeOffset[0] == compiled.code->bytecodeOffsetToNativeOffset[2]);
     EXPECT(result.isNumber());
     const double actual = result.asNumber();
     std::uint64_t actualBits = 0;
     std::memcpy(&actualBits, &actual, sizeof(actualBits));
     EXPECT(actualBits == expected);
   }
+
+  bool found = false;
+  for (const auto& helper : vm.jitRuntimeStats().helpers) {
+    EXPECT(helper.name != "minijsBaselinePushNumberSlot");
+    EXPECT(helper.name != "minijsBaselineReturn");
+    if (helper.name == "minijsBaselineReturnNumberBits") {
+      found = true;
+      EXPECT(helper.calls == 8);
+    }
+  }
+  EXPECT(found);
+  vm.setBaselineHelperProfilingEnabled(false);
 
   // 连续压入数字常量，覆盖 vector 扩容后重新计算栈顶地址。
   minijs::BytecodeFunction many;
@@ -6927,6 +6941,81 @@ void testLocalReturnIndependentEntryAndInvalidSlot() {
   }
 }
 
+void testNumberReturnKeepsCapturedValuesAndOtherConstantTypes() {
+  for (const bool enabled : {false,true}) {
+    minijs::VM vm;
+    vm.setJitEnabled(enabled);
+    vm.setJitCallThreshold(1);
+    const auto result = runBytecodeProgramOnVm(vm, R"(
+      let escaped = undefined;
+      function factory() {
+        let object = { n: 9 };
+        function read() { return object; }
+        escaped = read;
+        return 42;
+      }
+      function label() { return "kept"; }
+      function flag() { return true; }
+      function empty() { return null; }
+      function missing() { return; }
+      class Box { get() { return 17; } }
+      factory(); label(); flag(); empty(); missing();
+      let box = Box();
+      box.get();
+      [factory(), escaped().n, label(), flag(), empty(), missing(), box.get()];
+    )");
+    EXPECT(result.toString() == "[42, 9, kept, true, null, undefined, 17]");
+    vm.collectGarbage();
+    EXPECT(runBytecodeProgramOnVm(vm, "escaped().n;").equals(minijs::Value(9.0)));
+  }
+}
+
+void testNumberReturnReceiverAndReturnSlotError() {
+  minijs::VM vm;
+  runBytecodeProgramOnVm(vm, "function receiver(value) { return value; }");
+  const auto receiverEntry = +[](minijs::BaselineFrame* frame) {
+    frame->returnsReceiver = true;
+    EXPECT(minijsBaselineReturnNumberBits(frame, 0x4045000000000000ULL)); // double 42
+    EXPECT(frame->completed && !frame->failed);
+  };
+  EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("receiver", {minijs::Value(7.0)}, receiverEntry)
+             .equals(minijs::Value(7.0)));
+  const auto invalidEntry = +[](minijs::BaselineFrame* frame) {
+    frame->returnSlot = frame->stackSize + 1;
+    EXPECT(!minijsBaselineReturnNumberBits(frame, 0x4045000000000000ULL));
+    EXPECT(frame->failed && !frame->completed);
+    EXPECT(frame->errorMessage == "baseline return slot out of bounds");
+  };
+  try {
+    vm.debugExecuteGlobalFunctionBaselineEntry("receiver", {minijs::Value(7.0)}, invalidEntry);
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: baseline return slot out of bounds");
+  }
+}
+
+void testNumberReturnPreservesIndependentReturnEntry() {
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+  minijs::VM vm;
+  runBytecodeProgramOnVm(vm, "function entry() { return 0; }");
+  minijs::BytecodeFunction function;
+  function.chunk.addConstant(minijs::Value(7.0));
+  function.chunk.addConstant(minijs::Value(99.0));
+  function.chunk.writeOpcode(minijs::Opcode::Constant);
+  function.chunk.writeByte(0);
+  function.chunk.writeOpcode(minijs::Opcode::Jump);
+  function.chunk.writeByte(0);
+  function.chunk.writeByte(2);
+  function.chunk.writeOpcode(minijs::Opcode::Constant);
+  function.chunk.writeByte(1);
+  function.chunk.writeOpcode(minijs::Opcode::Return);
+  const auto compiled = minijs::BaselineCompiler().compile(function);
+  EXPECT(compiled.succeeded());
+  EXPECT(compiled.code->bytecodeOffsetToNativeOffset[5] != compiled.code->bytecodeOffsetToNativeOffset[7]);
+  EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("entry", {}, compiled.code->entry).equals(minijs::Value(7.0)));
+#endif
+}
+
 void testJitDispatchInlineNegateFallbackPreservesTypeError() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -7691,6 +7780,9 @@ void runBytecodeTests() {
   testNativeLocalReturnPreservesValuesAndUsesMergedHelper();
   testLocalReturnKeepsIdentityClosuresMethodsAndReceiverRule();
   testLocalReturnIndependentEntryAndInvalidSlot();
+  testNumberReturnKeepsCapturedValuesAndOtherConstantTypes();
+  testNumberReturnReceiverAndReturnSlotError();
+  testNumberReturnPreservesIndependentReturnEntry();
   testJitDispatchInlineNegateFallbackPreservesTypeError();
   testJitDispatchInlineAddRunsNumberFastPath();
   testJitDispatchInlineAddFallbackPreservesStringConcat();
