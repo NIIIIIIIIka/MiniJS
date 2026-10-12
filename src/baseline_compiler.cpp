@@ -550,12 +550,16 @@ class WindowsX64Emitter {
     return patchBranchTo(done, offset(), false, error);
   }
 
-  // GetLocal + 数字 Constant + 算术 + 同槽 SetLocal + Pop：直接更新存活局部槽。
+  // GetLocal + 数字 Constant + 算术 + SetLocal + Pop：直接写入存活的数字目标槽。
   bool emitNumberLocalUpdateOrRuntimeCall(std::uint32_t slot, std::uint64_t bits,
-                                         Opcode operation, std::uintptr_t helperAddress,
+                                         std::uint32_t targetSlot, Opcode operation, std::uintptr_t helperAddress,
                                          std::string& error) {
     if (!validateInlineValueSize("local number update", error)) return false;
     std::vector<std::size_t> fallbacks;
+    if (targetSlot != slot) {
+      if (!emitLoadNumberLocalPair(targetSlot, targetSlot, fallbacks, error)) return false;
+      emit({0x49, 0x89, 0xD2});  // mov r10, rdx：保留独立目标地址，后续 guard 不改 r10。
+    }
     emitLoadLocalAddress(slot);
     fallbacks.push_back(emitJbPlaceholder()); // 槽编号加法溢出时交给完整读取 helper。
     emit({0x48, 0x3B, 0x83});  // cmp rax, [rbx + stackSize]
@@ -567,7 +571,7 @@ class WindowsX64Emitter {
     emit32(Value::numberTypeTag());
     fallbacks.push_back(emitJnePlaceholder());
     // guard 前不改栈；成功后无需临时 Value，也不需要同步真实栈深度。
-    emit({0x48, 0x89, 0xD1});  // mov rcx, rdx：rcx 指向目标局部槽。
+    emit({0x48, 0x89, 0xD1});  // mov rcx, rdx：rcx 指向源局部槽。
     emit({0xF2, 0x0F, 0x10, 0x81});  // movsd xmm0, [rcx + numberOffset]
     emit32(static_cast<std::uint32_t>(Value::numberOffset()));
     emit({0x48, 0xBA});  // mov rdx, bits
@@ -576,7 +580,9 @@ class WindowsX64Emitter {
     const std::uint8_t opcode = operation == Opcode::Add ? 0x58 : operation == Opcode::Sub ? 0x5C
                                : operation == Opcode::Mul ? 0x59 : 0x5E;
     emit({0xF2, 0x0F, opcode, 0xC1});  // addsd/subsd/mulsd/divsd xmm0, xmm1
-    emit({0xF2, 0x0F, 0x11, 0x81});  // movsd [rcx + numberOffset], xmm0
+    // 源与目标同槽时写 rcx；独立目标写 r10，算完之前不覆盖任何源值。
+    if (targetSlot == slot) emit({0xF2, 0x0F, 0x11, 0x81});
+    else emit({0xF2, 0x41, 0x0F, 0x11, 0x82});  // movsd [r10 + numberOffset], xmm0
     emit32(static_cast<std::uint32_t>(Value::numberOffset()));
     emit({0xB8});  // mov eax, 1：五条指令的组合执行成功。
     emit32(1);
@@ -594,7 +600,7 @@ class WindowsX64Emitter {
     if (!emitNumberConstantBinaryOrRuntimeCall(bits, operation, helperAddress, error)) return false;
     failures.push_back(emitJumpIfFalsePlaceholder());
     emitMoveFrameToFirstArg();
-    emitMoveU32ToSecondArg(slot);
+    emitMoveU32ToSecondArg(targetSlot);
     emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselineSetLocal));
     emitCallHelper();
     failures.push_back(emitJumpIfFalsePlaceholder());
@@ -716,11 +722,15 @@ class WindowsX64Emitter {
     return patchBranchTo(done, offset(), false, error);
   }
 
-  // 同槽更新的右操作数也是局部值；两个槽都通过 guard 后才写入左槽。
+  // 右操作数也是局部值；所有槽通过 guard，运算完成后才写入目标。
   bool emitNumberLocalPairUpdateOrRuntimeCall(std::uint32_t leftSlot, std::uint32_t rightSlot,
-                                             Opcode operation, std::uintptr_t helperAddress,
+                                             std::uint32_t targetSlot, Opcode operation, std::uintptr_t helperAddress,
                                              std::string& error) {
     std::vector<std::size_t> fallbacks;
+    if (targetSlot != leftSlot) {
+      if (!emitLoadNumberLocalPair(targetSlot, targetSlot, fallbacks, error)) return false;
+      emit({0x49, 0x89, 0xD2});  // mov r10, rdx：目标可等于右槽，也可独立于两源槽。
+    }
     if (!emitLoadNumberLocalPair(leftSlot, rightSlot, fallbacks, error)) return false;
     BinaryNumberGuardPatches zero;
     if (operation == Opcode::Div && !emitRightZeroGuard(zero, error)) return false;
@@ -730,7 +740,8 @@ class WindowsX64Emitter {
                                : operation == Opcode::Mul ? 0x59 : 0x5E;
     emit({0xF2, 0x0F, opcode, 0x81});  // 算术 xmm0, [rcx + numberOffset]
     emit32(static_cast<std::uint32_t>(Value::numberOffset()));
-    emit({0xF2, 0x0F, 0x11, 0x82});  // movsd [rdx + numberOffset], xmm0
+    if (targetSlot == leftSlot) emit({0xF2, 0x0F, 0x11, 0x82});
+    else emit({0xF2, 0x41, 0x0F, 0x11, 0x82});  // movsd [r10 + numberOffset], xmm0
     emit32(static_cast<std::uint32_t>(Value::numberOffset()));
     emit({0xB8});  // mov eax, 1：无临时槽，无需同步栈深度。
     emit32(1);
@@ -753,7 +764,7 @@ class WindowsX64Emitter {
     emitCallHelper();
     failures.push_back(emitJumpIfFalsePlaceholder());
     emitMoveFrameToFirstArg();
-    emitMoveU32ToSecondArg(leftSlot);
+    emitMoveU32ToSecondArg(targetSlot);
     emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselineSetLocal));
     emitCallHelper();
     failures.push_back(emitJumpIfFalsePlaceholder());
@@ -1519,12 +1530,13 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
                                                         : reinterpret_cast<std::uintptr_t>(&minijsBaselineDiv);
       }
       if (updateHelper != 0 &&
-          assign.opcode == Opcode::SetLocal && assign.operands[0] == instruction.operands[0] &&
+          assign.opcode == Opcode::SetLocal &&
           code->instructions[index + 4].opcode == Opcode::Pop && !independentEntry) {
         std::string inlineError;
         if (rightOperand.opcode == Opcode::GetLocal) {
           if (!emitter.emitNumberLocalPairUpdateOrRuntimeCall(
-                  instruction.operands[0], rightOperand.operands[0], arithmetic.opcode, updateHelper, inlineError)) {
+                  instruction.operands[0], rightOperand.operands[0], assign.operands[0],
+                  arithmetic.opcode, updateHelper, inlineError)) {
             return failure(inlineError);
           }
         } else {
@@ -1532,7 +1544,7 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
           std::uint64_t bits = 0;
           std::memcpy(&bits, &number, sizeof(bits));
           if (!emitter.emitNumberLocalUpdateOrRuntimeCall(
-                  instruction.operands[0], bits, arithmetic.opcode, updateHelper, inlineError)) {
+                  instruction.operands[0], bits, assign.operands[0], arithmetic.opcode, updateHelper, inlineError)) {
             return failure(inlineError);
           }
         }

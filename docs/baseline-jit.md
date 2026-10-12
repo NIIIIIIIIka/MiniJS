@@ -1099,7 +1099,7 @@ OP_SET_LOCAL leftSlot
 OP_POP
 ```
 
-要求写回左槽、结果被丢弃、后四条无独立跳转入口。逐个检查两个槽的编号溢出、边界和 Number 标签，所有 guard 完成后才修改左槽；左右为不同槽时右槽不变。`leftSlot == rightSlot` 也合法，先读取两个原操作数再写回，所以 `x = x + x`、`x = x / x` 保留别名语义。
+本节说明写回左槽的情况，独立目标见后面的算术赋值扩展。要求结果被丢弃、后四条无独立跳转入口。逐个检查两个槽的编号溢出、边界和 Number 标签，所有 guard 完成后才修改左槽；左右为不同槽时右槽不变。`leftSlot == rightSlot` 也合法，先读取两个原操作数再写回，所以 `x = x + x`、`x = x / x` 保留别名语义。
 
 等价 C++（省略已通过的 guard）是：
 
@@ -1124,7 +1124,7 @@ mov eax, 1
 
 动态除法复用现有零除数 guard：`+0/-0` 都进入完整 helper 产生原有错误，NaN 的 unordered 分支继续运算。类型或边界 guard 未命中前不写入任何槽；fallback 按顺序调用两个完整 `GetLocal`、运算、`SetLocal` 和 `Pop`，每步失败立即退出。字符串拼接、Number 变为字符串的生命周期和非法右槽错误仍由 VM 管理。
 
-Number 快路径不分配 GC 对象，也不改变栈深度。捕获左槽的 open upvalue 立即看到新值，关闭后和 GC 后访问仍保持结果。需要返回赋值值、写入不同目标或进入中间指令的情况不匹配。五条 decoded 指令保留，native offset 指向同一合并单元，ARM64/decoded 行为不变。
+Number 快路径不分配 GC 对象，也不改变栈深度。捕获左槽的 open upvalue 立即看到新值，关闭后和 GC 后访问仍保持结果。需要返回赋值值或进入中间指令的情况不匹配；写入不同目标现在也可合并，见后面的扩展。五条 decoded 指令保留，native offset 指向同一合并单元，ARM64/decoded 行为不变。
 
 专项测试覆盖四种算术和特殊数字、同槽别名、左右非数字 fallback、动态正负零、保留赋值值、不同目标、闭包和 GC，以及内部 Pop 入口和非法右槽。`examples/baseline_local_pair_benchmark.js` 专门验证累加循环，已纳入 CTest；配对数据与调用次数见 [性能报告](baseline-numeric-benchmark.md)。
 
@@ -1397,6 +1397,49 @@ guard 未命中时按原顺序调用 GetLocal、Negate/Not、SetLocal、Pop help
 原地更新的捕获槽仍由同一个 upvalue 索引读取，函数返回时照常关闭；GC 根协议不变。四条 decoded 指令保留，native offset 指向同一合并单元，不构成独立 deopt 入口。
 
 专项测试覆盖正负零、带 payload 的 NaN、无穷大、非规格化数、布尔取反、同槽/不同槽、源值不变、类型变化、truthy fallback、捕获变量与 GC、保留赋值结果、完整 helper 计数、非法槽、临时槽边界及三个中间独立入口。新增 `examples/baseline_unary_update_benchmark.js` 与 CLI baseline smoke，配对结果见 [性能报告](baseline-numeric-benchmark.md)。
+
+### Windows x64 独立目标算术赋值
+
+局部算术赋值不再要求目标等于左操作数。下面两种五条指令序列都支持 Add/Sub/Mul/Div，要求后四条没有独立跳转入口、结果被 Pop 丢弃：
+
+```text
+GetLocal leftSlot
+GetLocal rightSlot 或 Constant numberIndex
+Add / Sub / Mul / Div
+SetLocal targetSlot
+Pop
+```
+
+例如 `result = left + right;`、`right = left - right;`、`result = left / 2;`。需要保留结果的赋值表达式仍使用原路径，比较、取模、其它右操作数形式不在本次扩展内。token、Parser、AST、Interpreter、bytecode 格式、ARM64 和 decoded 不变。
+
+新目标必须是已存在的 Number 槽；目标越界或原来是其它类型时，不直接覆盖载荷。快路径先保存目标地址，再读取源值并执行运算，最后才写入目标。等价 C++ 为：
+
+```cpp
+double left = sourceLeft.asNumber();
+double right = sourceRight.asNumber();
+double result = left + right;
+target.number = result;
+// 不构造临时 Value，不改变操作数栈深度。
+```
+
+独立目标地址保存在 volatile 寄存器 r10，后续源槽与零除数 guard 不修改它。目标可以等于右槽，甚至两个源槽相同；写入发生在操作数读取和运算之后。以两个局部值的加法为例，位移为 Value::numberOffset() 的 4 字节小端编码：
+
+```asm
+mov r10, rdx                        ; 49 89 D2：先保存已验证的目标地址
+; 重新定位源槽：rdx=左槽，rcx=右槽，不调用 helper。
+movsd xmm0, [rdx + numberOffset]     ; F2 0F 10 82 + disp32
+addsd xmm0, [rcx + numberOffset]     ; F2 0F 58 81 + disp32
+movsd [r10 + numberOffset], xmm0     ; F2 41 0F 11 82 + disp32：写目标，不写源槽
+mov eax, 1                          ; B8 01 00 00 00：成功
+```
+
+Sub/Mul/Div 的 SSE 算术 opcode 分别为 5C/59/5E；常量右值仍用原始 double 位编码装入 xmm1，最终也写 r10。原来目标等于左槽的代码不新增独立目标 guard，继续使用既有寄存器和写入路径。
+
+独立目标复用现有 Number 局部槽 guard，所有检查均无副作用。guard 未命中后从原始局部读取开始，执行运算、完整 SetLocal 与 Pop；不能因提前检查目标而提前抛出目标错误。非法目标但源值类型错误时，仍先报 `value is not a number`。目标恰好是新临时结果槽时，原顺序仍允许赋值并弹出。
+
+动态除数 +0/-0 仍由完整 Div helper 报错，NaN 继续运算；常量零除数不参与五条合并。快路径没有 helper、扩容或 GC 对象分配，r10 不跨 helper 保存使用。fallback 中的栈地址由 VM 正常重新定位，资源型旧目标和字符串拼接仍用完整 Value 管理。
+
+捕获目标的 upvalue 立即读取更新后的同一槽，正常关闭和 GC 规则不变。五条 decoded 指令保留，native offset 指向同一合并单元。测试覆盖四种算术、两种右值、三种目标位置、源值不变、负零/NaN、动态除零、类型变化、保留结果、闭包/GC、方法帧、独立中间入口、非法槽、临时结果槽和错误优先级。新增 `examples/baseline_arithmetic_assign_benchmark.js`，数据见 [性能报告](baseline-numeric-benchmark.md)。
 
 ### 栈同步边界验证
 

@@ -6836,6 +6836,166 @@ void testLocalPairExpressionPreservesIndependentOperationEntry() {
   }
 }
 
+void testArithmeticAssignmentDifferentTargetsAndFallback() {
+  for (const bool enabled : {false,true}) {
+    minijs::VM vm;
+    vm.setJitEnabled(enabled);
+    vm.setJitCallThreshold(1);
+    EXPECT(runBytecodeProgramOnVm(vm, R"(
+      function pair(left,right) {
+        let target = 0;
+        target = left + right; let add = target;
+        target = left - right; let sub = target;
+        target = left * right; let mul = target;
+        target = left / right;
+        return [left,right,add,sub,mul,target];
+      }
+      function constant(left) {
+        let target = 0;
+        target = left + 2; let add = target;
+        target = left - 2; let sub = target;
+        target = left * 2; let mul = target;
+        target = left / 2;
+        return [left,add,sub,mul,target];
+      }
+      function rightAlias(left,right) { right = left - right; return [left,right]; }
+      function changed(left,right) { let target = {}; target = left + right; return target; }
+      function retained(left,right) { let target = 0; return target = left + right; }
+      function outer(left,right) {
+        let target = 0; function read() { return target; }
+        target = left + right; return read;
+      }
+      class Calc { add(left,right) { let target = 0; target = left + right; return target; } }
+      pair(8,2); constant(8); rightAlias(8,2); changed(1,2); retained(1,2); outer(1,2);
+      let calc = Calc(); calc.add(1,2);
+      let read = outer(7,3);
+      [pair(8,2),constant(8),rightAlias(8,2),changed("a","b"),changed(4,3),retained(4,3),read(),calc.add(4,3)];
+    )").toString() == "[[8, 2, 10, 6, 16, 4], [8, 10, 6, 16, 4], [8, 6], ab, 7, 7, 10, 7]");
+    vm.collectGarbage();
+    EXPECT(runBytecodeProgramOnVm(vm, "read();").equals(minijs::Value(10.0)));
+    try {
+      runBytecodeProgramOnVm(vm, "pair(8,0);");
+      EXPECT(false);
+    } catch (const minijs::RuntimeError& error) {
+      EXPECT(std::string_view(error.what()) == "RuntimeError: division by zero");
+    }
+  }
+}
+
+void testNativeArithmeticAssignmentTargetsNumbersAndErrors() {
+  if (!nativeBaselineBackendAvailable()) return;
+  minijs::VM vm;
+  runBytecodeProgramOnVm(vm, "function update(left,right,target) { target = left + 2; return target; }");
+  auto compileAssign = [](minijs::Opcode operation, bool constant, std::uint8_t right,
+                          std::uint8_t target) {
+    minijs::BytecodeFunction function;
+    function.chunk.addConstant(minijs::Value(2.0));
+    function.chunk.writeOpcode(minijs::Opcode::GetLocal); function.chunk.writeByte(0);
+    function.chunk.writeOpcode(constant ? minijs::Opcode::Constant : minijs::Opcode::GetLocal);
+    function.chunk.writeByte(constant ? 0 : right);
+    function.chunk.writeOpcode(operation);
+    function.chunk.writeOpcode(minijs::Opcode::SetLocal); function.chunk.writeByte(target);
+    function.chunk.writeOpcode(minijs::Opcode::Pop);
+    function.chunk.writeOpcode(minijs::Opcode::GetLocal); function.chunk.writeByte(target < 3 ? target : 0);
+    function.chunk.writeOpcode(minijs::Opcode::Return);
+    return minijs::BaselineCompiler().compile(function);
+  };
+  vm.setBaselineHelperProfilingEnabled(true);
+  for (const bool constant : {false,true}) {
+    for (const auto operation : {minijs::Opcode::Add,minijs::Opcode::Sub,minijs::Opcode::Mul,minijs::Opcode::Div}) {
+      for (const std::uint8_t target : {std::uint8_t(0),std::uint8_t(1),std::uint8_t(2)}) {
+        const auto compiled = compileAssign(operation, constant, 1, target);
+        EXPECT(compiled.succeeded());
+        const double expected = operation == minijs::Opcode::Add ? 10.0
+                              : operation == minijs::Opcode::Sub ? 6.0
+                              : operation == minijs::Opcode::Mul ? 16.0 : 4.0;
+        EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("update",
+            {minijs::Value(8.0),minijs::Value(2.0),minijs::Value(0.0)}, compiled.code->entry)
+                   .equals(minijs::Value(expected)));
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+        for (const std::size_t inner : {2u,4u,5u,7u}) {
+          EXPECT(compiled.code->bytecodeOffsetToNativeOffset[0] == compiled.code->bytecodeOffsetToNativeOffset[inner]);
+        }
+#endif
+      }
+    }
+  }
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+  for (const auto& helper : vm.jitRuntimeStats().helpers) EXPECT(helper.name == "minijsBaselineReturnLocal");
+#endif
+  const auto mul = compileAssign(minijs::Opcode::Mul, false, 1, 2);
+  const double negativeZero = vm.debugExecuteGlobalFunctionBaselineEntry("update",
+      {minijs::Value(-0.0),minijs::Value(2.0),minijs::Value(0.0)}, mul.code->entry).asNumber();
+  EXPECT(negativeZero == 0.0 && std::signbit(negativeZero));
+  const auto div = compileAssign(minijs::Opcode::Div, false, 1, 2);
+  EXPECT(std::isnan(vm.debugExecuteGlobalFunctionBaselineEntry("update",
+      {minijs::Value(8.0),minijs::Value(std::numeric_limits<double>::quiet_NaN()),minijs::Value(0.0)}, div.code->entry).asNumber()));
+  for (const double zero : {0.0,-0.0}) {
+    try {
+      vm.debugExecuteGlobalFunctionBaselineEntry("update",
+          {minijs::Value(8.0),minijs::Value(zero),minijs::Value(0.0)}, div.code->entry);
+      EXPECT(false);
+    } catch (const minijs::RuntimeError& error) {
+      EXPECT(std::string_view(error.what()) == "RuntimeError: division by zero");
+    }
+  }
+  for (const bool constant : {false,true}) {
+    const auto temporary = compileAssign(minijs::Opcode::Add, constant, 1, 3);
+    EXPECT(temporary.succeeded());
+    EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("update",
+        {minijs::Value(8.0),minijs::Value(2.0),minijs::Value(0.0)}, temporary.code->entry).equals(minijs::Value(8.0)));
+    for (const auto& slots : {std::pair<std::uint8_t,std::uint8_t>{1,255}, {255,2}}) {
+      if (constant && slots.first == 255) continue;
+      const auto invalid = compileAssign(minijs::Opcode::Add, constant, slots.first, slots.second);
+      EXPECT(invalid.succeeded());
+      try {
+        vm.debugExecuteGlobalFunctionBaselineEntry("update",
+            {minijs::Value(8.0),minijs::Value(2.0),minijs::Value(0.0)}, invalid.code->entry);
+        EXPECT(false);
+      } catch (const minijs::RuntimeError& error) {
+        EXPECT(std::string_view(error.what()) == "RuntimeError: local slot out of bounds");
+      }
+    }
+    // 即使目标非法，也必须先执行原始运算，不能把目标错误提前。
+    const auto badTarget = compileAssign(minijs::Opcode::Sub, constant, 1, 255);
+    try {
+      vm.debugExecuteGlobalFunctionBaselineEntry("update",
+          {minijs::Value(std::string("bad")),minijs::Value(2.0),minijs::Value(0.0)}, badTarget.code->entry);
+      EXPECT(false);
+    } catch (const minijs::RuntimeError& error) {
+      EXPECT(std::string_view(error.what()) == "RuntimeError: value is not a number");
+    }
+  }
+}
+
+void testArithmeticAssignmentIndependentEntries() {
+  if (!nativeBaselineBackendAvailable()) return;
+  minijs::VM vm;
+  runBytecodeProgramOnVm(vm, "function update(left,right,target) { target = left + 2; return target; }");
+  for (const bool constant : {false,true}) {
+    for (const std::uint8_t jump : {std::uint8_t(2),std::uint8_t(5),std::uint8_t(7)}) {
+      minijs::BytecodeFunction function;
+      function.chunk.addConstant(minijs::Value(2.0));
+      function.chunk.writeOpcode(minijs::Opcode::GetLocal); function.chunk.writeByte(0);
+      function.chunk.writeOpcode(minijs::Opcode::Jump); function.chunk.writeByte(0); function.chunk.writeByte(jump);
+      function.chunk.writeOpcode(minijs::Opcode::GetLocal); function.chunk.writeByte(0);
+      function.chunk.writeOpcode(constant ? minijs::Opcode::Constant : minijs::Opcode::GetLocal);
+      function.chunk.writeByte(constant ? 0 : 1);
+      function.chunk.writeOpcode(minijs::Opcode::Add);
+      function.chunk.writeOpcode(minijs::Opcode::SetLocal); function.chunk.writeByte(2);
+      function.chunk.writeOpcode(minijs::Opcode::Pop);
+      function.chunk.writeOpcode(minijs::Opcode::GetLocal); function.chunk.writeByte(2);
+      function.chunk.writeOpcode(minijs::Opcode::Return);
+      const auto compiled = minijs::BaselineCompiler().compile(function);
+      EXPECT(compiled.succeeded());
+      EXPECT(compiled.code->bytecodeOffsetToNativeOffset[5] != compiled.code->bytecodeOffsetToNativeOffset[5 + jump]);
+      EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("update",
+          {minijs::Value(8.0),minijs::Value(2.0),minijs::Value(0.0)}, compiled.code->entry)
+                 .equals(minijs::Value(jump == 2 ? 10.0 : jump == 5 ? 8.0 : 0.0)));
+    }
+  }
+}
+
 void testLocalUnaryUpdatePreservesFallbackCapturesAndRetainedResults() {
   for (const bool enabled : {false, true}) {
     minijs::VM vm;
@@ -8345,6 +8505,9 @@ void runBytecodeTests() {
   testLocalCopyFusionPreservesValuesAndIdentity();
   testConstantAssignmentPreservesTypesCapturesAndRetainedResult();
   testLocalUnaryUpdatePreservesFallbackCapturesAndRetainedResults();
+  testArithmeticAssignmentDifferentTargetsAndFallback();
+  testNativeArithmeticAssignmentTargetsNumbersAndErrors();
+  testArithmeticAssignmentIndependentEntries();
   testNativeLocalUnaryUpdatePayloadHelpersAndBoundaries();
   testLocalUnaryUpdateDoesNotFuseIndependentEntries();
   testConstantAssignmentAbiPreservesErrorOrderAndTemporarySlot();
