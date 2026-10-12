@@ -5840,6 +5840,101 @@ void testBooleanBranchFallbackPreservesStackUnderflow() {
   }
 }
 
+void testBaselineBooleanNotAndTruthyFallback() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+  runBytecodeProgramOnVm(vm, "function invert(value) { return !value; } invert(true);");
+  const auto* code = vm.debugGlobalFunctionBaselineCode("invert");
+  EXPECT(code != nullptr);
+  struct Case {
+    minijs::Value value;
+    bool expected;
+  };
+  const std::vector<Case> cases = {
+      {minijs::Value(true), false}, {minijs::Value(false), true},
+      {minijs::Value(0.0), true}, {minijs::Value(-0.0), true},
+      {minijs::Value(1.0), false}, {minijs::Value(-1.0), false},
+      {minijs::Value(std::numeric_limits<double>::quiet_NaN()), false},
+      {minijs::Value(std::numeric_limits<double>::infinity()), false},
+      {minijs::Value(std::string()), true}, {minijs::Value(std::string("x")), false},
+      {minijs::Value(), true}, {minijs::Value::undefined(), true},
+      {minijs::Value(std::vector<minijs::Value>{}), false},
+      {minijs::Value(std::unordered_map<std::string, minijs::Value>{}), false}};
+  for (const auto& test : cases) {
+    const minijs::Value expected(test.expected);
+    EXPECT(vm.debugExecuteGlobalFunctionBaseline("invert", {test.value}).equals(expected));
+    if (nativeBaselineBackendAvailable()) {
+      EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("invert", {test.value}, code->entry)
+                 .equals(expected));
+    }
+  }
+}
+
+void testJitBooleanNotComposesWithBranchesAndSideEffects() {
+  for (const bool enabled : {false, true}) {
+    minijs::VM vm;
+    vm.setJitEnabled(enabled);
+    vm.setJitCallThreshold(1);
+    const auto result = runBytecodeProgramOnVm(vm, R"(
+      let probes = 0;
+      function probe(value) { probes = probes + 1; return value; }
+      function invert(value) { return !probe(value); }
+      function loop(count) {
+        let i = 0;
+        let total = 0;
+        while (i < count) {
+          if (!(i < 2)) { total = total + 1; }
+          if (!!(i == 2)) { total = total + 1; }
+          i = i + 1;
+        }
+        return total;
+      }
+      invert(true);
+      loop(4);
+      class Box {}
+      let object = { value: 9 };
+      let instance = Box();
+      [invert(false), invert(true), invert(""), invert(object), invert(instance),
+       invert(probe), !!object, loop(4), probes, object.value];
+    )");
+    EXPECT(result.toString() == "[true, false, true, false, false, false, true, 3, 7, 9]");
+    if (enabled) {
+      EXPECT(vm.debugGlobalFunctionJitFeedback("invert")->baselineEntryCount == 6);
+      EXPECT(vm.debugGlobalFunctionJitFeedback("loop")->baselineEntryCount == 1);
+    }
+  }
+}
+
+void testBooleanNotFallbackPreservesStackUnderflow() {
+  minijs::VM vm;
+  minijs::Chunk chunk;
+  chunk.writeOpcode(minijs::Opcode::Not);
+  chunk.writeOpcode(minijs::Opcode::Return);
+  try {
+    vm.run(chunk);
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: bytecode stack underflow");
+  }
+  if (!nativeBaselineBackendAvailable()) {
+    return;
+  }
+  runBytecodeProgramOnVm(vm, "function invert() { return true; }");
+  minijs::BytecodeFunction invalid;
+  invalid.chunk.writeOpcode(minijs::Opcode::Pop);
+  invalid.chunk.writeOpcode(minijs::Opcode::Not);
+  invalid.chunk.writeOpcode(minijs::Opcode::Return);
+  const auto compiled = minijs::BaselineCompiler().compile(invalid);
+  EXPECT(compiled.succeeded());
+  try {
+    vm.debugExecuteGlobalFunctionBaselineEntry("invert", {}, compiled.code->entry);
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: bytecode stack underflow");
+  }
+}
+
 void testJitDispatchInlineNegateFallbackPreservesTypeError() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -6578,6 +6673,9 @@ void runBytecodeTests() {
   testBaselineBooleanBranchesAndTruthyFallback();
   testJitBooleanBranchesPreserveLogicalOperandsAndSideEffects();
   testBooleanBranchFallbackPreservesStackUnderflow();
+  testBaselineBooleanNotAndTruthyFallback();
+  testJitBooleanNotComposesWithBranchesAndSideEffects();
+  testBooleanNotFallbackPreservesStackUnderflow();
   testJitDispatchInlineNegateFallbackPreservesTypeError();
   testJitDispatchInlineAddRunsNumberFastPath();
   testJitDispatchInlineAddFallbackPreservesStringConcat();

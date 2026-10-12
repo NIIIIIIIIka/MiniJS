@@ -510,7 +510,7 @@ epilogue:
 | `OP_EQUAL` | 无 | Windows x64 number fast path，否则 `minijsBaselineEqual(frame)` | 数字 guard 成功时通过 `ucomisd` / `sete` / `setnp` 写回 Boolean 并同步栈；否则通过 `Value::equals()` 保留字符串、布尔值和引用身份比较语义 |
 | `OP_GREATER` | 无 | Windows x64 number fast path，否则 `minijsBaselineGreater(frame)` | 数字 guard 成功时通过 `ucomisd` / `seta` 写回 Boolean 并同步栈；否则回退完整 helper |
 | `OP_LESS` | 无 | Windows x64 number fast path，否则 `minijsBaselineLess(frame)` | 数字 guard 成功时通过 `ucomisd` / `setb` / `setnp` 写回 Boolean 并同步栈，NaN 结果为 false；否则回退完整 helper |
-| `OP_NOT` | 无 | `minijsBaselineNot(frame)` | 弹出一个值，通过 `isTruthy()` 取反后压入布尔结果 |
+| `OP_NOT` | 无 | Windows x64 Boolean fast path，否则 `minijsBaselineNot(frame)` | Boolean 原地取反；其它类型通过 `isTruthy()` 取反后替换为布尔结果；栈深度不变 |
 | `OP_JUMP_IF_FALSE` | `jumpOffset` | Windows x64 Boolean fast path，否则 `minijsBaselinePeekTruthy(frame)`；随后 native conditional branch | 读取栈顶 truthiness，不弹栈；返回 falsey 时跳到 bytecode 目标对应的 native offset |
 | `OP_JUMP` | `jumpOffset` | native unconditional branch | 无条件跳到 bytecode 目标对应的 native offset |
 | `OP_LOOP` | `jumpOffset` | `minijsBaselineRecordLoopBackedge(frame)` + native unconditional branch | 记录循环回边热度，然后跳回 loop 目标对应的 native offset |
@@ -757,7 +757,7 @@ CTest 也会通过 `minijs_cli_benchmark_compare_reports_jit_on_and_off` 跑同�
 | closure/upvalue、class/method/inherit、call/method-call/super-call | 完整 helper | 完整 helper |
 | `Greater`、`Less` | 数字 guard 成功后使用 `ucomisd` 并写回 Boolean；未命中调用完整 helper | 完整 helper |
 | `Equal` | 数字 guard 成功后使用 `ucomisd` / `sete` / `setnp`；未命中调用完整 helper | 完整 helper |
-| `Not` | 完整 helper | 完整 helper |
+| `Not` | Boolean guard + native 原地取反；其它情况完整 helper | 完整 helper |
 | `Jump` | native 分支 | native 分支 |
 | `JumpIfFalse` | Boolean guard + native 读取和分支；其它情况 truthiness helper | truthiness helper 加 native 分支 |
 | `Loop` | 回边计数 helper 加 native 分支 | 回边计数 helper 加 native 分支 |
@@ -893,6 +893,44 @@ dispatch:
 
 测试覆盖 decoded/native 的真假条件、非 Boolean fallback、JIT on/off 的逻辑运算结果与副作用、比较结果驱动的循环，以及空栈错误。NaN 的真假性沿用当前 MiniJS 的 `Value::isTruthy()`，没有借此修改语言语义。性能对照见 [数字循环性能报告](baseline-numeric-benchmark.md)，目前未证明稳定提速。
 
+### Windows x64 布尔取反
+
+`OP_NOT` 的 Boolean 快路径直接翻转栈顶的布尔载荷；非 Boolean 或空栈仍调用 `minijsBaselineNot()`。ARM64 保留完整 helper。类型 guard 在写入之前完成，失败时 helper 看到未修改的栈。
+
+先看等价 C++（字段访问是示意）：
+
+```cpp
+if (frame.stackSize == 0 || top.type != Boolean) {
+  success = minijsBaselineNot(&frame);
+} else {
+  top.boolean_ = !top.boolean_;
+  success = true;
+}
+if (!success) goto epilogue;
+```
+
+对应汇编的关键部分如下，前面的空栈检查和栈顶寻址与布尔条件跳转相同：
+
+```asm
+cmp dword ptr [rcx + typeOffset], Boolean
+jne fallback                         ; 非 Boolean 使用完整 helper
+xor byte ptr [rcx + booleanOffset], 1 ; 0 变为 1，1 变为 0
+mov eax, 1                           ; 表示 opcode 成功，不是取反结果
+jmp done
+fallback:
+mov rcx, rbx                         ; 第一个参数是 BaselineFrame*
+mov rax, notHelper
+call rax                             ; 返回操作成功状态
+done:
+; 失败时跳到统一 epilogue，成功时执行下一条 opcode。
+```
+
+Boolean 载荷为 0 或 1，异或 1 实现 `!`。类型标签和其它成员不变，栈深度不变，不调用分配 helper，也不需要同步栈快照。`!true` 虽然产生 false，操作仍然成功，因此这里不能复用 `JumpIfFalse` 的三态真假结果。
+
+字符串、数字、对象、数组、实例和函数继续由完整 helper 按 `isTruthy()` 计算结果并管理 Value 生命周期。测试分别验证 decoded/native 的真假值和类型 fallback，以及 JIT on/off 的连续取反、条件分支、循环、函数调用副作用和空栈错误。
+
+`examples/baseline_boolean_benchmark.js` 专门覆盖一次取反和连续两次取反。CLI smoke 测试检查 baseline 入口计数；Release 前后对照记录在 [性能报告](baseline-numeric-benchmark.md)。该样例与数字循环不同，二者耗时不能直接交叉比较。
+
 ### 后续 Deopt 需要补什么
 
 真正的 deopt 要在 native 执行中恢复普通 VM，并从正确的 bytecode 位置继续。除了现有 `bytecodeOffsetToNativeOffset` 映射，还需要记录恢复点对应的 bytecode offset、操作发生前还是发生后、有效栈深度、局部变量与操作数的位置，以及嵌套调用帧状态。
@@ -902,5 +940,5 @@ dispatch:
 ## 下一步
 
 1. 对现有数字快路径集中验证 guard 命中、类型 fallback、零除数、NaN 和嵌套 helper 调用后的栈快照刷新。
-2. 数字局部变量、数字常量和 Boolean 条件跳转已有快路径，`OP_POP` 已消除丢弃时的 Value 副本，数字槽已改为原地构造；[数字循环性能报告](baseline-numeric-benchmark.md) 记录 Release 前后对照，下一步可补齐 Boolean `Not` 的原地取反路径。
+2. 数字局部变量、数字常量、Boolean 条件跳转和取反已有快路径，`OP_POP` 已消除丢弃时的 Value 副本，数字槽已改为原地构造；[性能报告](baseline-numeric-benchmark.md) 记录 Release 前后对照。后续先测量剩余 helper 成本，再选择下一条值得内联的 opcode。
 3. 引入执行中恢复需求时，再增加 safepoint 元数据和 deopt 帧恢复协议。

@@ -373,6 +373,41 @@ class WindowsX64Emitter {
     return patchBranchTo(done, offset(), false, error);
   }
 
+  // Boolean 原地取反；其它类型使用完整 helper，保留原有 truthiness 语义。
+  bool emitBooleanNotOrRuntimeCall(std::uintptr_t helperAddress, std::string& error) {
+    if (!validateInlineValueSize("boolean not", error)) {
+      return false;
+    }
+    // 等价 C++：if (frame.stackSize == 0) goto fallback;
+    emit({0x48, 0x8B, 0x83});  // mov rax, [rbx + stackSize]
+    emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackSize)));
+    emit({0x48, 0x85, 0xC0});  // test rax, rax
+    const std::size_t emptyStack = emitJzPlaceholder();
+    emitLoadTopPointer();
+    // 等价 C++：if (top.type != Boolean) goto fallback；guard 前不修改栈。
+    emit({0x81, 0xB9});  // cmp dword ptr [rcx + typeOffset], Boolean
+    emit32(static_cast<std::uint32_t>(Value::typeOffset()));
+    emit32(Value::booleanTypeTag());
+    const std::size_t nonBoolean = emitJnePlaceholder();
+    // 等价 C++：top.boolean_ = !top.boolean_；Boolean 的载荷是 0 或 1。
+    emit({0x80, 0xB1});  // xor byte ptr [rcx + booleanOffset], 1
+    emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
+    emit({0x01});
+    emit({0xB8});  // mov eax, 1：执行成功，不是逻辑取反后的值。
+    emit32(1);
+    const std::size_t done = emitJumpPlaceholder();
+
+    const std::size_t fallback = offset();
+    if (!patchBranchTo(emptyStack, fallback, true, error) ||
+        !patchBranchTo(nonBoolean, fallback, true, error)) {
+      return false;
+    }
+    emitMoveFrameToFirstArg();
+    emitLoadHelper(helperAddress);
+    emitCallHelper();  // 完整 helper 返回成功状态；错误由统一 epilogue 处理。
+    return patchBranchTo(done, offset(), false, error);
+  }
+
   // 编译时已确认常量是数字；运行时先构造栈槽，再写入 double 的原始位。
   bool emitNumberConstant(std::uint64_t numberBits, std::uintptr_t pushNumberSlotAddress,
                           std::string& error) {
@@ -1259,7 +1294,17 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
 #endif
 
       case Opcode::Not:
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+      {
+        std::string inlineError;
+        if (!emitter.emitBooleanNotOrRuntimeCall(
+                reinterpret_cast<std::uintptr_t>(&minijsBaselineNot), inlineError)) {
+          return failure(inlineError);
+        }
+      }
+#else
         emitRuntimeCall(emitter, reinterpret_cast<std::uintptr_t>(&minijsBaselineNot));
+#endif
         epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
         break;
 
