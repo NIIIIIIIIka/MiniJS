@@ -1205,6 +1205,23 @@ bool VM::baselineRuntimeSetLocal(BaselineFrame& frame, std::uint32_t slot) {
   return true;
 }
 
+bool VM::baselineRuntimeAssignConstant(BaselineFrame& frame, std::uint32_t constantIndex,
+                                       std::uint32_t targetSlot) {
+  validateBaselineRuntimeFrame(frame);
+  // 先读取常量，再检查目标，保持原始 Constant 的错误优先级。
+  const Value& constant = frame.closure->function->function.chunk.constant(constantIndex);
+  if (constant.isNumber() && frame.slotStart <= stack_.size() &&
+      targetSlot < stack_.size() - frame.slotStart) {
+    stack_[frame.slotStart + targetSlot] = constant;
+    refreshBaselineFrameStack(frame);
+    return true;
+  }
+  // 临时目标、越界目标和非数字常量保留原始顺序，也保留字符串的 GC 根保护。
+  baselineRuntimePushConstant(frame, constantIndex);
+  baselineRuntimeSetLocal(frame, targetSlot);
+  return baselineRuntimePop(frame);
+}
+
 bool VM::baselineRuntimeCopyLocal(BaselineFrame& frame, std::uint32_t sourceSlot,
                                   std::uint32_t targetSlot) {
   validateBaselineRuntimeFrame(frame);

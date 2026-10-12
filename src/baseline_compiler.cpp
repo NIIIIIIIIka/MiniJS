@@ -516,6 +516,40 @@ class WindowsX64Emitter {
            patchBranchTo(done, offset(), false, error);
   }
 
+  // Constant + SetLocal + Pop：目标已是数字时直接写载荷，不创建临时栈槽。
+  bool emitNumberConstantAssignment(std::uint32_t constantIndex, std::uint32_t targetSlot,
+                                    std::uint64_t bits, std::string& error) {
+    if (!validateInlineValueSize("constant local assignment", error)) return false;
+    std::vector<std::size_t> fallbacks;
+    emitLoadLocalAddress(targetSlot);
+    fallbacks.push_back(emitJbPlaceholder());
+    emit({0x48, 0x3B, 0x83});  // cmp rax, [rbx + stackSize]：检查目标存在。
+    emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackSize)));
+    fallbacks.push_back(emitJaePlaceholder());
+    emitLocalPointerFromIndex();
+    emit({0x81, 0xBA});  // cmp dword ptr [rdx + typeOffset], Number
+    emit32(static_cast<std::uint32_t>(Value::typeOffset()));
+    emit32(Value::numberTypeTag());
+    fallbacks.push_back(emitJnePlaceholder());
+    emit({0x48, 0xB8});  // mov rax, bits：数字的原始 64 位编码，不是整数转 double。
+    emit64(bits);
+    emit({0x48, 0x89, 0x82});  // mov [rdx + numberOffset], rax：覆盖目标数字。
+    emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+    emit({0xB8});  // mov eax, 1：成功；栈深度未变。
+    emit32(1);
+    const auto done = emitJumpPlaceholder();
+    const auto fallback = offset();
+    for (const auto patch : fallbacks) {
+      if (!patchBranchTo(patch, fallback, true, error)) return false;
+    }
+    emitMoveFrameToFirstArg();
+    emitMoveU32ToSecondArg(constantIndex);
+    emitMoveU32ToThirdArg(targetSlot);
+    emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselineAssignConstant));
+    emitCallHelper();
+    return patchBranchTo(done, offset(), false, error);
+  }
+
   // GetLocal + 数字 Constant + 算术 + 同槽 SetLocal + Pop：直接更新存活局部槽。
   bool emitNumberLocalUpdateOrRuntimeCall(std::uint32_t slot, std::uint64_t bits,
                                          Opcode operation, std::uintptr_t helperAddress,
@@ -1348,6 +1382,26 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
         ++index;
         continue;
       }
+    }
+    if (instruction.opcode == Opcode::Constant && index + 2 < code->instructions.size() &&
+        function.chunk.constant(instruction.operands[0]).isNumber() &&
+        code->instructions[index + 1].opcode == Opcode::SetLocal &&
+        code->instructions[index + 2].opcode == Opcode::Pop &&
+        !branchTargets[verification.instructionOffsets[index + 1]] &&
+        !branchTargets[verification.instructionOffsets[index + 2]]) {
+      const double number = function.chunk.constant(instruction.operands[0]).asNumber();
+      std::uint64_t bits = 0;
+      std::memcpy(&bits, &number, sizeof(bits));
+      std::string inlineError;
+      if (!emitter.emitNumberConstantAssignment(instruction.operands[0],
+              code->instructions[index + 1].operands[0], bits, inlineError)) return failure(inlineError);
+      epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+      for (std::size_t inner = 1; inner <= 2; ++inner) {
+        code->bytecodeOffsetToNativeOffset[verification.instructionOffsets[index + inner]] =
+            code->bytecodeOffsetToNativeOffset[bytecodeOffset];
+      }
+      index += 2;
+      continue;
     }
     if (instruction.opcode == Opcode::GetLocal && index + 2 < code->instructions.size() &&
         code->instructions[index + 1].opcode == Opcode::SetLocal &&

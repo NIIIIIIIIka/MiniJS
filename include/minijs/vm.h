@@ -25,6 +25,8 @@ extern "C" bool minijsBaselinePushNumberSlot(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineGetLocalAndPushNumberSlot(minijs::BaselineFrame* frame,
                                                        std::uint32_t slot);
 extern "C" bool minijsBaselineSetLocal(minijs::BaselineFrame* frame, std::uint32_t slot);
+extern "C" bool minijsBaselineAssignConstant(minijs::BaselineFrame* frame,
+                                            std::uint32_t constantIndex, std::uint32_t targetSlot);
 extern "C" bool minijsBaselineCopyLocal(minijs::BaselineFrame* frame, std::uint32_t sourceSlot,
                                        std::uint32_t targetSlot);
 extern "C" bool minijsBaselinePop(minijs::BaselineFrame* frame);
@@ -209,6 +211,8 @@ class VM {
   friend bool ::minijsBaselineGetLocalAndPushNumberSlot(minijs::BaselineFrame* frame,
                                                        std::uint32_t slot);
   friend bool ::minijsBaselineSetLocal(minijs::BaselineFrame* frame, std::uint32_t slot);
+  friend bool ::minijsBaselineAssignConstant(minijs::BaselineFrame* frame,
+                                            std::uint32_t constantIndex, std::uint32_t targetSlot);
   friend bool ::minijsBaselineCopyLocal(minijs::BaselineFrame* frame, std::uint32_t sourceSlot,
                                        std::uint32_t targetSlot);
   friend bool ::minijsBaselinePop(minijs::BaselineFrame* frame);
@@ -315,6 +319,8 @@ class VM {
   bool baselineRuntimePushNumberSlot(BaselineFrame& frame);
   bool baselineRuntimeGetLocalAndPushNumberSlot(BaselineFrame& frame, std::uint32_t slot);
   bool baselineRuntimeSetLocal(BaselineFrame& frame, std::uint32_t slot);
+  bool baselineRuntimeAssignConstant(BaselineFrame& frame, std::uint32_t constantIndex,
+                                     std::uint32_t targetSlot);
   bool baselineRuntimeCopyLocal(BaselineFrame& frame, std::uint32_t sourceSlot,
                                 std::uint32_t targetSlot);
   bool baselineRuntimePop(BaselineFrame& frame);

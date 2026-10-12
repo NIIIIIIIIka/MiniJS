@@ -1307,6 +1307,44 @@ call rax
 
 三个 decoded 指令保留，native offset 指向同一合并单元；独立中间入口禁止合并。测试覆盖载荷逐位复制、完整 Value fallback、类型变化、自赋值、保留结果、捕获槽/GC、this、对象与闭包身份、独立 SetLocal/Pop 入口、非法源/目标槽及新增临时槽边界。新增 `examples/baseline_local_copy_benchmark.js` 与 CLI baseline smoke，Release 配对结果见 [性能报告](baseline-numeric-benchmark.md)。
 
+### Windows x64 数字常量赋值合并
+
+`target = 7;` 的字节码为 `Constant index`、`SetLocal slot`、`Pop`。常量是 Number，且 SetLocal/Pop 都不是独立跳转入口时，Windows x64 将三条指令合并。需要保留结果的 `return target = 7;` 没有紧邻 Pop，不参与合并。非数字常量、token、Parser、AST、Interpreter、ARM64 和 decoded 的执行方式均不变。
+
+快路径先检查目标槽存在且类型为 Number，再直接覆盖数字载荷。等价 C++ 如下：
+
+```cpp
+// 目标已是 Number，旧值不含需要释放的引用。
+target.number = constantNumber;
+// 无临时栈槽，无栈深度变化，无同步 helper。
+```
+
+常量用 memcpy 提取原始 64 位编码；不是整数到 double 的数值转换。目标地址在 rdx，复制部分为：
+
+```asm
+mov rax, numberBits                  ; 48 B8 + imm64：载入原始数字位编码
+mov [rdx + numberOffset], rax        ; 48 89 82 + disp32：覆盖目标的 8 字节载荷
+mov eax, 1                          ; B8 01 00 00 00：操作成功
+```
+
+imm64 和 disp32 均按小端编码。直接移动位编码保留负零、NaN payload、无穷大和非规格化数；不发出算术指令，也不构造临时 Number Value。
+
+目标原来不是 Number 时，必须走 `minijsBaselineAssignConstant(frame, index, slot)`。helper 从当前 closure 的实际常量池读取值，通过完整 Value 赋值处理类型变化和旧资源；不能只改数字字段或类型标签。合法数字赋值不创建 GC 对象，原有 GC 根协议不变。
+
+```asm
+mov rcx, rbx                        ; 第一个参数：BaselineFrame*
+mov edx, constantIndex              ; 第二个参数：常量池索引
+mov r8d, targetSlot                  ; 第三个参数：相对局部槽编号
+mov rax, assignConstantHelper
+call rax
+```
+
+helper 先检查常量索引，保留 Constant 的错误优先级。目标不在原栈内时，仍依次压常量、SetLocal、Pop：目标恰好是新临时槽则合法，真正越界时保留已压入的常量和 `local slot out of bounds`。非数字常量若通过 C ABI 调用该 helper，也使用原顺序，包括原有字符串创建和 GC 根保护。
+
+guard 未命中前不修改栈；helper 失败由 C ABI 记录并退出。三条 decoded 指令仍保留，native offset 指向同一合并单元，中间独立入口禁止合并。
+
+专项测试覆盖数字位编码、非数字旧值（含闭包、实例、绑定方法）、捕获槽和 GC、赋值结果保留、独立 SetLocal/Pop 入口、常量索引错误优先级、非法目标及临时槽边界。新增 `examples/baseline_constant_assign_benchmark.js` 与 CLI baseline smoke，配对结果见 [性能报告](baseline-numeric-benchmark.md)。
+
 ### 栈同步边界验证
 
 `minijsBaselineSyncStackSize()` 仍使用通用 `stack_.resize(frame.stackSize)`。数字二元快路径先减少 frame 的快照深度，再调用该 helper 正常销毁右操作数槽，最后刷新栈地址和真实深度。helper 不允许扩大栈；超界时通过 C ABI 记录 `baseline stack size out of bounds` 并退出。
