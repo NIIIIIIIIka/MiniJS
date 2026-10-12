@@ -607,10 +607,11 @@ class WindowsX64Emitter {
     return patchBranchTo(done, offset(), false, error);
   }
 
-  // 更新语句与保留结果的表达式共享同一双槽 guard；输出 rdx=左槽、rcx=右槽。
-  bool emitLoadNumberLocalPair(std::uint32_t leftSlot, std::uint32_t rightSlot,
+  // 两槽类型相同且存在时输出 rdx=左槽、rcx=右槽；guard 完成前不写入。
+  bool emitLoadTypedLocalPair(std::uint32_t leftSlot, std::uint32_t rightSlot,
+                               std::uint32_t typeTag,
                                std::vector<std::size_t>& fallbacks, std::string& error) {
-    if (!validateInlineValueSize("local pair number operands", error)) return false;
+    if (!validateInlineValueSize("typed local pair operands", error)) return false;
     for (int side = 0; side < 2; ++side) {
       const std::uint32_t slot = side == 0 ? leftSlot : rightSlot;
       emitLoadLocalAddress(slot);
@@ -619,9 +620,9 @@ class WindowsX64Emitter {
       emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackSize)));
       fallbacks.push_back(emitJaePlaceholder());
       emitLocalPointerFromIndex();
-      emit({0x81, 0xBA});  // cmp dword ptr [rdx + typeOffset], Number
+      emit({0x81, 0xBA});  // cmp dword ptr [rdx + typeOffset], typeTag
       emit32(static_cast<std::uint32_t>(Value::typeOffset()));
-      emit32(Value::numberTypeTag());
+      emit32(typeTag);
       fallbacks.push_back(emitJnePlaceholder());
       // 同槽时也保存左地址；直到两个值均读取完成才更新。
       if (side == 0) emit({0x49, 0x89, 0xD0}); // mov r8, rdx
@@ -629,6 +630,66 @@ class WindowsX64Emitter {
     emit({0x48, 0x89, 0xD1});  // mov rcx, rdx：右局部槽。
     emit({0x4C, 0x89, 0xC2});  // mov rdx, r8：恢复左局部槽。
     return true;
+  }
+
+  bool emitLoadNumberLocalPair(std::uint32_t leftSlot, std::uint32_t rightSlot,
+                               std::vector<std::size_t>& fallbacks, std::string& error) {
+    return emitLoadTypedLocalPair(leftSlot, rightSlot, Value::numberTypeTag(), fallbacks, error);
+  }
+
+  // GetLocal + Negate/Not + SetLocal + Pop：目标可与源不同，但必须同为 Number/Boolean。
+  bool emitLocalUnaryUpdateOrRuntimeCall(std::uint32_t sourceSlot, std::uint32_t targetSlot,
+                                        Opcode operation, std::string& error) {
+    std::vector<std::size_t> fallbacks;
+    const bool negate = operation == Opcode::Negate;
+    if (!emitLoadTypedLocalPair(sourceSlot, targetSlot,
+            negate ? Value::numberTypeTag() : Value::booleanTypeTag(), fallbacks, error)) return false;
+    if (negate) {
+      emit({0x48, 0x8B, 0x82});  // mov rax, [rdx + numberOffset]：读取源 double 位编码。
+      emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+      emit({0x49, 0xB8});  // mov r8, signMask：double 最高位是符号位。
+      emit64(0x8000000000000000ULL);
+      emit({0x4C, 0x31, 0xC0});  // xor rax, r8：翻转符号，保留其它 63 位。
+      emit({0x48, 0x89, 0x81});  // mov [rcx + numberOffset], rax：写入目标。
+      emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+    } else {
+      emit({0x0F, 0xB6, 0x82});  // movzx eax, byte ptr [rdx + booleanOffset]
+      emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
+      emit({0x34, 0x01});  // xor al, 1：Boolean 的 0/1 互换，不是通用 truthy 转换。
+      emit({0x88, 0x81});  // mov byte ptr [rcx + booleanOffset], al
+      emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
+    }
+    emit({0xB8});  // mov eax, 1：栈深度未变，无同步 helper。
+    emit32(1);
+    const auto done = emitJumpPlaceholder();
+    const auto fallback = offset();
+    for (const auto patch : fallbacks) {
+      if (!patchBranchTo(patch, fallback, true, error)) return false;
+    }
+    // 完整重现读取、一元运算、赋值和丢弃；任一步失败后都不继续。
+    std::vector<std::size_t> failures;
+    emitMoveFrameToFirstArg();
+    emitMoveU32ToSecondArg(sourceSlot);
+    emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselineGetLocal));
+    emitCallHelper();
+    failures.push_back(emitJumpIfFalsePlaceholder());
+    emitMoveFrameToFirstArg();
+    emitLoadHelper(negate ? reinterpret_cast<std::uintptr_t>(&minijsBaselineNegate)
+                          : reinterpret_cast<std::uintptr_t>(&minijsBaselineNot));
+    emitCallHelper();
+    failures.push_back(emitJumpIfFalsePlaceholder());
+    emitMoveFrameToFirstArg();
+    emitMoveU32ToSecondArg(targetSlot);
+    emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselineSetLocal));
+    emitCallHelper();
+    failures.push_back(emitJumpIfFalsePlaceholder());
+    emitMoveFrameToFirstArg();
+    emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselinePop));
+    emitCallHelper();
+    for (const auto patch : failures) {
+      if (!patchBranchTo(patch, offset(), true, error)) return false;
+    }
+    return patchBranchTo(done, offset(), false, error);
   }
 
   // 等价于 target = source；只有两槽都是数字才直接复制 double 载荷。
@@ -1418,6 +1479,27 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
       }
       index += 2;
       continue;
+    }
+    if (instruction.opcode == Opcode::GetLocal && index + 3 < code->instructions.size()) {
+      const auto operation = code->instructions[index + 1].opcode;
+      bool independentEntry = false;
+      for (std::size_t inner = 1; inner <= 3; ++inner) {
+        independentEntry = independentEntry || branchTargets[verification.instructionOffsets[index + inner]];
+      }
+      if ((operation == Opcode::Negate || operation == Opcode::Not) &&
+          code->instructions[index + 2].opcode == Opcode::SetLocal &&
+          code->instructions[index + 3].opcode == Opcode::Pop && !independentEntry) {
+        std::string inlineError;
+        if (!emitter.emitLocalUnaryUpdateOrRuntimeCall(instruction.operands[0],
+                code->instructions[index + 2].operands[0], operation, inlineError)) return failure(inlineError);
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        for (std::size_t inner = 1; inner <= 3; ++inner) {
+          code->bytecodeOffsetToNativeOffset[verification.instructionOffsets[index + inner]] =
+              code->bytecodeOffsetToNativeOffset[bytecodeOffset];
+        }
+        index += 3;
+        continue;
+      }
     }
     if (instruction.opcode == Opcode::GetLocal && index + 4 < code->instructions.size()) {
       const auto& rightOperand = code->instructions[index + 1];

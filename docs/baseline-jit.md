@@ -1345,6 +1345,59 @@ guard 未命中前不修改栈；helper 失败由 C ABI 记录并退出。三条
 
 专项测试覆盖数字位编码、非数字旧值（含闭包、实例、绑定方法）、捕获槽和 GC、赋值结果保留、独立 SetLocal/Pop 入口、常量索引错误优先级、非法目标及临时槽边界。新增 `examples/baseline_constant_assign_benchmark.js` 与 CLI baseline smoke，配对结果见 [性能报告](baseline-numeric-benchmark.md)。
 
+### Windows x64 一元局部赋值合并
+
+`value = -value;` 和 `flag = !flag;` 通常分别生成如下序列。源与目标也可以是不同的局部槽：
+
+```text
+GetLocal sourceSlot
+Negate 或 Not
+SetLocal targetSlot
+Pop
+```
+
+一元运算、SetLocal、Pop 都不是独立跳转入口时，Windows x64 合并这四条指令。`return value = -value;` 等保留结果的表达式没有紧邻 Pop，不参与合并。token、Parser、AST、Interpreter、bytecode 格式、ARM64 和 decoded 不变。
+
+共用双槽类型 guard，先检查两槽合法性、加法溢出和类型，再输出 rdx=源槽、rcx=目标槽。Negate 要求两槽都是 Number，Not 要求两槽都是 Boolean；源目标同槽也合法，写入前先读取源载荷。
+
+数字取负的等价 C++ 为：
+
+```cpp
+std::uint64_t bits;
+std::memcpy(&bits, &source.number, sizeof(bits));
+bits ^= 0x8000000000000000ULL;
+std::memcpy(&target.number, &bits, sizeof(bits));
+```
+
+每条汇编与机器码对应如下，位移是 Value::numberOffset() 的 4 字节小端编码：
+
+```asm
+mov rax, [rdx + numberOffset]        ; 48 8B 82 + disp32：读源位编码
+mov r8, 0x8000000000000000           ; 49 B8 + imm64：符号位掩码
+xor rax, r8                         ; 4C 31 C0：仅翻转最高位
+mov [rcx + numberOffset], rax        ; 48 89 81 + disp32：写入目标
+mov eax, 1                          ; B8 01 00 00 00：成功
+```
+
+这不是“整数转 double”，而是翻转 double 原始位编码的符号位。正负零互换，NaN payload、无穷大和非规格化数的其它位不变。
+
+布尔取反等价于 `target.boolean = !source.boolean`，Boolean 载荷只可能是 0/1：
+
+```asm
+movzx eax, byte ptr [rdx + booleanOffset] ; 0F B6 82 + disp32：读取源 0/1
+xor al, 1                               ; 34 01：0 与 1 互换
+mov byte ptr [rcx + booleanOffset], al   ; 88 81 + disp32：写入目标
+mov eax, 1                              ; B8 01 00 00 00：成功
+```
+
+两种快路径均不新增临时 Value，不改变 stack_ 或 frame.stackSize，也不调用同步 helper。目标必须已经具有相应类型；旧值是字符串、对象等类型时不能直接覆盖载荷，必须执行完整 Value 赋值。
+
+guard 未命中时按原顺序调用 GetLocal、Negate/Not、SetLocal、Pop helper，任何一步失败立即退出。Not 仍对非 Boolean 值执行正常 isTruthy 转换；Negate 的非数字错误仍为 `value is not a number`。无论目标越界还是恰好位于新临时栈槽，都保留原始操作顺序和边界行为。
+
+原地更新的捕获槽仍由同一个 upvalue 索引读取，函数返回时照常关闭；GC 根协议不变。四条 decoded 指令保留，native offset 指向同一合并单元，不构成独立 deopt 入口。
+
+专项测试覆盖正负零、带 payload 的 NaN、无穷大、非规格化数、布尔取反、同槽/不同槽、源值不变、类型变化、truthy fallback、捕获变量与 GC、保留赋值结果、完整 helper 计数、非法槽、临时槽边界及三个中间独立入口。新增 `examples/baseline_unary_update_benchmark.js` 与 CLI baseline smoke，配对结果见 [性能报告](baseline-numeric-benchmark.md)。
+
 ### 栈同步边界验证
 
 `minijsBaselineSyncStackSize()` 仍使用通用 `stack_.resize(frame.stackSize)`。数字二元快路径先减少 frame 的快照深度，再调用该 helper 正常销毁右操作数槽，最后刷新栈地址和真实深度。helper 不允许扩大栈；超界时通过 C ABI 记录 `baseline stack size out of bounds` 并退出。

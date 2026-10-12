@@ -6836,6 +6836,147 @@ void testLocalPairExpressionPreservesIndependentOperationEntry() {
   }
 }
 
+void testLocalUnaryUpdatePreservesFallbackCapturesAndRetainedResults() {
+  for (const bool enabled : {false, true}) {
+    minijs::VM vm;
+    vm.setJitEnabled(enabled);
+    vm.setJitCallThreshold(1);
+    EXPECT(runBytecodeProgramOnVm(vm, R"(
+      function negate(value) { value = -value; return value; }
+      function invert(value) { value = !value; return value; }
+      function different(value) { let target = "old"; target = -value; return [value,target]; }
+      function retained(value) { return value = -value; }
+      function outer(value) {
+        function read() { return value; }
+        value = !value;
+        return read;
+      }
+      function negativeOuter(value) {
+        function read() { return value; }
+        value = -value;
+        return read;
+      }
+      negate(0); invert(false); different(0); retained(0); outer(false); negativeOuter(0);
+      class Unary {
+        flip(value) { value = -value; return value; }
+        truth(value) { value = !value; return value; }
+      }
+      let unary = Unary(); unary.flip(0); unary.truth(false);
+      let read = outer({ n: 7 });
+      let negativeRead = negativeOuter(7);
+      [negate(7), invert(true), invert(0), invert(1), invert(""), invert("text"),
+       invert(null), invert(undefined), invert([]), invert({}), different(7), retained(7), read(), negativeRead(),
+       unary.flip(3), unary.truth(true)];
+    )").toString() == "[-7, false, true, false, true, false, true, true, false, false, [7, -7], -7, false, -7, -3, false]");
+    vm.collectGarbage();
+    EXPECT(runBytecodeProgramOnVm(vm, "read();").equals(minijs::Value(false)));
+    EXPECT(runBytecodeProgramOnVm(vm, "negativeRead();").equals(minijs::Value(-7.0)));
+    try {
+      runBytecodeProgramOnVm(vm, "negate(\"bad\");");
+      EXPECT(false);
+    } catch (const minijs::RuntimeError& error) {
+      EXPECT(std::string_view(error.what()) == "RuntimeError: value is not a number");
+    }
+  }
+}
+
+void testNativeLocalUnaryUpdatePayloadHelpersAndBoundaries() {
+  if (!nativeBaselineBackendAvailable()) return;
+  minijs::VM vm;
+  runBytecodeProgramOnVm(vm, "function update(source,target) { return target; }");
+  auto compileUpdate = [](minijs::Opcode operation, std::uint8_t source, std::uint8_t target) {
+    minijs::BytecodeFunction function;
+    function.chunk.writeOpcode(minijs::Opcode::GetLocal); function.chunk.writeByte(source);
+    function.chunk.writeOpcode(operation);
+    function.chunk.writeOpcode(minijs::Opcode::SetLocal); function.chunk.writeByte(target);
+    function.chunk.writeOpcode(minijs::Opcode::Pop);
+    function.chunk.writeOpcode(minijs::Opcode::GetLocal); function.chunk.writeByte(target < 2 ? target : 0);
+    function.chunk.writeOpcode(minijs::Opcode::Return);
+    return minijs::BaselineCompiler().compile(function);
+  };
+  const auto negate = compileUpdate(minijs::Opcode::Negate, 0, 1);
+  const auto invert = compileUpdate(minijs::Opcode::Not, 0, 1);
+  EXPECT(negate.succeeded() && invert.succeeded());
+  vm.setBaselineHelperProfilingEnabled(true);
+  const std::uint64_t patterns[] = {0ULL, 0x8000000000000000ULL, 0x7FF8000000001234ULL,
+                                  0x7FF0000000000000ULL, 1ULL};
+  for (const auto bits : patterns) {
+    double number;
+    std::memcpy(&number, &bits, sizeof(number));
+    const double result = vm.debugExecuteGlobalFunctionBaselineEntry(
+        "update", {minijs::Value(number), minijs::Value(0.0)}, negate.code->entry).asNumber();
+    std::uint64_t actual;
+    std::memcpy(&actual, &result, sizeof(actual));
+    EXPECT(actual == (bits ^ 0x8000000000000000ULL));
+  }
+  for (const bool value : {false,true}) {
+    EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("update",
+        {minijs::Value(value), minijs::Value(false)}, invert.code->entry).equals(minijs::Value(!value)));
+  }
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+  for (const auto* code : {negate.code.get(), invert.code.get()}) {
+    for (const std::size_t inner : {2u,3u,5u}) {
+      EXPECT(code->bytecodeOffsetToNativeOffset[0] == code->bytecodeOffsetToNativeOffset[inner]);
+    }
+  }
+  for (const auto& helper : vm.jitRuntimeStats().helpers) {
+    EXPECT(helper.name == "minijsBaselineReturnLocal");
+  }
+#endif
+  vm.resetBaselineHelperProfile();
+  EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("update",
+      {minijs::Value(7.0), minijs::Value(std::string("old"))}, negate.code->entry).equals(minijs::Value(-7.0)));
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+  EXPECT(vm.jitRuntimeStats().helpers.size() == 5);
+  for (const auto& helper : vm.jitRuntimeStats().helpers) EXPECT(helper.calls == 1);
+#endif
+  for (const auto operation : {minijs::Opcode::Negate, minijs::Opcode::Not}) {
+    for (const auto& slots : {std::pair<std::uint8_t,std::uint8_t>{0,0}, {0,2}, {255,0}, {0,255}}) {
+      const auto compiled = compileUpdate(operation, slots.first, slots.second);
+      EXPECT(compiled.succeeded());
+      try {
+        const auto result = vm.debugExecuteGlobalFunctionBaselineEntry("update",
+            {minijs::Value(7.0), minijs::Value(0.0)}, compiled.code->entry);
+        EXPECT(slots.first == 0 && slots.second != 255);
+        const auto expected = slots.second == 2 ? minijs::Value(7.0)
+                            : operation == minijs::Opcode::Negate ? minijs::Value(-7.0) : minijs::Value(false);
+        EXPECT(result.equals(expected));
+      } catch (const minijs::RuntimeError& error) {
+        EXPECT(slots.first == 255 || slots.second == 255);
+        EXPECT(std::string_view(error.what()) == "RuntimeError: local slot out of bounds");
+      }
+    }
+  }
+}
+
+void testLocalUnaryUpdateDoesNotFuseIndependentEntries() {
+  if (!nativeBaselineBackendAvailable()) return;
+  minijs::VM vm;
+  runBytecodeProgramOnVm(vm, "function update(source,target) { return target; }");
+  for (const auto operation : {minijs::Opcode::Negate, minijs::Opcode::Not}) {
+    for (const std::uint8_t jump : {std::uint8_t(2), std::uint8_t(3), std::uint8_t(5)}) {
+      minijs::BytecodeFunction function;
+      function.chunk.writeOpcode(minijs::Opcode::GetLocal); function.chunk.writeByte(0);
+      function.chunk.writeOpcode(minijs::Opcode::Jump); function.chunk.writeByte(0); function.chunk.writeByte(jump);
+      function.chunk.writeOpcode(minijs::Opcode::GetLocal); function.chunk.writeByte(0);
+      function.chunk.writeOpcode(operation);
+      function.chunk.writeOpcode(minijs::Opcode::SetLocal); function.chunk.writeByte(1);
+      function.chunk.writeOpcode(minijs::Opcode::Pop);
+      function.chunk.writeOpcode(minijs::Opcode::GetLocal); function.chunk.writeByte(1);
+      function.chunk.writeOpcode(minijs::Opcode::Return);
+      const auto compiled = minijs::BaselineCompiler().compile(function);
+      EXPECT(compiled.succeeded());
+      EXPECT(compiled.code->bytecodeOffsetToNativeOffset[5] != compiled.code->bytecodeOffsetToNativeOffset[5 + jump]);
+      const bool negate = operation == minijs::Opcode::Negate;
+      const auto expected = negate ? minijs::Value(jump == 2 ? -7.0 : jump == 3 ? 7.0 : 3.0)
+                                   : minijs::Value(jump != 2);
+      EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("update",
+          {negate ? minijs::Value(7.0) : minijs::Value(true),
+           negate ? minijs::Value(3.0) : minijs::Value(true)}, compiled.code->entry).equals(expected));
+    }
+  }
+}
+
 void testConstantAssignmentPreservesTypesCapturesAndRetainedResult() {
   for (const bool enabled : {false, true}) {
     minijs::VM vm;
@@ -8203,6 +8344,9 @@ void runBytecodeTests() {
   testNativeLocalReturnPreservesValuesAndUsesMergedHelper();
   testLocalCopyFusionPreservesValuesAndIdentity();
   testConstantAssignmentPreservesTypesCapturesAndRetainedResult();
+  testLocalUnaryUpdatePreservesFallbackCapturesAndRetainedResults();
+  testNativeLocalUnaryUpdatePayloadHelpersAndBoundaries();
+  testLocalUnaryUpdateDoesNotFuseIndependentEntries();
   testConstantAssignmentAbiPreservesErrorOrderAndTemporarySlot();
   testNativeConstantAssignmentBitsAndIndependentEntries();
   testLocalCopyAbiPreservesFailureStackAndTemporaryTarget();
