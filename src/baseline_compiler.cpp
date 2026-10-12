@@ -643,6 +643,24 @@ class WindowsX64Emitter {
     return emitLoadTypedLocalPair(leftSlot, rightSlot, Value::numberTypeTag(), fallbacks, error);
   }
 
+  // 清理两条分支上的条件临时值时，直接读局部 Boolean；返回 0/1/2，不改栈。
+  bool emitLocalTruthyOrRuntimeCall(std::uint32_t slot, std::string& error) {
+    std::vector<std::size_t> fallbacks;
+    if (!emitLoadTypedLocalPair(slot, slot, Value::booleanTypeTag(), fallbacks, error)) return false;
+    emit({0x0F, 0xB6, 0x82});  // movzx eax, byte ptr [rdx + booleanOffset]：条件 0/1。
+    emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
+    const auto done = emitJumpPlaceholder();
+    const auto fallback = offset();
+    for (const auto patch : fallbacks) {
+      if (!patchBranchTo(patch, fallback, true, error)) return false;
+    }
+    emitMoveFrameToFirstArg();
+    emitMoveU32ToSecondArg(slot);
+    emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselineLocalTruthy));
+    emitCallHelper();
+    return patchBranchTo(done, offset(), false, error);
+  }
+
   // GetLocal + Negate/Not + SetLocal + Pop：目标可与源不同，但必须同为 Number/Boolean。
   bool emitLocalUnaryUpdateOrRuntimeCall(std::uint32_t sourceSlot, std::uint32_t targetSlot,
                                         Opcode operation, std::string& error) {
@@ -1477,6 +1495,29 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
     code->bytecodeOffsetToNativeOffset[bytecodeOffset] = emitter.offset();
 
 #if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+    if (instruction.opcode == Opcode::GetLocal && index + 2 < code->instructions.size() &&
+        code->instructions[index + 1].opcode == Opcode::JumpIfFalse &&
+        code->instructions[index + 2].opcode == Opcode::Pop &&
+        !branchTargets[verification.instructionOffsets[index + 1]] &&
+        !branchTargets[verification.instructionOffsets[index + 2]]) {
+      const auto falseOffset = code->instructions[index + 1].jumpTarget;
+      const auto falseIndex = code->bytecodeOffsetToInstructionIndex[falseOffset];
+      if (falseIndex < code->instructions.size() && falseIndex + 1 < code->instructions.size() &&
+          code->instructions[falseIndex].opcode == Opcode::Pop) {
+        std::string inlineError;
+        if (!emitter.emitLocalTruthyOrRuntimeCall(instruction.operands[0], inlineError)) return failure(inlineError);
+        // 原假分支先弹出条件副本；现在无副本，跳到该 Pop 的下一条指令。
+        branchPatches.push_back({emitter.emitJumpIfZeroPlaceholder(),
+            verification.instructionOffsets[falseIndex + 1], NativeBranchKind::Zero});
+        epiloguePatches.push_back({emitter.emitJumpIfNotOnePlaceholder(), NativeBranchKind::NotOne});
+        for (std::size_t inner = 1; inner <= 2; ++inner) {
+          code->bytecodeOffsetToNativeOffset[verification.instructionOffsets[index + inner]] =
+              code->bytecodeOffsetToNativeOffset[bytecodeOffset];
+        }
+        index += 2;
+        continue;
+      }
+    }
     if (instruction.opcode == Opcode::Constant && index + 1 < code->instructions.size() &&
         function.chunk.constant(instruction.operands[0]).isNumber() &&
         code->instructions[index + 1].opcode == Opcode::Return &&

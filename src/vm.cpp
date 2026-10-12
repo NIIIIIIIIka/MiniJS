@@ -1515,6 +1515,15 @@ std::uint8_t VM::baselineRuntimePeekTruthy(BaselineFrame& frame) {
   return peek().isTruthy() ? 1 : 0;
 }
 
+std::uint8_t VM::baselineRuntimeLocalTruthy(BaselineFrame& frame, std::uint32_t slot) {
+  validateBaselineRuntimeFrame(frame);
+  if (frame.slotStart > stack_.size() || slot >= stack_.size() - frame.slotStart) {
+    throw RuntimeError("local slot out of bounds");
+  }
+  // 局部值仍由 VM 栈持有；真假判断不分配 GC 对象，无需临时操作数或临时根。
+  return stack_[frame.slotStart + slot].isTruthy() ? 1 : 0;
+}
+
 bool VM::baselineRuntimeRecordLoopBackedge(BaselineFrame& frame) {
   validateBaselineRuntimeFrame(frame);
   recordLoopBackedge(*frame.closure->function);

@@ -787,6 +787,21 @@ extern "C" bool minijsBaselineNot(minijs::BaselineFrame* frame) {
   }
 }
 
+extern "C" std::uint8_t minijsBaselineLocalTruthy(minijs::BaselineFrame* frame, std::uint32_t slot) {
+  if (!frameCanRun(frame)) return 2;
+  try {
+    HelperProfileScope profile(*frame->vm, __func__);
+    return frame->vm->baselineRuntimeLocalTruthy(*frame, slot);
+  } catch (const minijs::RuntimeError& error) {
+    markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    markFailedFromException(frame, error);
+  } catch (...) {
+    markFailed(frame);
+  }
+  return 2;
+}
+
 extern "C" std::uint8_t minijsBaselinePeekTruthy(minijs::BaselineFrame* frame) {
   if (!frameCanRun(frame)) {
     return 2;

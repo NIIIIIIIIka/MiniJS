@@ -1488,6 +1488,50 @@ r10 和源地址只在无 helper 的快路径使用，不跨扩容或 GC 保存�
 
 测试覆盖三种比较与两种右值、NaN 位于任一侧、无穷大、正负零、false 成功状态、源值不变、类型变化、源目标别名、各类相等 fallback、赋值结果保留、捕获槽/GC、方法帧、非法槽、临时槽、错误优先级及四个中间独立入口。新增 `examples/baseline_comparison_assign_benchmark.js` 与 CLI baseline smoke，配对结果见 [性能报告](baseline-numeric-benchmark.md)。
 
+### Windows x64 局部条件分支合并
+
+`if (flag)`、`while (flag)` 会先把局部值复制到操作数栈，再测试真假，并在真假两条路径上各自 Pop 条件副本。满足以下结构时，Windows x64 可以直接读局部槽：
+
+```text
+GetLocal slot
+JumpIfFalse falseCleanup
+Pop                         // 真路径：丢弃条件副本
+...                         // 真分支或循环体
+falseCleanup:
+Pop                         // 假路径：丢弃条件副本
+...                         // 后续代码
+```
+
+JumpIfFalse 和真路径 Pop 不能是独立跳转入口，假路径必须以 Pop 开始且还有后续指令。合并后不创建条件副本：真路径省去 Pop，假路径跳到 falseCleanup 的下一条指令。假路径原 Pop 仍单独生成，供其他跳转使用；不能全局删除它或改变其他分支的目标。
+
+Boolean 槽经过编号溢出、边界和类型检查后，直接返回局部布尔载荷 0/1。等价 C++ 为：
+
+```cpp
+bool condition = local.boolean;
+if (!condition) goto afterFalseCleanup;
+// 真路径继续执行，不复制或弹出局部值。
+```
+
+载荷读取与分支的汇编逐行如下：
+
+```asm
+movzx eax, byte ptr [rdx + booleanOffset] ; 0F B6 82 + disp32：读取局部 0/1
+test eax, eax                            ; 85 C0：检查是否为 0
+jz afterFalseCleanup                     ; 0F 84 + rel32：假路径越过其清理 Pop
+cmp eax, 1                               ; 83 F8 01：其余结果必须为 1
+jne epilogue                             ; 0F 85 + rel32：三态 helper 的 2 表示失败
+```
+
+实际发射器在局部读取和上述分支之间还有 guard 汇合跳转；disp32 和 rel32 均为 4 字节小端编码。快路径不改栈深度，不调用 helper。
+
+非 Boolean 或非法槽进入 `minijsBaselineLocalTruthy(frame, slot)`：0=falsey，1=truthy，2=失败。helper 验证当前帧和局部编号，再调用该值的 isTruthy，不创建副本，不压栈，也不弹出局部值。字符串、Number/NaN、null/undefined、数组、对象及可调用值保持原有真假规则；非法槽仍报 `local slot out of bounds`。失败帧或已完成帧沿用原 helper 协议，不能继续执行。
+
+源码仍由原 token、Parser、AST 和 bytecode 编译器处理，Interpreter、ARM64 与 decoded 不变。GetLocal、JumpIfFalse、真路径 Pop 的 native offset 指向同一合并单元；假路径 Pop 及后续代码保留各自入口，不提供独立 deopt 恢复点。
+
+`return value && rhs` 等需要保留短路操作数的结构不满足双路径 Pop 条件，不能合并。被丢弃的短路表达式若恰好也有双路径清理，可以合并，但 RHS 的调用和副作用顺序不变。局部条件仍留在 VM 根栈中，真假判断不分配 GC 对象；捕获槽、循环 break/continue 及方法帧偏移继续使用原协议。
+
+测试覆盖真假路径、不同 Value 的 truthiness、Boolean 无 helper 与非 Boolean 三态 fallback、if/while、break/continue、保留及丢弃的短路结果、捕获槽/GC、方法帧、非法槽、独立中间入口、被其他分支共用的假路径 Pop，以及 ABI 失败/完成状态。新增 `examples/baseline_local_branch_benchmark.js`，配对数据见 [性能报告](baseline-numeric-benchmark.md)。
+
 ### 栈同步边界验证
 
 `minijsBaselineSyncStackSize()` 仍使用通用 `stack_.resize(frame.stackSize)`。数字二元快路径先减少 frame 的快照深度，再调用该 helper 正常销毁右操作数槽，最后刷新栈地址和真实深度。helper 不允许扩大栈；超界时通过 C ABI 记录 `baseline stack size out of bounds` 并退出。

@@ -574,3 +574,35 @@ Windows x64 合并 Less/Greater/Equal 的五条比较赋值指令。数字源与
 合计减少 570,000 次 helper 调用。两个 if 条件仍复制 flag 并弹出，因此 GetLocal 不变、Pop 没有清零；循环条件和回边调用也仍保留。
 
 CTest 29/29 通过。测试覆盖三种比较、两种右值、特殊数字、false 成功状态、类型变化、各类相等 fallback、源目标别名、保留结果、捕获槽/GC、方法帧、非法槽、临时槽、错误优先级及四个中间独立入口。
+
+### 局部条件分支对照
+
+新增 `examples/baseline_local_branch_benchmark.js`，每次循环用 `if (flag)` 累计 true 次数，再用 `flag = !flag` 翻转条件。20 轮、每轮 5000 次，flag 初始为 true，预期结果为 `50000`。修改前来自提交 `ae579e9`，保存为本机忽略的 `build-verify-release/local-branch-before-ae579e9.exe`。
+
+Windows x64 在真假两条路径都丢弃条件副本时，合并 GetLocal + JumpIfFalse + 真路径 Pop，假路径改跳到其 Pop 之后；原假路径 Pop 仍保留给其他入口。Boolean 直接读局部载荷，非 Boolean 使用不改栈的 LocalTruthy 三态 helper。
+
+关闭 helper 采样，每组每版本 3 轮预热、15 轮正式采样，第二组交换执行顺序；每次采样使用新 VM，包含 JIT 编译与前期冷调用：
+
+| 对照组 | 修改前 JIT on | 修改后 JIT on | 前 / 后 | 修改前 JIT off | 修改后 JIT off |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 12.989 ms | 7.868 ms | 1.651x | 83.379 ms | 90.138 ms |
+| 2 | 12.886 ms | 11.922 ms | 1.081x | 96.518 ms | 82.788 ms |
+| 3 | 13.739 ms | 7.768 ms | 1.769x | 79.306 ms | 81.476 ms |
+
+三组 JIT on 中位数降低约 39.4%、7.5%、43.5%。第二组修改后数据明显高于其它组，普通 VM 也有波动，不将本微基准看成固定加速比。三组方向支持保留该合并；所有结果为 `50000`，baseline 入口计数为 19。
+
+另行单轮开启采样，仅核对 helper 数量，不使用采样耗时计算收益：
+
+| helper | 修改前调用 | 修改后调用 |
+| --- | ---: | ---: |
+| `GetLocal` | 95,000 | 0 |
+| `Pop` | 190,019 | 95,019 |
+| `PushConstant` | 19 | 19 |
+| `PushNumberSlot` | 95,057 | 95,057 |
+| `RecordLoopBackedge` | 95,000 | 95,000 |
+| `ReturnLocal` | 19 | 19 |
+| `LocalTruthy` | 0 | 0 |
+
+Boolean 条件无需 helper，总计减少 190,000 次调用。循环的数字比较仍生成结果槽并 Pop，回边和初始化调用仍保留。非 Boolean 条件由专项测试验证一次 LocalTruthy fallback，不由该 Boolean 微基准计数。
+
+CTest 30/30 通过。测试覆盖各类 truthiness、条件栈效果、短路结果及副作用、if/while、break/continue、捕获槽/GC、方法帧、非法槽、独立入口、共享假路径 Pop 及三态 ABI 的失败和完成状态。
