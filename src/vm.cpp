@@ -1524,6 +1524,27 @@ std::uint8_t VM::baselineRuntimeLocalTruthy(BaselineFrame& frame, std::uint32_t 
   return stack_[frame.slotStart + slot].isTruthy() ? 1 : 0;
 }
 
+std::uint8_t VM::baselineRuntimeCompareLocalsTruthy(BaselineFrame& frame, std::uint32_t leftSlot,
+                                                   std::uint32_t rightSlot, std::uint32_t operation) {
+  validateBaselineRuntimeFrame(frame);
+  if (operation != static_cast<std::uint32_t>(Opcode::Less) &&
+      operation != static_cast<std::uint32_t>(Opcode::Greater) &&
+      operation != static_cast<std::uint32_t>(Opcode::Equal)) {
+    throw RuntimeError("unsupported local comparison opcode");
+  }
+  // 保留原顺序，包括第二个槽指向第一次读取新增槽、越界或类型错误的状态。
+  baselineRuntimeGetLocal(frame, leftSlot);
+  baselineRuntimeGetLocal(frame, rightSlot);
+  switch (static_cast<Opcode>(operation)) {
+    case Opcode::Less: baselineRuntimeLess(frame); break;
+    case Opcode::Greater: baselineRuntimeGreater(frame); break;
+    default: baselineRuntimeEqual(frame); break;
+  }
+  const auto result = baselineRuntimePeekTruthy(frame);
+  baselineRuntimePop(frame);
+  return result;
+}
+
 bool VM::baselineRuntimeRecordLoopBackedge(BaselineFrame& frame) {
   validateBaselineRuntimeFrame(frame);
   recordLoopBackedge(*frame.closure->function);

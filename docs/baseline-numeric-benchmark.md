@@ -606,3 +606,33 @@ Windows x64 在真假两条路径都丢弃条件副本时，合并 GetLocal + Ju
 Boolean 条件无需 helper，总计减少 190,000 次调用。循环的数字比较仍生成结果槽并 Pop，回边和初始化调用仍保留。非 Boolean 条件由专项测试验证一次 LocalTruthy fallback，不由该 Boolean 微基准计数。
 
 CTest 30/30 通过。测试覆盖各类 truthiness、条件栈效果、短路结果及副作用、if/while、break/continue、捕获槽/GC、方法帧、非法槽、独立入口、共享假路径 Pop 及三态 ABI 的失败和完成状态。
+
+### 直接局部比较分支对照
+
+新增 `examples/baseline_comparison_branch_benchmark.js`，包含 `while (i < count)` 和 `i < midpoint`、`i > midpoint`、`i == midpoint` 三个 if。每次迭代恰好有一个 if 为真，20 轮、每轮 5000 次，预期结果为 `100000`。修改前来自提交 `28c8db1`，保存为本机忽略的 `build-verify-release/comparison-branch-before-28c8db1.exe`。
+
+Windows x64 在真假路径均清理结果时，合并双局部读取、比较、JumpIfFalse 和真路径 Pop；数字直接比较并跳转，不构造 Boolean Value。非数字调用一次 CompareLocalsTruthy，内部仍完整执行原始比较和清理顺序。
+
+关闭 helper 采样，每组每版本 3 轮预热、15 轮正式采样，第二组交换执行顺序；每次采样使用新 VM，包含 JIT 编译与前期冷调用：
+
+| 对照组 | 修改前 JIT on | 修改后 JIT on | 前 / 后 | 修改前 JIT off | 修改后 JIT off |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 15.762 ms | 7.404 ms | 2.129x | 126.837 ms | 129.603 ms |
+| 2 | 15.639 ms | 8.171 ms | 1.914x | 119.849 ms | 117.976 ms |
+| 3 | 15.562 ms | 7.517 ms | 2.070x | 123.985 ms | 119.065 ms |
+
+三组 JIT on 中位数降低约 53.0%、47.8%、51.7%。普通 VM 仍存在波动；这是同机局部比较循环的专项收益，不是任意脚本的固定加速比。所有结果为 `100000`，baseline 入口计数为 19。
+
+另行单轮开启采样，仅核对 helper 数量，不使用采样耗时计算收益：
+
+| helper | 修改前调用 | 修改后调用 |
+| --- | ---: | ---: |
+| `PushNumberSlot` | 380,076 | 57 |
+| `Pop` | 380,019 | 0 |
+| `RecordLoopBackedge` | 95,000 | 95,000 |
+| `ReturnLocal` | 19 | 19 |
+| `CompareLocalsTruthy` | 0 | 0 |
+
+四个局部比较条件每次分别省一个结果压栈和清理 Pop，连同 while 最后的假条件，合计少 760,038 次 helper 调用。剩余 57 次数字压栈用于初始化，回边与返回调用仍保留；不能把减少调用数等同于同比例的全程序提速。此 Number 微基准不命中非数字 fallback，另由专项测试确认一次合并 helper。
+
+CTest 31/31 通过。测试覆盖特殊数字、完整类型 fallback、对象身份/GC、短路值及副作用、循环和方法帧、独立中间入口、共享假路径 Pop、临时右槽、非法源槽和 operation，以及成功/失败时的栈状态。

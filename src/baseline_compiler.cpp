@@ -795,6 +795,37 @@ class WindowsX64Emitter {
     return patchBranchTo(done, offset(), false, error);
   }
 
+  // 直接比较并返回三态分支值，不构造操作数或 Boolean 结果槽。
+  bool emitLocalComparisonBranch(std::uint32_t leftSlot, std::uint32_t rightSlot,
+                                  Opcode operation, std::string& error) {
+    std::vector<std::size_t> fallbacks;
+    if (!emitLoadNumberLocalPair(leftSlot, rightSlot, fallbacks, error)) return false;
+    emit({0xF2, 0x0F, 0x10, 0x82});  // movsd xmm0, [rdx + numberOffset]
+    emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+    emit({0x66, 0x0F, 0x2E, 0x81});  // ucomisd xmm0, [rcx + numberOffset]
+    emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+    if (operation == Opcode::Greater) {
+      emit({0x0F, 0x97, 0xC0});  // seta al：有序且大于。
+    } else {
+      emit({0x0F, operation == Opcode::Equal ? std::uint8_t{0x94} : std::uint8_t{0x92}, 0xC0});
+      emit({0x0F, 0x9B, 0xC2});  // setnp dl：排除 NaN，源地址不再使用。
+      emit({0x20, 0xD0});        // and al, dl
+    }
+    emit({0x0F, 0xB6, 0xC0});  // movzx eax, al：0/1 是比较结果，不是成功标志。
+    const auto done = emitJumpPlaceholder();
+    const auto fallback = offset();
+    for (const auto patch : fallbacks) {
+      if (!patchBranchTo(patch, fallback, true, error)) return false;
+    }
+    emitMoveFrameToFirstArg();
+    emitMoveU32ToSecondArg(leftSlot);
+    emitMoveU32ToThirdArg(rightSlot);
+    emitMoveU32ToFourthArg(static_cast<std::uint32_t>(operation));
+    emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselineCompareLocalsTruthy));
+    emitCallHelper();
+    return patchBranchTo(done, offset(), false, error);
+  }
+
   // 比较赋值：仅更新已存在的 Boolean 目标，Number 源值不变，无临时结果槽。
   bool emitComparisonAssignment(std::uint32_t leftSlot, std::uint32_t rightSlot,
                                  bool constantRight, std::uint64_t bits, std::uint32_t targetSlot,
@@ -1701,12 +1732,33 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
       }
       if (helper != 0) {
         std::string inlineError;
+        const bool comparison = operation == Opcode::Equal || operation == Opcode::Greater || operation == Opcode::Less;
+        if (comparison && index + 4 < code->instructions.size() &&
+            code->instructions[index + 3].opcode == Opcode::JumpIfFalse &&
+            code->instructions[index + 4].opcode == Opcode::Pop &&
+            !branchTargets[verification.instructionOffsets[index + 3]] &&
+            !branchTargets[verification.instructionOffsets[index + 4]]) {
+          const auto falseIndex = code->bytecodeOffsetToInstructionIndex[code->instructions[index + 3].jumpTarget];
+          if (falseIndex < code->instructions.size() && falseIndex + 1 < code->instructions.size() &&
+              code->instructions[falseIndex].opcode == Opcode::Pop) {
+            if (!emitter.emitLocalComparisonBranch(instruction.operands[0],
+                    code->instructions[index + 1].operands[0], operation, inlineError)) return failure(inlineError);
+            branchPatches.push_back({emitter.emitJumpIfZeroPlaceholder(),
+                verification.instructionOffsets[falseIndex + 1], NativeBranchKind::Zero});
+            epiloguePatches.push_back({emitter.emitJumpIfNotOnePlaceholder(), NativeBranchKind::NotOne});
+            for (std::size_t inner = 1; inner <= 4; ++inner) {
+              code->bytecodeOffsetToNativeOffset[verification.instructionOffsets[index + inner]] =
+                  code->bytecodeOffsetToNativeOffset[bytecodeOffset];
+            }
+            index += 4;
+            continue;
+          }
+        }
         if (!emitter.emitNumberLocalPairExpressionOrRuntimeCall(
                 instruction.operands[0], code->instructions[index + 1].operands[0], operation, helper, inlineError)) {
           return failure(inlineError);
         }
         epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
-        const bool comparison = operation == Opcode::Equal || operation == Opcode::Greater || operation == Opcode::Less;
         const bool foldBranch = comparison && index + 3 < code->instructions.size() &&
             code->instructions[index + 3].opcode == Opcode::JumpIfFalse &&
             !branchTargets[verification.instructionOffsets[index + 3]];

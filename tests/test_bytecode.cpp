@@ -6836,6 +6836,181 @@ void testLocalPairExpressionPreservesIndependentOperationEntry() {
   }
 }
 
+void testComparisonBranchPreservesLoopsShortCircuitAndFallback() {
+  for (const bool enabled : {false,true}) {
+    minijs::VM vm;
+    vm.setJitEnabled(enabled);
+    vm.setJitCallThreshold(1);
+    EXPECT(runBytecodeProgramOnVm(vm, R"(
+      function less(left,right) { if (left < right) { return 1; } return 0; }
+      function equal(left,right) { if (left == right) { return 1; } return 0; }
+      function kept(left,right) { return (left < right) && "right"; }
+      function preserve(left,right) { if (left < right) {} return [left,right]; }
+      function captured(left,right) {
+        function read() { return left; }
+        if (left == right) {} return read;
+      }
+      function control(limit) {
+        let i = 0; let total = 0;
+        while (i < limit) {
+          i = i + 1; if (i == 2) { continue; }
+          total = total + 1; if (i == 3) { break; }
+        }
+        return total;
+      }
+      let hits = 0;
+      function bump() { hits = hits + 1; return "called"; }
+      function discard(left,right) { (left < right) && bump(); return 1; }
+      class Compare { choose(left,right) { if (left > right) { return 1; } return 0; } }
+      less(1,2); equal(1,2); kept(1,2); control(0); discard(2,1);
+      preserve(1,2); captured(1,2);
+      let compare = Compare(); compare.choose(1,2);
+      let object = {}; let read = captured(object,object);
+      discard(2,1); discard(1,2);
+      [less(1,2),less(2,1),equal("x","x"),equal(object,object),equal(object,{}),
+       equal(false,false),equal(null,null),equal(undefined,undefined),
+       kept(2,1),kept(1,2),control(0),control(5),hits,compare.choose(8,2)];
+    )").toString() == "[1, 0, 1, 1, 0, 1, 1, 1, false, right, 0, 2, 1, 1]");
+    vm.collectGarbage();
+    EXPECT(runBytecodeProgramOnVm(vm, "equal(object,object);").equals(minijs::Value(1.0)));
+    EXPECT(runBytecodeProgramOnVm(vm, "[preserve(1,2),preserve(8,2),read() == object];").toString()
+               == "[[1, 2], [8, 2], true]");
+    try {
+      runBytecodeProgramOnVm(vm, "less(\"bad\",2);");
+      EXPECT(false);
+    } catch (const minijs::RuntimeError& error) {
+      EXPECT(std::string_view(error.what()) == "RuntimeError: value is not a number");
+    }
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+    if (enabled) {
+      const auto* code = vm.debugGlobalFunctionBaselineCode("kept");
+      EXPECT(code->bytecodeOffsetToNativeOffset[0] != code->bytecodeOffsetToNativeOffset[8]);
+    }
+#endif
+  }
+}
+
+void testNativeComparisonBranchSpecialValuesAndMergedHelper() {
+  if (!nativeBaselineBackendAvailable()) return;
+  minijs::VM vm;
+  runBytecodeProgramOnVm(vm, "function branch(left,right) { if (left < right) { return 1; } return 0; }");
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+  const std::pair<double,double> cases[] = {{1,2},{2,1},{2,2},{nan,2},{2,nan},{nan,nan},{0,-0.0},{inf,2},{-inf,inf}};
+  vm.setBaselineHelperProfilingEnabled(true);
+  for (const auto operation : {minijs::Opcode::Less,minijs::Opcode::Greater,minijs::Opcode::Equal}) {
+    minijs::BytecodeFunction function;
+    function.chunk.addConstant(minijs::Value(1.0)); function.chunk.addConstant(minijs::Value(0.0));
+    function.chunk.writeOpcode(minijs::Opcode::GetLocal); function.chunk.writeByte(0);
+    function.chunk.writeOpcode(minijs::Opcode::GetLocal); function.chunk.writeByte(1);
+    function.chunk.writeOpcode(operation);
+    function.chunk.writeOpcode(minijs::Opcode::JumpIfFalse); function.chunk.writeByte(0); function.chunk.writeByte(4);
+    function.chunk.writeOpcode(minijs::Opcode::Pop);
+    function.chunk.writeOpcode(minijs::Opcode::Constant); function.chunk.writeByte(0);
+    function.chunk.writeOpcode(minijs::Opcode::Return);
+    function.chunk.writeOpcode(minijs::Opcode::Pop);
+    function.chunk.writeOpcode(minijs::Opcode::Constant); function.chunk.writeByte(1);
+    function.chunk.writeOpcode(minijs::Opcode::Return);
+    const auto compiled = minijs::BaselineCompiler().compile(function);
+    EXPECT(compiled.succeeded());
+    for (const auto& values : cases) {
+      const bool expected = operation == minijs::Opcode::Less ? values.first < values.second
+                          : operation == minijs::Opcode::Greater ? values.first > values.second
+                                                                : values.first == values.second;
+      EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("branch",
+          {minijs::Value(values.first),minijs::Value(values.second)}, compiled.code->entry)
+                 .equals(minijs::Value(expected ? 1.0 : 0.0)));
+    }
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+    for (const std::size_t inner : {2u,4u,5u,8u}) {
+      EXPECT(compiled.code->bytecodeOffsetToNativeOffset[0] == compiled.code->bytecodeOffsetToNativeOffset[inner]);
+    }
+#endif
+  }
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+  for (const auto& helper : vm.jitRuntimeStats().helpers) EXPECT(helper.name == "minijsBaselineReturnNumberBits");
+#endif
+  vm.setJitEnabled(true); vm.setJitCallThreshold(1);
+  runBytecodeProgramOnVm(vm, "function stringEqual(left,right) { if (left == right) { return 1; } return 0; } stringEqual(1,2);");
+  vm.resetBaselineHelperProfile();
+  const auto* code = vm.debugGlobalFunctionBaselineCode("stringEqual");
+  EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("stringEqual",
+      {minijs::Value(std::string("x")),minijs::Value(std::string("x"))}, code->entry).equals(minijs::Value(1.0)));
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+  bool found = false;
+  for (const auto& helper : vm.jitRuntimeStats().helpers) {
+    EXPECT(helper.name != "minijsBaselineGetLocal" && helper.name != "minijsBaselinePop");
+    if (helper.name == "minijsBaselineCompareLocalsTruthy") { EXPECT(helper.calls == 1); found = true; }
+  }
+  EXPECT(found);
+#endif
+}
+
+void testComparisonBranchAbiPreservesTemporarySlotsAndErrors() {
+  EXPECT(minijsBaselineCompareLocalsTruthy(nullptr,0,1,0) == 2);
+  minijs::VM vm;
+  runBytecodeProgramOnVm(vm, "function branch(left,right) { return left; }");
+  const auto entry = +[](minijs::BaselineFrame* frame) {
+    const auto size = frame->stackSize;
+    const auto equal = static_cast<std::uint32_t>(minijs::Opcode::Equal);
+    EXPECT(minijsBaselineCompareLocalsTruthy(frame,0,1,equal) == 0);
+    EXPECT(frame->stackSize == size && !frame->failed);
+    EXPECT(minijsBaselineCompareLocalsTruthy(frame,0,2,equal) == 1);
+    EXPECT(frame->stackSize == size);
+    EXPECT(minijsBaselineCompareLocalsTruthy(frame,0,255,equal) == 2);
+    EXPECT(frame->stackSize == size + 1 && frame->errorMessage == "local slot out of bounds");
+    frame->failed = false; frame->errorMessage.clear();
+    EXPECT(minijsBaselinePop(frame));
+    EXPECT(minijsBaselineCompareLocalsTruthy(frame,255,0,equal) == 2);
+    EXPECT(frame->stackSize == size);
+    frame->failed = false; frame->errorMessage.clear();
+    EXPECT(minijsBaselineCompareLocalsTruthy(frame,0,1,999) == 2);
+    EXPECT(frame->stackSize == size && frame->errorMessage == "unsupported local comparison opcode");
+    frame->failed = false; frame->errorMessage.clear();
+    EXPECT(minijsBaselineReturnLocal(frame,0));
+  };
+  EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("branch", {minijs::Value(1.0),minijs::Value(2.0)}, entry)
+             .equals(minijs::Value(1.0)));
+}
+
+void testComparisonBranchKeepsIndependentEntries() {
+  if (!nativeBaselineBackendAvailable()) return;
+  minijs::VM vm;
+  runBytecodeProgramOnVm(vm, "function branch(left,right) { if (left < right) { return 1; } return 0; }");
+  for (const std::uint8_t jump : {std::uint8_t(2),std::uint8_t(4),std::uint8_t(5),std::uint8_t(8),std::uint8_t(12)}) {
+    minijs::BytecodeFunction function;
+    function.chunk.addConstant(minijs::Value(1.0)); function.chunk.addConstant(minijs::Value(0.0));
+    function.chunk.writeOpcode(minijs::Opcode::GetLocal); function.chunk.writeByte(0);
+    function.chunk.writeOpcode(minijs::Opcode::GetLocal); function.chunk.writeByte(1);
+    function.chunk.writeOpcode(minijs::Opcode::Jump); function.chunk.writeByte(0); function.chunk.writeByte(jump);
+    function.chunk.writeOpcode(minijs::Opcode::GetLocal); function.chunk.writeByte(0);
+    function.chunk.writeOpcode(minijs::Opcode::GetLocal); function.chunk.writeByte(1);
+    function.chunk.writeOpcode(minijs::Opcode::Less);
+    function.chunk.writeOpcode(minijs::Opcode::JumpIfFalse); function.chunk.writeByte(0); function.chunk.writeByte(4);
+    function.chunk.writeOpcode(minijs::Opcode::Pop);
+    function.chunk.writeOpcode(minijs::Opcode::Constant); function.chunk.writeByte(0);
+    function.chunk.writeOpcode(minijs::Opcode::Return);
+    function.chunk.writeOpcode(minijs::Opcode::Pop);
+    function.chunk.writeOpcode(minijs::Opcode::Constant); function.chunk.writeByte(1);
+    function.chunk.writeOpcode(minijs::Opcode::Return);
+    const auto compiled = minijs::BaselineCompiler().compile(function);
+    EXPECT(compiled.succeeded());
+    EXPECT(compiled.code->bytecodeOffsetToNativeOffset[7] != compiled.code->bytecodeOffsetToNativeOffset[7 + jump]);
+    vm.resetBaselineHelperProfile();
+    vm.setBaselineHelperProfilingEnabled(true);
+    EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("branch",
+        {minijs::Value(1.0),minijs::Value(2.0)}, compiled.code->entry)
+               .equals(minijs::Value(jump == 2 || jump == 12 ? 0.0 : 1.0)));
+    if (jump == 12) {
+      bool popped = false;
+      for (const auto& helper : vm.jitRuntimeStats().helpers) {
+        if (helper.name == "minijsBaselinePop") { EXPECT(helper.calls == 1); popped = true; }
+      }
+      EXPECT(popped);
+    }
+  }
+}
+
 void testLocalBranchPreservesLoopsShortCircuitAndCaptures() {
   for (const bool enabled : {false,true}) {
     minijs::VM vm;
@@ -8843,6 +9018,10 @@ void runBytecodeTests() {
   testArithmeticAssignmentDifferentTargetsAndFallback();
   testComparisonAssignmentPreservesFallbackCapturesAndMethods();
   testLocalBranchPreservesLoopsShortCircuitAndCaptures();
+  testComparisonBranchPreservesLoopsShortCircuitAndFallback();
+  testNativeComparisonBranchSpecialValuesAndMergedHelper();
+  testComparisonBranchAbiPreservesTemporarySlotsAndErrors();
+  testComparisonBranchKeepsIndependentEntries();
   testNativeLocalBranchValuesAndHelperCounts();
   testLocalTruthyAbiPreservesStackAndErrors();
   testLocalBranchIndependentEntriesAndInvalidSlot();

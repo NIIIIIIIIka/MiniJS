@@ -79,6 +79,8 @@ extern "C" bool minijsBaselineLess(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineNot(minijs::BaselineFrame* frame);
 extern "C" std::uint8_t minijsBaselinePeekTruthy(minijs::BaselineFrame* frame);
 extern "C" std::uint8_t minijsBaselineLocalTruthy(minijs::BaselineFrame* frame, std::uint32_t slot);
+extern "C" std::uint8_t minijsBaselineCompareLocalsTruthy(minijs::BaselineFrame* frame,
+    std::uint32_t leftSlot, std::uint32_t rightSlot, std::uint32_t operation);
 extern "C" bool minijsBaselineRecordLoopBackedge(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineSyncStackSize(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineReturn(minijs::BaselineFrame* frame);
@@ -266,6 +268,8 @@ class VM {
   friend bool ::minijsBaselineNot(minijs::BaselineFrame* frame);
   friend std::uint8_t ::minijsBaselinePeekTruthy(minijs::BaselineFrame* frame);
   friend std::uint8_t ::minijsBaselineLocalTruthy(minijs::BaselineFrame* frame, std::uint32_t slot);
+  friend std::uint8_t ::minijsBaselineCompareLocalsTruthy(minijs::BaselineFrame* frame,
+      std::uint32_t leftSlot, std::uint32_t rightSlot, std::uint32_t operation);
   friend bool ::minijsBaselineRecordLoopBackedge(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineSyncStackSize(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineReturn(minijs::BaselineFrame* frame);
@@ -366,6 +370,8 @@ class VM {
   bool baselineRuntimeNot(BaselineFrame& frame);
   std::uint8_t baselineRuntimePeekTruthy(BaselineFrame& frame);
   std::uint8_t baselineRuntimeLocalTruthy(BaselineFrame& frame, std::uint32_t slot);
+  std::uint8_t baselineRuntimeCompareLocalsTruthy(BaselineFrame& frame, std::uint32_t leftSlot,
+                                                 std::uint32_t rightSlot, std::uint32_t operation);
   bool baselineRuntimeRecordLoopBackedge(BaselineFrame& frame);
   bool baselineRuntimeSyncStackSize(BaselineFrame& frame);
   bool baselineRuntimeReturn(BaselineFrame& frame);

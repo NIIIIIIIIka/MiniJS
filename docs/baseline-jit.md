@@ -1532,6 +1532,59 @@ jne epilogue                             ; 0F 85 + rel32：三态 helper 的 2 �
 
 测试覆盖真假路径、不同 Value 的 truthiness、Boolean 无 helper 与非 Boolean 三态 fallback、if/while、break/continue、保留及丢弃的短路结果、捕获槽/GC、方法帧、非法槽、独立中间入口、被其他分支共用的假路径 Pop，以及 ABI 失败/完成状态。新增 `examples/baseline_local_branch_benchmark.js`，配对数据见 [性能报告](baseline-numeric-benchmark.md)。
 
+### Windows x64 直接比较局部值并分支
+
+在 `if (left < right)`、`while (i < count)` 这类丢弃比较结果的条件中，两个局部值的 Less/Greater/Equal 可以直接决定跳转，不必先构造 Boolean 结果槽。匹配下面的五条指令，且假路径也以 Pop 清理比较结果：
+
+```text
+GetLocal leftSlot
+GetLocal rightSlot
+Less / Greater / Equal
+JumpIfFalse falseCleanup
+Pop                            // 真路径清理结果
+...
+falseCleanup:
+Pop                            // 假路径清理结果
+...
+```
+
+后四条指令不能是独立跳转入口，假路径 Pop 必须有后续指令。真路径直接继续，假路径跳到其 Pop 之后；原假路径 Pop 保留给其他跳转。需要保留比较或短路结果时，继续使用原有结果槽路径。数字常量右值、非局部操作数和其它比较形式不参与本节合并。
+
+两源槽通过边界、编号溢出和 Number 类型 guard 后，机器码比较原始数字，不改源值或栈深度。等价 C++ 如下：
+
+```cpp
+bool result = left.asNumber() < right.asNumber();
+if (!result) goto afterFalseCleanup;
+// 无临时操作数，无 Boolean 结果 Value，无清理 Pop。
+```
+
+以小于为例，rdx=左槽、rcx=右槽；位移与相对跳转均按 4 字节小端编码：
+
+```asm
+movsd xmm0, [rdx + numberOffset]   ; F2 0F 10 82 + disp32
+ucomisd xmm0, [rcx + numberOffset] ; 66 0F 2E 81 + disp32
+setb al                           ; 0F 92 C0：小于或 unordered
+setnp dl                          ; 0F 9B C2：不是 unordered；源地址已用完
+and al, dl                        ; 20 D0：有序且小于
+movzx eax, al                     ; 0F B6 C0：完整 0/1 分支结果
+test eax, eax                     ; 85 C0
+jz afterFalseCleanup              ; 0F 84 + rel32
+cmp eax, 1                        ; 83 F8 01：其它结果只能为 1
+jne epilogue                      ; 0F 85 + rel32：2 是失败
+```
+
+实际发射器还有 guard 汇合跳转。Equal 用 sete 再 setnp 排除 NaN，Greater 用 seta；任一操作数为 NaN 时三种比较均为 false，正负零相等。false 在这里是正常假分支，而不是失败状态。
+
+guard 未命中时，调用一次 `minijsBaselineCompareLocalsTruthy(frame, leftSlot, rightSlot, operation)`。Windows x64 四个参数依次在 rcx、edx、r8d、r9d；operation 是 Opcode 对应的 uint32_t 编码，只允许 Less/Greater/Equal。返回协议是 0=false、1=true、2=失败。
+
+helper 内部按原顺序完整 GetLocal、GetLocal、比较、PeekTruthy、Pop，再返回真假值。成功后净栈深度不变；非数字关系比较保留类型错误，Equal 保留字符串内容和对象身份规则。非法左槽在压栈前失败，非法右槽保留第一次读取的副本；右槽恰好指向首次读取新增的临时槽时仍合法。非法 operation 在读取前拒绝，避免枚举截断误执行。
+
+非数字 fallback 仍可能构造临时值，这次省的是其多次 C ABI 往返；只有数字快路径完全消除结果槽。没有缓存栈裸指针跨 helper 使用，也不改变 GC 根协议。
+
+token、Parser、AST、Interpreter、bytecode 格式、ARM64 与 decoded 不变。五条 decoded 指令保留，native offset 指向同一合并单元；四个独立中间入口禁止合并，原假路径 Pop 单独保留，不提供独立 deopt 恢复点。
+
+测试覆盖三种比较、真假分支、NaN 位于任一侧、正负零/无穷大、源值不变、类型 fallback、对象身份/GC、保留及丢弃的短路结果、循环 break/continue、方法帧、四个中间独立入口、共享假路径 Pop、临时右槽、非法源槽和 operation。新增 `examples/baseline_comparison_branch_benchmark.js` 与 CLI baseline smoke，配对数据见 [性能报告](baseline-numeric-benchmark.md)。
+
 ### 栈同步边界验证
 
 `minijsBaselineSyncStackSize()` 仍使用通用 `stack_.resize(frame.stackSize)`。数字二元快路径先减少 frame 的快照深度，再调用该 helper 正常销毁右操作数槽，最后刷新栈地址和真实深度。helper 不允许扩大栈；超界时通过 C ABI 记录 `baseline stack size out of bounds` 并退出。

@@ -71,6 +71,9 @@ extern "C" bool minijsBaselineNot(minijs::BaselineFrame* frame);
 extern "C" std::uint8_t minijsBaselinePeekTruthy(minijs::BaselineFrame* frame);
 // 不复制或弹出局部值；0=falsey，1=truthy，2=失败。
 extern "C" std::uint8_t minijsBaselineLocalTruthy(minijs::BaselineFrame* frame, std::uint32_t slot);
+// 比较两个局部值并清理临时结果；0=false，1=true，2=失败。
+extern "C" std::uint8_t minijsBaselineCompareLocalsTruthy(minijs::BaselineFrame* frame,
+    std::uint32_t leftSlot, std::uint32_t rightSlot, std::uint32_t operation);
 extern "C" bool minijsBaselineRecordLoopBackedge(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineSyncStackSize(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineReturn(minijs::BaselineFrame* frame);
