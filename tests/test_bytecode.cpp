@@ -6679,6 +6679,149 @@ void testLocalPairUpdateIndependentEntryAndInvalidRightSlot() {
 #endif
 }
 
+void testNativeLocalPairExpressionsSpecialNumbersAndExpansion() {
+  if (!nativeBaselineBackendAvailable()) return;
+  minijs::VM vm;
+  runBytecodeProgramOnVm(vm, "function expression(a,b) { return a; }");
+  const std::vector<double> numbers = {-0.0, 2.0, -3.0,
+      std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity(),
+      std::numeric_limits<double>::denorm_min()};
+  vm.setBaselineHelperProfilingEnabled(true);
+  for (const auto op : {minijs::Opcode::Add, minijs::Opcode::Sub, minijs::Opcode::Mul, minijs::Opcode::Div,
+                        minijs::Opcode::Equal, minijs::Opcode::Less, minijs::Opcode::Greater}) {
+    minijs::BytecodeFunction function;
+    function.chunk.writeOpcode(minijs::Opcode::GetLocal);
+    function.chunk.writeByte(0);
+    function.chunk.writeOpcode(minijs::Opcode::GetLocal);
+    function.chunk.writeByte(1);
+    function.chunk.writeOpcode(op);
+    function.chunk.writeOpcode(minijs::Opcode::Return);
+    const auto compiled = minijs::BaselineCompiler().compile(function);
+    EXPECT(compiled.succeeded());
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+    EXPECT(compiled.code->bytecodeOffsetToNativeOffset[0] == compiled.code->bytecodeOffsetToNativeOffset[4]);
+#endif
+    for (const double left : numbers) {
+      for (const double right : numbers) {
+        if (op == minijs::Opcode::Div && right == 0.0) continue;
+        const auto result = vm.debugExecuteGlobalFunctionBaselineEntry(
+            "expression", {minijs::Value(left), minijs::Value(right)}, compiled.code->entry);
+        if (op == minijs::Opcode::Equal || op == minijs::Opcode::Less || op == minijs::Opcode::Greater) {
+          const bool expected = op == minijs::Opcode::Equal ? left == right
+                                : op == minijs::Opcode::Less ? left < right : left > right;
+          EXPECT(result.equals(minijs::Value(expected)));
+        } else {
+          const double expected = op == minijs::Opcode::Add ? left + right
+                                  : op == minijs::Opcode::Sub ? left - right
+                                  : op == minijs::Opcode::Mul ? left * right : left / right;
+          EXPECT(result.isNumber());
+          EXPECT(std::isnan(expected) ? std::isnan(result.asNumber()) : result.asNumber() == expected);
+          if (expected == 0.0) EXPECT(std::signbit(result.asNumber()) == std::signbit(expected));
+        }
+      }
+    }
+  }
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+  for (const auto& helper : vm.jitRuntimeStats().helpers) EXPECT(helper.name != "minijsBaselineSyncStackSize");
+#endif
+  minijs::BytecodeFunction many;
+  for (int i = 0; i < 80; ++i) {
+    many.chunk.writeOpcode(minijs::Opcode::GetLocal);
+    many.chunk.writeByte(0);
+    many.chunk.writeOpcode(minijs::Opcode::GetLocal);
+    many.chunk.writeByte(1);
+    many.chunk.writeOpcode(minijs::Opcode::Add);
+  }
+  many.chunk.writeOpcode(minijs::Opcode::Array);
+  many.chunk.writeByte(80);
+  many.chunk.writeOpcode(minijs::Opcode::Return);
+  const auto compiled = minijs::BaselineCompiler().compile(many);
+  EXPECT(compiled.succeeded());
+  const auto result = vm.debugExecuteGlobalFunctionBaselineEntry(
+      "expression", {minijs::Value(1.0), minijs::Value(2.0)}, compiled.code->entry);
+  EXPECT(result.asArray().size() == 80);
+  for (const auto& value : result.asArray()) EXPECT(value.equals(minijs::Value(3.0)));
+}
+
+void testLocalPairExpressionsKeepSourcesAndFallbackValues() {
+  for (const bool enabled : {false,true}) {
+    minijs::VM vm;
+    vm.setJitEnabled(enabled);
+    vm.setJitCallThreshold(1);
+    const auto result = runBytecodeProgramOnVm(vm, R"(
+      function calculate(a,b) { return [a+b,a-b,a*b,a/b,a==b,a<b,a>b,a,b]; }
+      function add(a,b) { return a+b; }
+      function alias(a) { return [a+a,a*a,a/a,a==a,a]; }
+      function eq(a,b) { return a==b; }
+      calculate(2,1); add(0,1); alias(2); eq(0,1);
+      let object = { n: 9 };
+      [calculate(6,2), add("x",2), add(1,"x"), alias(3), eq(object,object), object.n];
+    )");
+    EXPECT(result.toString() == "[[8, 4, 12, 3, false, false, true, 6, 2], x2, 1x, [6, 9, 1, true, 3], true, 9]");
+    vm.collectGarbage();
+    EXPECT(runBytecodeProgramOnVm(vm, "eq(object,object);").equals(minijs::Value(true)));
+  }
+  for (const std::string source : {
+      "function f(a,b) { return a-b; } f(\"bad\",2);",
+      "function f(a,b) { return a/b; } f(1,0);",
+      "function f(a,b) { return a/b; } f(1,-0);"}) {
+    std::string expectedError;
+    for (const bool enabled : {false,true}) {
+      minijs::VM vm;
+      vm.setJitEnabled(enabled);
+      vm.setJitCallThreshold(0);
+      try {
+        runBytecodeProgramOnVm(vm, source);
+        EXPECT(false);
+      } catch (const minijs::RuntimeError& error) {
+        if (!enabled) expectedError = error.what();
+        else EXPECT(expectedError == error.what());
+      }
+    }
+  }
+}
+
+void testLocalPairExpressionPreservesIndependentOperationEntry() {
+  if (!nativeBaselineBackendAvailable()) return;
+  minijs::VM vm;
+  runBytecodeProgramOnVm(vm, "function entry(a,b) { return a; }");
+  minijs::BytecodeFunction function;
+  // 先正常压入两个值，跳过另一对局部读取，直接执行 offset 11 的 Sub。
+  function.chunk.writeOpcode(minijs::Opcode::GetLocal);
+  function.chunk.writeByte(0);
+  function.chunk.writeOpcode(minijs::Opcode::GetLocal);
+  function.chunk.writeByte(1);
+  function.chunk.writeOpcode(minijs::Opcode::Jump);
+  function.chunk.writeByte(0);
+  function.chunk.writeByte(4);
+  function.chunk.writeOpcode(minijs::Opcode::GetLocal);
+  function.chunk.writeByte(0);
+  function.chunk.writeOpcode(minijs::Opcode::GetLocal);
+  function.chunk.writeByte(1);
+  function.chunk.writeOpcode(minijs::Opcode::Sub);
+  function.chunk.writeOpcode(minijs::Opcode::Return);
+  const auto compiled = minijs::BaselineCompiler().compile(function);
+  EXPECT(compiled.succeeded());
+  EXPECT(compiled.code->bytecodeOffsetToNativeOffset[7] != compiled.code->bytecodeOffsetToNativeOffset[11]);
+  EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry(
+             "entry", {minijs::Value(6.0),minijs::Value(2.0)}, compiled.code->entry).equals(minijs::Value(4.0)));
+  minijs::BytecodeFunction invalid;
+  invalid.chunk.writeOpcode(minijs::Opcode::GetLocal);
+  invalid.chunk.writeByte(0);
+  invalid.chunk.writeOpcode(minijs::Opcode::GetLocal);
+  invalid.chunk.writeByte(255);
+  invalid.chunk.writeOpcode(minijs::Opcode::Add);
+  invalid.chunk.writeOpcode(minijs::Opcode::Return);
+  const auto bad = minijs::BaselineCompiler().compile(invalid);
+  EXPECT(bad.succeeded());
+  try {
+    vm.debugExecuteGlobalFunctionBaselineEntry("entry", {minijs::Value(6.0),minijs::Value(2.0)}, bad.code->entry);
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: local slot out of bounds");
+  }
+}
+
 void testJitDispatchInlineNegateFallbackPreservesTypeError() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -7437,6 +7580,9 @@ void runBytecodeTests() {
   testNativeLocalPairUpdateFusionNumbersAndZeroErrors();
   testLocalPairUpdateFallbackAliasAndClosedCapture();
   testLocalPairUpdateIndependentEntryAndInvalidRightSlot();
+  testNativeLocalPairExpressionsSpecialNumbersAndExpansion();
+  testLocalPairExpressionsKeepSourcesAndFallbackValues();
+  testLocalPairExpressionPreservesIndependentOperationEntry();
   testJitDispatchInlineNegateFallbackPreservesTypeError();
   testJitDispatchInlineAddRunsNumberFastPath();
   testJitDispatchInlineAddFallbackPreservesStringConcat();

@@ -1128,6 +1128,41 @@ Number 快路径不分配 GC 对象，也不改变栈深度。捕获左槽的 op
 
 专项测试覆盖四种算术和特殊数字、同槽别名、左右非数字 fallback、动态正负零、保留赋值值、不同目标、闭包和 GC，以及内部 Pop 入口和非法右槽。`examples/baseline_local_pair_benchmark.js` 专门验证累加循环，已纳入 CTest；配对数据与调用次数见 [性能报告](baseline-numeric-benchmark.md)。
 
+### Windows x64 双局部值结果表达式
+
+需要保留结果时，后端合并 `GetLocal leftSlot; GetLocal rightSlot; binary`，支持 `Add/Sub/Mul/Div/Equal/Greater/Less`。例如 `return a + b;` 或更大表达式中的 `a + b`，不再构造两个操作数临时槽后同步缩成一个结果。
+
+两个局部槽均通过边界、溢出和 Number guard 后，只调用一次 `PushNumberSlot` 构造结果 Value，并刷新栈快照。随后重新计算局部地址，直接读取源数字并写入新栈顶；源局部值不变。比较则将新结果槽改为 Boolean，遵守现有 NaN 有序比较规则。
+
+等价 C++（字段访问为示意）是：
+
+```cpp
+// 先完成两个 Number guard，以及动态除数的非零检查。
+stack_.emplace_back(0.0);             // 由 helper 正常构造 Value，并刷新快照
+// 构造可能扩容，必须重新定位两个源槽和新结果槽。
+stack_.back().number_ = stack_[leftIndex].asNumber() + stack_[rightIndex].asNumber();
+// 净增加一个槽，不需 SyncStackSize。
+```
+
+对应加法的核心汇编如下：
+
+```asm
+; 调用 PushNumberSlot 并检查成功后，重新计算 rdx=左槽、rcx=右槽。
+movsd xmm0, [rdx + numberOffset]
+addsd xmm0, [rcx + numberOffset]
+; 从刷新后的 frame.stackData/stackSize 重新定位栈顶到 rcx。
+movsd [rcx + numberOffset], xmm0
+mov eax, 1
+```
+
+不得把 helper 调用前的裸指针或 SSE 寄存器值当作仍有效。`PushNumberSlot` 不分配 GC 对象、不修改源局部值，但 vector 扩容会迁移它们；构造失败直接退出，不重试或执行运算。动态除数 `+0/-0`、非数字、非法槽等 guard 未命中时，按原顺序执行两个完整局部读取和完整二元 helper。
+
+五条局部更新语句仍优先于三条结果表达式，所以 `a = a + b;` 保持零临时槽的原地更新。表达式支持左右同槽但不更新源值，也支持后续赋值、返回、数组元素和逻辑运算。比较紧邻非独立入口 `JumpIfFalse` 时，继续复用已知 Boolean 的分支路径，结果槽仍保留供 Pop 或短路表达式使用。
+
+第二个读取或运算若是独立跳转目标，则不合并。decoded 指令保留，native offset 映射指向同一合并单元；ARM64/decoded 不变。共享双局部槽 guard 供原地更新与结果表达式复用，避免两套边界检查漂移。
+
+专项测试覆盖七种运算、特殊浮点数、负零、源值不变、别名、连续 80 次构造导致的扩容、非数字 fallback、对象身份、GC、动态除零、独立运算入口及非法右槽。新增 `examples/baseline_local_expression_benchmark.js` 和 CLI baseline smoke 测试，配对数据见 [性能报告](baseline-numeric-benchmark.md)。
+
 ### 栈同步边界验证
 
 `minijsBaselineSyncStackSize()` 仍使用通用 `stack_.resize(frame.stackSize)`。数字二元快路径先减少 frame 的快照深度，再调用该 helper 正常销毁右操作数槽，最后刷新栈地址和真实深度。helper 不允许扩大栈；超界时通过 C ABI 记录 `baseline stack size out of bounds` 并退出。

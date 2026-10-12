@@ -568,12 +568,10 @@ class WindowsX64Emitter {
     return patchBranchTo(done, offset(), false, error);
   }
 
-  // 同槽更新的右操作数也是局部值；两个槽都通过 guard 后才写入左槽。
-  bool emitNumberLocalPairUpdateOrRuntimeCall(std::uint32_t leftSlot, std::uint32_t rightSlot,
-                                             Opcode operation, std::uintptr_t helperAddress,
-                                             std::string& error) {
-    if (!validateInlineValueSize("local pair number update", error)) return false;
-    std::vector<std::size_t> fallbacks;
+  // 更新语句与保留结果的表达式共享同一双槽 guard；输出 rdx=左槽、rcx=右槽。
+  bool emitLoadNumberLocalPair(std::uint32_t leftSlot, std::uint32_t rightSlot,
+                               std::vector<std::size_t>& fallbacks, std::string& error) {
+    if (!validateInlineValueSize("local pair number operands", error)) return false;
     for (int side = 0; side < 2; ++side) {
       const std::uint32_t slot = side == 0 ? leftSlot : rightSlot;
       emitLoadLocalAddress(slot);
@@ -591,6 +589,15 @@ class WindowsX64Emitter {
     }
     emit({0x48, 0x89, 0xD1});  // mov rcx, rdx：右局部槽。
     emit({0x4C, 0x89, 0xC2});  // mov rdx, r8：恢复左局部槽。
+    return true;
+  }
+
+  // 同槽更新的右操作数也是局部值；两个槽都通过 guard 后才写入左槽。
+  bool emitNumberLocalPairUpdateOrRuntimeCall(std::uint32_t leftSlot, std::uint32_t rightSlot,
+                                             Opcode operation, std::uintptr_t helperAddress,
+                                             std::string& error) {
+    std::vector<std::size_t> fallbacks;
+    if (!emitLoadNumberLocalPair(leftSlot, rightSlot, fallbacks, error)) return false;
     BinaryNumberGuardPatches zero;
     if (operation == Opcode::Div && !emitRightZeroGuard(zero, error)) return false;
     emit({0xF2, 0x0F, 0x10, 0x82});  // movsd xmm0, [rdx + numberOffset]
@@ -633,6 +640,80 @@ class WindowsX64Emitter {
       if (!patchBranchTo(patch, offset(), true, error)) return false;
     }
     return patchBranchTo(done, offset(), false, error);
+  }
+
+  // GetLocal + GetLocal + 二元运算：只构造一个结果槽，不复制源局部值。
+  bool emitNumberLocalPairExpressionOrRuntimeCall(std::uint32_t leftSlot, std::uint32_t rightSlot,
+                                                 Opcode operation, std::uintptr_t helperAddress,
+                                                 std::string& error) {
+    std::vector<std::size_t> fallbacks;
+    if (!emitLoadNumberLocalPair(leftSlot, rightSlot, fallbacks, error)) return false;
+    BinaryNumberGuardPatches zero;
+    if (operation == Opcode::Div && !emitRightZeroGuard(zero, error)) return false;
+    emitMoveFrameToFirstArg();
+    emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselinePushNumberSlot));
+    emitCallHelper();
+    const std::size_t pushFailed = emitJumpIfFalsePlaceholder();
+    // helper 可能扩容：此前的 r8/rdx/rcx 均作废，重新读取两个局部槽地址。
+    emitLoadLocalAddress(leftSlot);
+    emitLocalPointerFromIndex();
+    emit({0x49, 0x89, 0xD0});  // mov r8, rdx
+    emitLoadLocalAddress(rightSlot);
+    emitLocalPointerFromIndex();
+    emit({0x48, 0x89, 0xD1});  // mov rcx, rdx：右槽
+    emit({0x4C, 0x89, 0xC2});  // mov rdx, r8：左槽
+    emit({0xF2, 0x0F, 0x10, 0x82});  // movsd xmm0, [rdx + numberOffset]
+    emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+    const bool comparison = operation == Opcode::Equal || operation == Opcode::Greater || operation == Opcode::Less;
+    if (comparison) {
+      emit({0x66, 0x0F, 0x2E, 0x81});  // ucomisd xmm0, [rcx + numberOffset]
+      emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+      if (operation == Opcode::Greater) {
+        emit({0x0F, 0x97, 0xC0});  // seta al
+      } else {
+        emit({0x0F, operation == Opcode::Equal ? std::uint8_t{0x94} : std::uint8_t{0x92}, 0xC0});
+        emit({0x0F, 0x9B, 0xC2});  // setnp dl：排除 NaN，源地址已不再使用。
+        emit({0x20, 0xD0});        // and al, dl
+      }
+      emitLoadTopPointer(); // 只改变 rcx，al 中的比较结果仍然有效。
+      emit({0x88, 0x81});  // mov byte ptr [rcx + booleanOffset], al
+      emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
+      emit({0xC7, 0x81});  // mov dword ptr [rcx + typeOffset], Boolean
+      emit32(static_cast<std::uint32_t>(Value::typeOffset()));
+      emit32(Value::booleanTypeTag());
+    } else {
+      const std::uint8_t opcode = operation == Opcode::Add ? 0x58 : operation == Opcode::Sub ? 0x5C
+                                 : operation == Opcode::Mul ? 0x59 : 0x5E;
+      emit({0xF2, 0x0F, opcode, 0x81});  // 算术 xmm0, [rcx + numberOffset]
+      emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+      emitLoadTopPointer();
+      emit({0xF2, 0x0F, 0x11, 0x81});  // movsd [rcx + numberOffset], xmm0
+      emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+    }
+    emit({0xB8});  // mov eax, 1：组合净压入一个结果，无需 SyncStackSize。
+    emit32(1);
+    const std::size_t done = emitJumpPlaceholder();
+    const std::size_t fallback = offset();
+    if (zero.hasRightZero) fallbacks.push_back(zero.rightZero);
+    for (const auto patch : fallbacks) {
+      if (!patchBranchTo(patch, fallback, true, error)) return false;
+    }
+    std::vector<std::size_t> failures;
+    for (const auto slot : {leftSlot, rightSlot}) {
+      emitMoveFrameToFirstArg();
+      emitMoveU32ToSecondArg(slot);
+      emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselineGetLocal));
+      emitCallHelper();
+      failures.push_back(emitJumpIfFalsePlaceholder());
+    }
+    emitMoveFrameToFirstArg();
+    emitLoadHelper(helperAddress);
+    emitCallHelper();
+    for (const auto patch : failures) {
+      if (!patchBranchTo(patch, offset(), true, error)) return false;
+    }
+    return patchBranchTo(pushFailed, offset(), true, error) &&
+           patchBranchTo(done, offset(), false, error);
   }
 
   // 仅在比较成功后使用：比较一定产生 Boolean，无需重复类型和空栈 guard。
@@ -1233,6 +1314,47 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
               code->bytecodeOffsetToNativeOffset[bytecodeOffset];
         }
         index += 4;
+        continue;
+      }
+    }
+    if (instruction.opcode == Opcode::GetLocal && index + 2 < code->instructions.size() &&
+        code->instructions[index + 1].opcode == Opcode::GetLocal &&
+        !branchTargets[verification.instructionOffsets[index + 1]] &&
+        !branchTargets[verification.instructionOffsets[index + 2]]) {
+      const Opcode operation = code->instructions[index + 2].opcode;
+      std::uintptr_t helper = 0;
+      switch (operation) {
+        case Opcode::Add: helper = reinterpret_cast<std::uintptr_t>(&minijsBaselineAdd); break;
+        case Opcode::Sub: helper = reinterpret_cast<std::uintptr_t>(&minijsBaselineSub); break;
+        case Opcode::Mul: helper = reinterpret_cast<std::uintptr_t>(&minijsBaselineMul); break;
+        case Opcode::Div: helper = reinterpret_cast<std::uintptr_t>(&minijsBaselineDiv); break;
+        case Opcode::Equal: helper = reinterpret_cast<std::uintptr_t>(&minijsBaselineEqual); break;
+        case Opcode::Greater: helper = reinterpret_cast<std::uintptr_t>(&minijsBaselineGreater); break;
+        case Opcode::Less: helper = reinterpret_cast<std::uintptr_t>(&minijsBaselineLess); break;
+        default: break;
+      }
+      if (helper != 0) {
+        std::string inlineError;
+        if (!emitter.emitNumberLocalPairExpressionOrRuntimeCall(
+                instruction.operands[0], code->instructions[index + 1].operands[0], operation, helper, inlineError)) {
+          return failure(inlineError);
+        }
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        const bool comparison = operation == Opcode::Equal || operation == Opcode::Greater || operation == Opcode::Less;
+        const bool foldBranch = comparison && index + 3 < code->instructions.size() &&
+            code->instructions[index + 3].opcode == Opcode::JumpIfFalse &&
+            !branchTargets[verification.instructionOffsets[index + 3]];
+        if (foldBranch) {
+          emitter.emitLoadBooleanTopResult();
+          branchPatches.push_back({emitter.emitJumpIfZeroPlaceholder(),
+                                   code->instructions[index + 3].jumpTarget, NativeBranchKind::Zero});
+        }
+        const std::size_t last = foldBranch ? 3 : 2;
+        for (std::size_t inner = 1; inner <= last; ++inner) {
+          code->bytecodeOffsetToNativeOffset[verification.instructionOffsets[index + inner]] =
+              code->bytecodeOffsetToNativeOffset[bytecodeOffset];
+        }
+        index += last;
         continue;
       }
     }
