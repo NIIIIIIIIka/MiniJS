@@ -79,6 +79,7 @@ extern "C" bool minijsBaselineSyncStackSize(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineReturn(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineReturnLocal(minijs::BaselineFrame* frame, std::uint32_t slot);
 extern "C" bool minijsBaselineReturnNumberBits(minijs::BaselineFrame* frame, std::uint64_t bits);
+extern "C" bool minijsBaselineReturnConstant(minijs::BaselineFrame* frame, std::uint32_t constantIndex);
 
 namespace minijs {
 
@@ -260,6 +261,7 @@ class VM {
   friend bool ::minijsBaselineReturn(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineReturnLocal(minijs::BaselineFrame* frame, std::uint32_t slot);
   friend bool ::minijsBaselineReturnNumberBits(minijs::BaselineFrame* frame, std::uint64_t bits);
+  friend bool ::minijsBaselineReturnConstant(minijs::BaselineFrame* frame, std::uint32_t constantIndex);
 
   class TemporaryRootScope {
    public:
@@ -354,6 +356,7 @@ class VM {
   bool baselineRuntimeReturn(BaselineFrame& frame);
   bool baselineRuntimeReturnLocal(BaselineFrame& frame, std::uint32_t slot);
   bool baselineRuntimeReturnNumberBits(BaselineFrame& frame, std::uint64_t bits);
+  bool baselineRuntimeReturnConstant(BaselineFrame& frame, std::uint32_t constantIndex);
   bool finishBaselineReturn(BaselineFrame& frame, Value result);
   void executeDefineGlobal(const Chunk& chunk, std::size_t nameIndex);
   void executeGetGlobal(const Chunk& chunk, std::size_t nameIndex);

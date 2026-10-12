@@ -7016,6 +7016,142 @@ void testNumberReturnPreservesIndependentReturnEntry() {
 #endif
 }
 
+void testLiteralReturnValuesMergedHelpersAndGcCleanup() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+  runBytecodeProgramOnVm(vm, R"(
+    function text() { return "kept"; }
+    function emptyText() { return ""; }
+    function longText() { return "a sufficiently long string constant beyond small string storage"; }
+    function yes() { return true; }
+    function no() { return false; }
+    function nothing() { return null; }
+    function missing() { return; }
+    function number() { return 1; }
+    text(); emptyText(); longText(); yes(); no(); nothing(); missing(); number();
+  )");
+  vm.setBaselineHelperProfilingEnabled(true);
+  for (const std::string name : {"text", "emptyText", "longText", "yes", "no", "nothing", "missing", "number"}) {
+    const auto expected = vm.debugExecuteGlobalFunctionBaseline(name, {});
+    if (nativeBaselineBackendAvailable()) {
+      const auto* code = vm.debugGlobalFunctionBaselineCode(name);
+      EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry(name, {}, code->entry).equals(expected));
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+      EXPECT(code->bytecodeOffsetToNativeOffset[0] == code->bytecodeOffsetToNativeOffset[2]);
+#endif
+    }
+  }
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+  bool found = false;
+  for (const auto& helper : vm.jitRuntimeStats().helpers) {
+    EXPECT(helper.name != "minijsBaselinePushConstant");
+    EXPECT(helper.name != "minijsBaselinePushNumberSlot");
+    EXPECT(helper.name != "minijsBaselineReturn");
+    if (helper.name == "minijsBaselineReturnConstant") {
+      found = true;
+      EXPECT(helper.calls == 7);
+    }
+    if (helper.name == "minijsBaselineReturnNumberBits") EXPECT(helper.calls == 1);
+  }
+  EXPECT(found);
+#endif
+  if (nativeBaselineBackendAvailable()) {
+    vm.collectGarbage();
+    const auto before = vm.objectCount();
+    const auto* code = vm.debugGlobalFunctionBaselineCode("longText");
+    for (int i = 0; i < 100; ++i) {
+      const auto value = vm.debugExecuteGlobalFunctionBaselineEntry("longText", {}, code->entry);
+      EXPECT(value.asString() == "a sufficiently long string constant beyond small string storage");
+      vm.collectGarbage();
+      EXPECT(vm.objectCount() == before); // 临时字符串根退出后不能残留。
+    }
+  }
+}
+
+void testLiteralReturnKeepsCapturesMethodsAndStringLifetime() {
+  for (const bool enabled : {false,true}) {
+    minijs::VM vm;
+    vm.setJitEnabled(enabled);
+    vm.setJitCallThreshold(1);
+    const auto result = runBytecodeProgramOnVm(vm, R"(
+      let escaped = undefined;
+      function outer() {
+        let object = { n: 9 };
+        function read() { return object; }
+        escaped = read;
+        return "saved";
+      }
+      class Box { label() { return "box"; } flag() { return false; } }
+      outer();
+      let box = Box();
+      box.label(); box.flag();
+      let saved = outer();
+      let i = 0;
+      while (i < 100) { outer(); i = i + 1; }
+      [saved, escaped().n, box.label(), box.flag()];
+    )");
+    EXPECT(result.toString() == "[saved, 9, box, false]");
+    vm.collectGarbage();
+    EXPECT(runBytecodeProgramOnVm(vm, "[saved, escaped().n];").toString() == "[saved, 9]");
+  }
+}
+
+void testLiteralReturnErrorsReceiverAndIndependentEntry() {
+  minijs::VM vm;
+  runBytecodeProgramOnVm(vm, "function literal(value) { return \"kept\"; }");
+  const auto receiver = +[](minijs::BaselineFrame* frame) {
+    frame->returnsReceiver = true;
+    EXPECT(minijsBaselineReturnConstant(frame, 0));
+    EXPECT(frame->completed && !frame->failed);
+  };
+  EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("literal", {minijs::Value(7.0)}, receiver)
+             .equals(minijs::Value(7.0)));
+  vm.collectGarbage();
+  const auto before = vm.objectCount();
+  const auto invalidReturn = +[](minijs::BaselineFrame* frame) {
+    frame->returnSlot = frame->stackSize + 1;
+    EXPECT(!minijsBaselineReturnConstant(frame, 0));
+    EXPECT(frame->failed && !frame->completed);
+  };
+  try {
+    vm.debugExecuteGlobalFunctionBaselineEntry("literal", {minijs::Value(7.0)}, invalidReturn);
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: baseline return slot out of bounds");
+  }
+  vm.collectGarbage();
+  EXPECT(vm.objectCount() == before); // 异常退出同样释放字符串临时根。
+  const auto invalidConstant = +[](minijs::BaselineFrame* frame) {
+    EXPECT(!minijsBaselineReturnConstant(frame, 255));
+    EXPECT(frame->failed && !frame->completed);
+  };
+  try {
+    vm.debugExecuteGlobalFunctionBaselineEntry("literal", {minijs::Value(7.0)}, invalidConstant);
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: constant index out of bounds");
+  }
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+  minijs::BytecodeFunction function;
+  function.chunk.addConstant(minijs::Value(7.0));
+  function.chunk.addConstant(minijs::Value(true));
+  function.chunk.writeOpcode(minijs::Opcode::Constant);
+  function.chunk.writeByte(0);
+  function.chunk.writeOpcode(minijs::Opcode::Jump);
+  function.chunk.writeByte(0);
+  function.chunk.writeByte(2);
+  function.chunk.writeOpcode(minijs::Opcode::Constant);
+  function.chunk.writeByte(1);
+  function.chunk.writeOpcode(minijs::Opcode::Return);
+  runBytecodeProgramOnVm(vm, "function entry() { return 0; }");
+  const auto compiled = minijs::BaselineCompiler().compile(function);
+  EXPECT(compiled.succeeded());
+  EXPECT(compiled.code->bytecodeOffsetToNativeOffset[5] != compiled.code->bytecodeOffsetToNativeOffset[7]);
+  EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("entry", {}, compiled.code->entry).equals(minijs::Value(7.0)));
+#endif
+}
+
 void testJitDispatchInlineNegateFallbackPreservesTypeError() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -7783,6 +7919,9 @@ void runBytecodeTests() {
   testNumberReturnKeepsCapturedValuesAndOtherConstantTypes();
   testNumberReturnReceiverAndReturnSlotError();
   testNumberReturnPreservesIndependentReturnEntry();
+  testLiteralReturnValuesMergedHelpersAndGcCleanup();
+  testLiteralReturnKeepsCapturesMethodsAndStringLifetime();
+  testLiteralReturnErrorsReceiverAndIndependentEntry();
   testJitDispatchInlineNegateFallbackPreservesTypeError();
   testJitDispatchInlineAddRunsNumberFastPath();
   testJitDispatchInlineAddFallbackPreservesStringConcat();

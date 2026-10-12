@@ -1518,6 +1518,19 @@ bool VM::baselineRuntimeReturnNumberBits(BaselineFrame& frame, std::uint64_t bit
   return finishBaselineReturn(frame, Value(number));
 }
 
+bool VM::baselineRuntimeReturnConstant(BaselineFrame& frame, std::uint32_t constantIndex) {
+  validateBaselineRuntimeFrame(frame);
+  const Value& constant = frame.closure->function->function.chunk.constant(constantIndex);
+  if (constant.isString()) {
+    // 与 PushConstant 相同：字符串进入 VM 时创建 ObjString；未入返回槽前由临时根保护。
+    TemporaryRootScope roots(*this);
+    Value result = makeGcString(constant.asString());
+    roots.add(result.asGcString());
+    return finishBaselineReturn(frame, std::move(result));
+  }
+  return finishBaselineReturn(frame, constant);
+}
+
 bool VM::finishBaselineReturn(BaselineFrame& frame, Value result) {
   if (frame.returnsReceiver) {
     result = stack_[frame.slotStart];

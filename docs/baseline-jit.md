@@ -1201,7 +1201,7 @@ call rax
 
 ### Windows x64 直接返回数字常量
 
-`Constant numberIndex; Return` 紧邻且 Return 不是独立跳转目标时，合并为 `minijsBaselineReturnNumberBits(frame, bits)`。只匹配 Number；字符串、Boolean、null/undefined 等常量仍执行原路径。
+`Constant numberIndex; Return` 紧邻且 Return 不是独立跳转目标时，合并为 `minijsBaselineReturnNumberBits(frame, bits)`。数字优先使用本节的位编码 helper；字符串、Boolean、null/undefined 的直接返回见后面的文字常量合并。
 
 编译器用 `memcpy` 读取 double 的原始 64 位编码，嵌入机器码并按整数参数传入 helper。helper 同样用 `memcpy` 还原，再构造 Number Value 并进入共享的 `finishBaselineReturn()`。不是将整数 bits 转换成 double，不能使用 `static_cast<double>(bits)`；负零、无穷大、非规格化数和 NaN payload 均应逐位保留。
 
@@ -1228,6 +1228,40 @@ call rax
 Return 是独立跳转入口时禁止合并，否则该入口可能应返回另一个已有栈值。两个 decoded 指令保留，native offset 指向同一单元，不提供独立 deopt 入口。ARM64/decoded 不变，普通数字常量压栈仍保留用于其它表达式。
 
 逐位测试同时确认合并映射和 helper 计数。专项测试验证返回时关闭捕获槽、GC 后访问、方法返回常量、非数字常量的原路径、receiver 规则、非法返回槽错误及独立 Return 入口。新增 `examples/baseline_number_return_benchmark.js`，配对数据见 [性能报告](baseline-numeric-benchmark.md)。
+
+### Windows x64 直接返回文字常量
+
+字符串、Boolean、null 和 undefined 的 `Constant index; Return` 可以合并为 `minijsBaselineReturnConstant(frame, index)`，包括显式 `return;` 和函数隐式返回。要求 Return 无独立跳转入口。数字仍优先走 `ReturnNumberBits`，其它常量类型不参与本次 codegen 合并。
+
+helper 从当前 closure 的 chunk 按索引读取常量，保持原有索引错误。字符串沿用 `PushConstant` 的规则创建 VM 管理的 ObjString；其余文字常量按值保存，再进入 `finishBaselineReturn()`。没有缓存常量池的裸 Value 指针到机器码。
+
+字符串分支的等价 C++ 如下：
+
+```cpp
+TemporaryRootScope roots(vm);
+Value result = makeGcString(constant.asString());
+roots.add(result.asGcString());       // C++ 局部 Value 本身不是 GC 根
+return finishBaselineReturn(frame, std::move(result));
+// 无论正常返回还是异常退出，作用域销毁都会恢复原临时根深度。
+```
+
+字符串创建期间仍使用原有 GC 根集合；新对象创建后、加入 temporaryRoots 前没有其它 VM 对象分配。临时根保护新字符串直到收尾将它放入调用方返回槽；此后由 VM 栈持有。它代替的是旧实现中临时操作数栈槽的根作用，不省略字符串分配，也不依赖 native 寄存器充当 GC 根。
+
+Windows x64 helper 调用为：
+
+```asm
+mov rcx, rbx                         ; BaselineFrame*
+mov edx, constantIndex               ; uint32_t 索引，不是字符串地址
+mov rax, returnConstantHelper
+call rax
+; 成功已完成返回，失败已记录异常；统一进入 epilogue。
+```
+
+返回 false、空字符串、null 或 undefined 时，helper 仍返回 true 表示操作成功。receiver 规则仍由共享收尾应用，即使它忽略字符串结果，临时根也正常释放。常量索引或返回槽错误同样通过 C ABI 捕获；异常不能使临时根残留。
+
+两个 decoded 指令保留，native offset 指向同一合并单元，独立 Return 入口仍执行原始栈顶返回。ARM64/decoded 不变。测试覆盖空字符串、长字符串、布尔值/null/undefined、数字 helper 优先级、方法、捕获对象、正常和异常退出后的 GC 回收、receiver 规则、非法索引以及独立入口。
+
+新增 `examples/baseline_literal_return_benchmark.js`，使用实际内置函数 `len(label())` 累计结果；包含字符串创建和 GC，不是纯返回指令微基准。数据与调用数见 [性能报告](baseline-numeric-benchmark.md)。
 
 ### 栈同步边界验证
 

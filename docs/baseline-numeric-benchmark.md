@@ -396,3 +396,32 @@ Windows x64 合并数字 `Constant + Return`，用 uint64_t 参数传递原始 d
 数字压栈减少 99,999 次；数字返回 helper 替换原 Return，局部返回 helper 不变。该数字返回已经合并，但仍执行正常 VM 返回收尾，不是直接机器 ret。
 
 CTest 23/23 通过。逐位测试覆盖负零、无穷大、最小非规格化数和不同 NaN payload，并确认新 helper 计数；专项测试还覆盖关闭捕获槽及 GC、方法常量、非数字常量、receiver 规则、返回槽错误和独立 Return 入口。
+
+### 文字常量直接返回对照
+
+新增 `examples/baseline_literal_return_benchmark.js`，通过 `label() { return "ok"; }` 和 `len(label())` 的 100,000 次调用累计字符串长度。20 轮、每轮 5000 次，预期结果为 `200000`。样例包含函数调用、内置 len、字符串创建和 GC，不能把整个耗时当作单一返回 opcode 的成本，也不与其它样例交叉比较。
+
+Windows x64 合并字符串、Boolean、null/undefined 的 `Constant + Return` 为 `ReturnConstant`。字符串仍正常创建 ObjString，以 TemporaryRootScope 保护到进入调用方返回槽；数字位编码 helper 保持优先。修改前来自提交 `1d11dfa` 的 Release 程序，保存为本机忽略的 `build-verify-release/literal-return-before-1d11dfa.exe`。
+
+关闭 helper 采样，每组每版本 3 轮预热、15 轮正式采样，第二组交换执行顺序：
+
+| 对照组 | 修改前 JIT on | 修改后 JIT on | 前 / 后 | 修改前 JIT off | 修改后 JIT off |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 61.271 ms | 58.246 ms | 1.052x | 92.645 ms | 95.046 ms |
+| 2 | 64.692 ms | 59.304 ms | 1.091x | 95.442 ms | 95.171 ms |
+| 3 | 61.566 ms | 59.259 ms | 1.039x | 93.841 ms | 95.551 ms |
+
+三组 JIT on 中位数降低约 4.9%、8.3%、3.7%。同机配对数据支持保留该合并；收益较小且仍存在系统噪声，不是所有脚本的固定加速比。所有结果为 `200000`，baseline 入口计数为 100,018。
+
+另行单轮开启采样，只核对调用数，不用采样耗时计算收益：
+
+| helper | 修改前调用 | 修改后调用 |
+| --- | ---: | ---: |
+| `PushConstant` | 99,999 | 0 |
+| `Return` | 99,999 | 0 |
+| `ReturnConstant` | 0 | 99,999 |
+| `ReturnLocal` | 19 | 19 |
+
+两类旧 helper 合并为一次返回 helper，总调用减少 99,999 次。字符串分配数量没有因合并而消失；临时根替代了旧临时栈槽的保护。
+
+CTest 24/24 通过。测试覆盖各类文字常量、数字路径优先级、合并映射和计数、长字符串循环返回后的回收、异常路径的临时根释放、捕获对象和 GC、方法、receiver、索引错误及独立 Return 入口。

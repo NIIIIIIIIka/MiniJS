@@ -1310,6 +1310,21 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
       ++index;
       continue;
     }
+    if (instruction.opcode == Opcode::Constant && index + 1 < code->instructions.size() &&
+        code->instructions[index + 1].opcode == Opcode::Return &&
+        !branchTargets[verification.instructionOffsets[index + 1]]) {
+      const auto& constant = function.chunk.constant(instruction.operands[0]);
+      if (constant.isString() || constant.isBoolean() || constant.isNull() || constant.isUndefined()) {
+        emitRuntimeCallWithU32(emitter, reinterpret_cast<std::uintptr_t>(&minijsBaselineReturnConstant),
+                               instruction.operands[0]);
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        epiloguePatches.push_back({emitter.emitJumpPlaceholder(), false});
+        code->bytecodeOffsetToNativeOffset[verification.instructionOffsets[index + 1]] =
+            code->bytecodeOffsetToNativeOffset[bytecodeOffset];
+        ++index;
+        continue;
+      }
+    }
     if (instruction.opcode == Opcode::GetLocal && index + 4 < code->instructions.size()) {
       const auto& rightOperand = code->instructions[index + 1];
       const auto& arithmetic = code->instructions[index + 2];
