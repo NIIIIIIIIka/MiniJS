@@ -439,7 +439,7 @@ class WindowsX64Emitter {
   // 合并 Constant + 二元运算：常量只进入寄存器，不构造临时栈槽。
   bool emitNumberConstantBinaryOrRuntimeCall(std::uint64_t bits, Opcode operation,
                                              std::uintptr_t helperAddress,
-                                             std::string& error) {
+                                             std::string& error, bool branchResult = false) {
     if (!validateInlineValueSize("constant binary", error)) return false;
     emit({0x48, 0x8B, 0x83});  // mov rax, [rbx + stackSize]
     emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackSize)));
@@ -478,8 +478,12 @@ class WindowsX64Emitter {
       emit({0xF2, 0x0F, 0x11, 0x81});  // movsd [rcx + numberOffset], xmm0
       emit32(static_cast<std::uint32_t>(Value::numberOffset()));
     }
-    emit({0xB8});  // mov eax, 1：成功；整个组合的净栈深度变化为 0。
-    emit32(1);
+    if (branchResult) {
+      emit({0x0F, 0xB6, 0xC0});  // movzx eax, al：比较的 0/1，清除高位。
+    } else {
+      emit({0xB8});  // mov eax, 1：成功；整个组合的净栈深度变化为 0。
+      emit32(1);
+    }
     const std::size_t done = emitJumpPlaceholder();
     const std::size_t fallback = offset();
     if (!patchBranchTo(empty, fallback, true, error) ||
@@ -491,8 +495,27 @@ class WindowsX64Emitter {
     emitMoveFrameToFirstArg();
     emitLoadHelper(helperAddress);
     emitCallHelper();
+    if (branchResult) {
+      const std::size_t operationFailed = emitJumpIfFalsePlaceholder();
+      emitLoadBooleanTopResult(); // helper 已刷新栈；不能复用调用前的 rcx。
+      const std::size_t fallbackDone = emitJumpPlaceholder();
+      const std::size_t failed = offset();
+      emit({0xB8});  // mov eax, 2：失败不是条件 false，交给统一 epilogue。
+      emit32(2);
+      return patchBranchTo(pushFailed, failed, true, error) &&
+             patchBranchTo(operationFailed, failed, true, error) &&
+             patchBranchTo(fallbackDone, offset(), false, error) &&
+             patchBranchTo(done, offset(), false, error);
+    }
     return patchBranchTo(pushFailed, offset(), true, error) &&
            patchBranchTo(done, offset(), false, error);
+  }
+
+  // 仅在比较成功后使用：比较一定产生 Boolean，无需重复类型和空栈 guard。
+  void emitLoadBooleanTopResult() {
+    emitLoadTopPointer();
+    emit({0x0F, 0xB6, 0x81});  // movzx eax, byte ptr [rcx + booleanOffset]
+    emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
   }
 
   bool emitNumberLocalOrRuntimeCall(std::uint32_t slot, bool read,
@@ -1047,18 +1070,31 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
 #if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
     const std::uintptr_t binaryHelper = constantBinaryHelper(index);
     if (binaryHelper != 0) {
+      const Opcode operation = code->instructions[index + 1].opcode;
+      const bool foldBranch = (operation == Opcode::Equal || operation == Opcode::Greater ||
+                               operation == Opcode::Less) && index + 2 < code->instructions.size() &&
+          code->instructions[index + 2].opcode == Opcode::JumpIfFalse &&
+          !branchTargets[verification.instructionOffsets[index + 2]];
       const double number = function.chunk.constant(instruction.operands[0]).asNumber();
       std::uint64_t bits = 0;
       std::memcpy(&bits, &number, sizeof(bits));
       std::string inlineError;
       if (!emitter.emitNumberConstantBinaryOrRuntimeCall(
-              bits, code->instructions[index + 1].opcode, binaryHelper, inlineError)) {
+              bits, operation, binaryHelper, inlineError, foldBranch)) {
         return failure(inlineError);
       }
-      epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+      if (foldBranch) {
+        branchPatches.push_back({emitter.emitJumpIfZeroPlaceholder(),
+                                 code->instructions[index + 2].jumpTarget, NativeBranchKind::Zero});
+        epiloguePatches.push_back({emitter.emitJumpIfNotOnePlaceholder(), NativeBranchKind::NotOne});
+        code->bytecodeOffsetToNativeOffset[verification.instructionOffsets[index + 2]] =
+            code->bytecodeOffsetToNativeOffset[bytecodeOffset];
+      } else {
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+      }
       code->bytecodeOffsetToNativeOffset[verification.instructionOffsets[index + 1]] =
           code->bytecodeOffsetToNativeOffset[bytecodeOffset];
-      ++index;
+      index += foldBranch ? 2 : 1;
       continue;
     }
     if (instruction.opcode == Opcode::GetLocal && index + 1 < code->instructions.size()) {
@@ -1420,6 +1456,16 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
           return failure(inlineError);
         }
         epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        if (index + 1 < code->instructions.size() &&
+            code->instructions[index + 1].opcode == Opcode::JumpIfFalse &&
+            !branchTargets[verification.instructionOffsets[index + 1]]) {
+          emitter.emitLoadBooleanTopResult();
+          branchPatches.push_back({emitter.emitJumpIfZeroPlaceholder(),
+                                   code->instructions[index + 1].jumpTarget, NativeBranchKind::Zero});
+          code->bytecodeOffsetToNativeOffset[verification.instructionOffsets[index + 1]] =
+              code->bytecodeOffsetToNativeOffset[bytecodeOffset];
+          ++index;
+        }
         break;
       }
 #else

@@ -6278,6 +6278,124 @@ void testConstantBinaryFusionPreservesFallbackErrorsAndBranchEntry() {
   }
 }
 
+void testComparisonBranchFusionKeepsLogicalValuesAndSideEffects() {
+  for (const bool enabled : {false, true}) {
+    minijs::VM vm;
+    vm.setJitEnabled(enabled);
+    vm.setJitCallThreshold(1);
+    const auto result = runBytecodeProgramOnVm(vm, R"(
+      let probes = 0;
+      function touch(value) { probes = probes + 1; return value; }
+      function constant(x) { return [(x < 2) && touch(9), (x < 2) || touch(8)]; }
+      function dynamic(x, y) { return [(x < y) && touch(9), (x < y) || touch(8)]; }
+      function eq(x) { return (x == 2) || object; }
+      let object = { n: 7 };
+      constant(0);
+      dynamic(0, 2);
+      eq(0);
+      probes = 0;
+      [constant(0), constant(3), dynamic(0, 2), dynamic(3, 2),
+       probes, eq("2") == object, eq(2), object.n];
+    )");
+    EXPECT(result.toString() == "[[9, true], [false, 8], [9, true], [false, 8], 4, true, true, 7]");
+  }
+}
+
+void testComparisonBranchFusionMatchesDecodedWithNaNAndFallback() {
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+  runBytecodeProgramOnVm(vm, R"(
+    function constantLess(x) { if (x < 2) { return 1; } return 0; }
+    function dynamicLess(x, y) { if (x < y) { return 1; } return 0; }
+    function constantEqual(x) { if (x == 2) { return 1; } return 0; }
+    function dynamicGreater(x, y) { if (x > y) { return 1; } return 0; }
+    constantLess(0); dynamicLess(0, 2); constantEqual(0); dynamicGreater(0, 2);
+  )");
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+  for (const std::string name : {"constantLess", "dynamicLess", "constantEqual", "dynamicGreater"}) {
+    const auto* code = vm.debugGlobalFunctionBaselineCode(name);
+    bool found = false;
+    for (std::size_t i = 0; i + 1 < code->instructions.size(); ++i) {
+      const auto& instruction = code->instructions[i];
+      const auto& next = code->instructions[i + 1];
+      if ((instruction.opcode == minijs::Opcode::Equal || instruction.opcode == minijs::Opcode::Less ||
+           instruction.opcode == minijs::Opcode::Greater) && next.opcode == minijs::Opcode::JumpIfFalse) {
+        found = true;
+        EXPECT(code->bytecodeOffsetToNativeOffset[instruction.offset] ==
+               code->bytecodeOffsetToNativeOffset[next.offset]);
+      }
+    }
+    EXPECT(found);
+  }
+#endif
+  for (const double value : {-0.0, 2.0, 3.0, std::numeric_limits<double>::quiet_NaN(),
+                             std::numeric_limits<double>::infinity()}) {
+    for (const std::string name : {"constantLess", "dynamicLess", "constantEqual", "dynamicGreater"}) {
+      const bool dynamic = name == "dynamicLess" || name == "dynamicGreater";
+      const std::vector<minijs::Value> args = dynamic
+          ? std::vector<minijs::Value>{minijs::Value(value), minijs::Value(2.0)}
+          : std::vector<minijs::Value>{minijs::Value(value)};
+      const auto expected = vm.debugExecuteGlobalFunctionBaseline(name, args);
+      if (nativeBaselineBackendAvailable()) {
+        const auto* code = vm.debugGlobalFunctionBaselineCode(name);
+        EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry(name, args, code->entry).equals(expected));
+      }
+    }
+  }
+  if (nativeBaselineBackendAvailable()) {
+    const auto* code = vm.debugGlobalFunctionBaselineCode("constantEqual");
+    EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry(
+               "constantEqual", {minijs::Value(std::string("2"))}, code->entry)
+               .equals(minijs::Value(0.0)));
+  }
+  for (const std::string source : {
+      "function f(x) { if (x < 2) { return 1; } return 0; } f(\"bad\");",
+      "function f(x,y) { if (x < y) { return 1; } return 0; } f(\"bad\",2);"}) {
+    std::string expectedError;
+    for (const bool enabled : {false, true}) {
+      minijs::VM errorVm;
+      errorVm.setJitEnabled(enabled);
+      errorVm.setJitCallThreshold(0);
+      try {
+        runBytecodeProgramOnVm(errorVm, source);
+        EXPECT(false);
+      } catch (const minijs::RuntimeError& error) {
+        if (!enabled) expectedError = error.what();
+        else EXPECT(expectedError == error.what());
+      }
+    }
+  }
+}
+
+void testComparisonBranchFusionPreservesIndependentJumpEntry() {
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+  minijs::VM vm;
+  runBytecodeProgramOnVm(vm, "function entry() { return 0; }");
+  minijs::BytecodeFunction function;
+  function.chunk.addConstant(minijs::Value(0.0));
+  function.chunk.addConstant(minijs::Value(2.0));
+  function.chunk.writeOpcode(minijs::Opcode::Constant);
+  function.chunk.writeByte(0);
+  function.chunk.writeOpcode(minijs::Opcode::Jump);
+  function.chunk.writeByte(0);
+  function.chunk.writeByte(3); // 从 offset 5 直接跳到 offset 8 的 JumpIfFalse。
+  function.chunk.writeOpcode(minijs::Opcode::Constant);
+  function.chunk.writeByte(1);
+  function.chunk.writeOpcode(minijs::Opcode::Equal);
+  function.chunk.writeOpcode(minijs::Opcode::JumpIfFalse);
+  function.chunk.writeByte(0);
+  function.chunk.writeByte(0);
+  function.chunk.writeOpcode(minijs::Opcode::Return);
+  const auto compiled = minijs::BaselineCompiler().compile(function);
+  EXPECT(compiled.succeeded());
+  EXPECT(compiled.code->bytecodeOffsetToNativeOffset[7] != compiled.code->bytecodeOffsetToNativeOffset[8]);
+  // 独立条件入口不强制转换原操作数；返回的仍应是 Number 0，而非 Boolean false。
+  const auto result = vm.debugExecuteGlobalFunctionBaselineEntry("entry", {}, compiled.code->entry);
+  EXPECT(result.isNumber() && result.asNumber() == 0.0);
+#endif
+}
+
 void testJitDispatchInlineNegateFallbackPreservesTypeError() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -7027,6 +7145,9 @@ void runBytecodeTests() {
   testBaselineStackSyncPreservesOversizeError();
   testNativeConstantBinaryFusionNumbersAndComparisons();
   testConstantBinaryFusionPreservesFallbackErrorsAndBranchEntry();
+  testComparisonBranchFusionKeepsLogicalValuesAndSideEffects();
+  testComparisonBranchFusionMatchesDecodedWithNaNAndFallback();
+  testComparisonBranchFusionPreservesIndependentJumpEntry();
   testJitDispatchInlineNegateFallbackPreservesTypeError();
   testJitDispatchInlineAddRunsNumberFastPath();
   testJitDispatchInlineAddFallbackPreservesStringConcat();

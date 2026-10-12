@@ -1022,6 +1022,28 @@ mov eax, 1                           ; 操作成功
 
 测试覆盖七种运算、负零符号、NaN、无穷大、非规格化数、字符串拼接和相等 fallback、类型错误、除零、空栈，以及直接跳入运算指令。ARM64 和 decoded executor 的逐条执行行为不变。实际 helper 次数及关闭采样的性能对照见 [性能报告](baseline-numeric-benchmark.md)。
 
+### Windows x64 比较与条件分支合并
+
+`Equal/Greater/Less` 紧邻 `JumpIfFalse`，且后者不是独立跳转入口时，native 后端把它们作为一个单元生成。比较一定产生 Boolean，因此无需再检查栈是否为空、类型是否为 Boolean，也无需调用完整 truthiness helper。
+
+常量比较形成 `Constant + comparison + JumpIfFalse` 三条组合。Number guard 成功后把 Boolean 写回原栈顶，并复用 `al` 中的真假结果：
+
+```asm
+; ucomisd 和 setcc 已计算出 al=0/1，栈顶也已写为 Boolean。
+movzx eax, al                       ; 清除高位，得到完整的 0/1
+; 0 跳向 bytecode 的 false 目标，1 继续。
+```
+
+快路径不再写入固定的成功值 1，否则 false 条件会被误当作 true。fallback 先正常压入常量并执行完整比较 helper；成功后重新定位栈顶读取 Boolean，失败则返回状态 2。外层仍使用原有三态分支协议：0 为假、1 为真、2 退出并传播异常。不能把 helper 失败作为假条件继续执行。
+
+非常量的两个操作数比较仍执行现有数字 guard 和栈同步。比较成功后直接读取已经生成的栈顶 Boolean，跳过通用 `JumpIfFalse` 的重复 guard；helper 调用可能刷新栈地址，因此不能使用调用前的裸指针。
+
+两种组合都保留 Boolean 栈槽，不额外弹栈；原 bytecode 的 `Pop`、返回或短路表达式负责处理它。`false && value` 仍返回 false，`true || value` 仍返回 true，被短路的一侧不执行。这项合并不是“消除条件值”的优化，也没有减少原有弹栈 helper 次数。
+
+所有 decoded 指令保留。合并单元内部的 native offset 指向同一入口，不能用于独立执行或 deopt；若有 `Jump`、`JumpIfFalse` 或 `Loop` 指向后面的条件跳转，则禁止合并。ARM64 和 decoded executor 不变。
+
+专项测试验证合并映射、常量/动态比较与 decoded 的一致性、NaN、非数字相等 fallback、类型异常、短路值和副作用，以及直接跳进独立条件入口时保留原 Number 值。关闭采样的性能对照见 [报告](baseline-numeric-benchmark.md)，目前尚未证明稳定提速。
+
 ### 栈同步边界验证
 
 `minijsBaselineSyncStackSize()` 仍使用通用 `stack_.resize(frame.stackSize)`。数字二元快路径先减少 frame 的快照深度，再调用该 helper 正常销毁右操作数槽，最后刷新栈地址和真实深度。helper 不允许扩大栈；超界时通过 C ABI 记录 `baseline stack size out of bounds` 并退出。
