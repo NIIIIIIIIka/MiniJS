@@ -1410,7 +1410,7 @@ SetLocal targetSlot
 Pop
 ```
 
-例如 `result = left + right;`、`right = left - right;`、`result = left / 2;`。需要保留结果的赋值表达式仍使用原路径，比较、取模、其它右操作数形式不在本次扩展内。token、Parser、AST、Interpreter、bytecode 格式、ARM64 和 decoded 不变。
+例如 `result = left + right;`、`right = left - right;`、`result = left / 2;`。需要保留结果的赋值表达式仍使用原路径；比较赋值见后面的专门合并，取模和其它右操作数形式不在本节扩展内。token、Parser、AST、Interpreter、bytecode 格式、ARM64 和 decoded 不变。
 
 新目标必须是已存在的 Number 槽；目标越界或原来是其它类型时，不直接覆盖载荷。快路径先保存目标地址，再读取源值并执行运算，最后才写入目标。等价 C++ 为：
 
@@ -1440,6 +1440,53 @@ Sub/Mul/Div 的 SSE 算术 opcode 分别为 5C/59/5E；常量右值仍用原始 
 动态除数 +0/-0 仍由完整 Div helper 报错，NaN 继续运算；常量零除数不参与五条合并。快路径没有 helper、扩容或 GC 对象分配，r10 不跨 helper 保存使用。fallback 中的栈地址由 VM 正常重新定位，资源型旧目标和字符串拼接仍用完整 Value 管理。
 
 捕获目标的 upvalue 立即读取更新后的同一槽，正常关闭和 GC 规则不变。五条 decoded 指令保留，native offset 指向同一合并单元。测试覆盖四种算术、两种右值、三种目标位置、源值不变、负零/NaN、动态除零、类型变化、保留结果、闭包/GC、方法帧、独立中间入口、非法槽、临时结果槽和错误优先级。新增 `examples/baseline_arithmetic_assign_benchmark.js`，数据见 [性能报告](baseline-numeric-benchmark.md)。
+
+### Windows x64 比较赋值合并
+
+`flag = left < right;`、`flag = left > 2;` 和 `flag = left == right;` 支持五条指令合并：
+
+```text
+GetLocal leftSlot
+GetLocal rightSlot 或 Constant numberIndex
+Less / Greater / Equal
+SetLocal targetSlot
+Pop
+```
+
+后四条指令都不能是独立跳转入口，赋值结果必须由紧邻 Pop 丢弃。需要保留结果的赋值表达式仍走原路径。token、Parser、AST、Interpreter、bytecode 格式、ARM64 和 decoded 不变。
+
+快路径要求局部源值均是 Number，目标已是 Boolean。先检查目标和源槽的边界、编号溢出及类型，保存目标地址到 r10，比较完成后才写入目标的布尔载荷。等价 C++ 为：
+
+```cpp
+double left = sourceLeft.asNumber();
+double right = sourceRight.asNumber();
+target.boolean = left < right;
+// 不修改源数字，不构造临时结果槽，不改变栈深度。
+```
+
+以小于比较为例，每条汇编与机器码对应如下，位移按 4 字节小端编码：
+
+```asm
+mov r10, rdx                            ; 49 89 D2：保存已验证的 Boolean 目标
+; 重新定位 rdx=左 Number、rcx=右 Number，不调用 helper。
+movsd xmm0, [rdx + numberOffset]         ; F2 0F 10 82 + disp32
+ucomisd xmm0, [rcx + numberOffset]       ; 66 0F 2E 81 + disp32：比较两个 double
+setb al                                 ; 0F 92 C0：小于或 unordered
+setnp dl                                ; 0F 9B C2：不是 unordered；源地址已用完
+and al, dl                              ; 20 D0：有序且小于
+mov byte ptr [r10 + booleanOffset], al   ; 41 88 82 + disp32：只写 Boolean 载荷
+mov eax, 1                              ; B8 01 00 00 00：执行成功，与结果真假无关
+```
+
+相等使用 `sete al`（0F 94 C0），再同样用 setnp 排除 NaN；大于使用 `seta al`（0F 97 C0），NaN 时自然为 false。任一数字是 NaN 时三种比较都为 false，正负零相等。数字常量右值用 memcpy 提取原始位编码并装入 xmm1，再执行 `ucomisd xmm0, xmm1`。
+
+因为目标已经是 Boolean，不需要写类型标签或销毁旧资源。目标原来是 Number、字符串、对象等类型，或与 Number 源槽别名时，guard 未命中，执行原始比较和完整 Value 赋值。Equal 对字符串、Boolean、null/undefined、对象、闭包、实例和绑定方法继续使用 Value::equals 的原有内容/身份规则；Less/Greater 的非数字错误不改变。
+
+fallback 先完整读取左值；局部右值依次读取、比较，常量右值复用已有常量二元路径；然后 SetLocal、Pop。任何一步失败立即退出。即使目标非法，也不能提前抛出目标错误而跳过源值读取或比较；新临时结果槽作为目标的边界行为仍由原顺序处理。
+
+r10 和源地址只在无 helper 的快路径使用，不跨扩容或 GC 保存。捕获目标的 upvalue 仍读取同一个栈槽，关闭和 GC 协议不变。五条 decoded 指令保留，native offset 指向同一合并单元；不提供独立 deopt 恢复点。
+
+测试覆盖三种比较与两种右值、NaN 位于任一侧、无穷大、正负零、false 成功状态、源值不变、类型变化、源目标别名、各类相等 fallback、赋值结果保留、捕获槽/GC、方法帧、非法槽、临时槽、错误优先级及四个中间独立入口。新增 `examples/baseline_comparison_assign_benchmark.js` 与 CLI baseline smoke，配对结果见 [性能报告](baseline-numeric-benchmark.md)。
 
 ### 栈同步边界验证
 

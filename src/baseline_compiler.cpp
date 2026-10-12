@@ -777,6 +777,75 @@ class WindowsX64Emitter {
     return patchBranchTo(done, offset(), false, error);
   }
 
+  // 比较赋值：仅更新已存在的 Boolean 目标，Number 源值不变，无临时结果槽。
+  bool emitComparisonAssignment(std::uint32_t leftSlot, std::uint32_t rightSlot,
+                                 bool constantRight, std::uint64_t bits, std::uint32_t targetSlot,
+                                 Opcode operation, std::uintptr_t helperAddress, std::string& error) {
+    std::vector<std::size_t> fallbacks;
+    if (!emitLoadTypedLocalPair(targetSlot, targetSlot, Value::booleanTypeTag(), fallbacks, error)) return false;
+    emit({0x49, 0x89, 0xD2});  // mov r10, rdx：保存 Boolean 目标地址，不跨 helper 使用。
+    if (!emitLoadNumberLocalPair(leftSlot, constantRight ? leftSlot : rightSlot, fallbacks, error)) return false;
+    emit({0xF2, 0x0F, 0x10, 0x82});  // movsd xmm0, [rdx + numberOffset]：左数字。
+    emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+    if (constantRight) {
+      emit({0x48, 0xB8});  // mov rax, bits：右常量的 double 原始位编码。
+      emit64(bits);
+      emit({0x66, 0x48, 0x0F, 0x6E, 0xC8});  // movq xmm1, rax：复制位，不转换整数。
+      emit({0x66, 0x0F, 0x2E, 0xC1});  // ucomisd xmm0, xmm1
+    } else {
+      emit({0x66, 0x0F, 0x2E, 0x81});  // ucomisd xmm0, [rcx + numberOffset]
+      emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+    }
+    if (operation == Opcode::Greater) {
+      emit({0x0F, 0x97, 0xC0});  // seta al：有序且大于，NaN 时为 false。
+    } else {
+      emit({0x0F, operation == Opcode::Equal ? std::uint8_t{0x94} : std::uint8_t{0x92}, 0xC0});
+      emit({0x0F, 0x9B, 0xC2});  // setnp dl：排除 unordered；源地址已不再使用。
+      emit({0x20, 0xD0});        // and al, dl：相等/小于且不是 NaN。
+    }
+    emit({0x41, 0x88, 0x82});  // mov byte ptr [r10 + booleanOffset], al：仅写目标载荷。
+    emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
+    emit({0xB8});  // mov eax, 1：执行成功；false 结果不是失败。
+    emit32(1);
+    const auto done = emitJumpPlaceholder();
+    const auto fallback = offset();
+    for (const auto patch : fallbacks) {
+      if (!patchBranchTo(patch, fallback, true, error)) return false;
+    }
+    std::vector<std::size_t> failures;
+    emitMoveFrameToFirstArg();
+    emitMoveU32ToSecondArg(leftSlot);
+    emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselineGetLocal));
+    emitCallHelper();
+    failures.push_back(emitJumpIfFalsePlaceholder());
+    if (constantRight) {
+      // 复用已有常量二元路径，保持完整 Value 比较和数字常量位编码。
+      if (!emitNumberConstantBinaryOrRuntimeCall(bits, operation, helperAddress, error)) return false;
+    } else {
+      emitMoveFrameToFirstArg();
+      emitMoveU32ToSecondArg(rightSlot);
+      emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselineGetLocal));
+      emitCallHelper();
+      failures.push_back(emitJumpIfFalsePlaceholder());
+      emitMoveFrameToFirstArg();
+      emitLoadHelper(helperAddress);
+      emitCallHelper();
+    }
+    failures.push_back(emitJumpIfFalsePlaceholder());
+    emitMoveFrameToFirstArg();
+    emitMoveU32ToSecondArg(targetSlot);
+    emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselineSetLocal));
+    emitCallHelper();
+    failures.push_back(emitJumpIfFalsePlaceholder());
+    emitMoveFrameToFirstArg();
+    emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselinePop));
+    emitCallHelper();
+    for (const auto patch : failures) {
+      if (!patchBranchTo(patch, offset(), true, error)) return false;
+    }
+    return patchBranchTo(done, offset(), false, error);
+  }
+
   // GetLocal + GetLocal + 二元运算：只构造一个结果槽，不复制源局部值。
   bool emitNumberLocalPairExpressionOrRuntimeCall(std::uint32_t leftSlot, std::uint32_t rightSlot,
                                                  Opcode operation, std::uintptr_t helperAddress,
@@ -1518,22 +1587,38 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
       const auto& assign = code->instructions[index + 3];
       const bool isArithmetic = arithmetic.opcode == Opcode::Add || arithmetic.opcode == Opcode::Sub ||
                                 arithmetic.opcode == Opcode::Mul || arithmetic.opcode == Opcode::Div;
+      const bool isComparison = arithmetic.opcode == Opcode::Equal || arithmetic.opcode == Opcode::Less ||
+                                arithmetic.opcode == Opcode::Greater;
       bool independentEntry = false;
       for (std::size_t inner = 1; inner <= 4; ++inner) {
         independentEntry = independentEntry || branchTargets[verification.instructionOffsets[index + inner]];
       }
-      std::uintptr_t updateHelper = isArithmetic ? constantBinaryHelper(index + 1) : 0;
-      if (isArithmetic && rightOperand.opcode == Opcode::GetLocal) {
+      std::uintptr_t updateHelper = isArithmetic || isComparison ? constantBinaryHelper(index + 1) : 0;
+      if ((isArithmetic || isComparison) && rightOperand.opcode == Opcode::GetLocal) {
         updateHelper = arithmetic.opcode == Opcode::Add ? reinterpret_cast<std::uintptr_t>(&minijsBaselineAdd)
                      : arithmetic.opcode == Opcode::Sub ? reinterpret_cast<std::uintptr_t>(&minijsBaselineSub)
                      : arithmetic.opcode == Opcode::Mul ? reinterpret_cast<std::uintptr_t>(&minijsBaselineMul)
-                                                        : reinterpret_cast<std::uintptr_t>(&minijsBaselineDiv);
+                     : arithmetic.opcode == Opcode::Div ? reinterpret_cast<std::uintptr_t>(&minijsBaselineDiv)
+                     : arithmetic.opcode == Opcode::Equal ? reinterpret_cast<std::uintptr_t>(&minijsBaselineEqual)
+                     : arithmetic.opcode == Opcode::Less ? reinterpret_cast<std::uintptr_t>(&minijsBaselineLess)
+                                                         : reinterpret_cast<std::uintptr_t>(&minijsBaselineGreater);
       }
       if (updateHelper != 0 &&
           assign.opcode == Opcode::SetLocal &&
           code->instructions[index + 4].opcode == Opcode::Pop && !independentEntry) {
         std::string inlineError;
-        if (rightOperand.opcode == Opcode::GetLocal) {
+        if (isComparison) {
+          const bool constantRight = rightOperand.opcode == Opcode::Constant;
+          std::uint64_t bits = 0;
+          if (constantRight) {
+            const double number = function.chunk.constant(rightOperand.operands[0]).asNumber();
+            std::memcpy(&bits, &number, sizeof(bits));
+          }
+          if (!emitter.emitComparisonAssignment(instruction.operands[0], rightOperand.operands[0],
+                  constantRight, bits, assign.operands[0], arithmetic.opcode, updateHelper, inlineError)) {
+            return failure(inlineError);
+          }
+        } else if (rightOperand.opcode == Opcode::GetLocal) {
           if (!emitter.emitNumberLocalPairUpdateOrRuntimeCall(
                   instruction.operands[0], rightOperand.operands[0], assign.operands[0],
                   arithmetic.opcode, updateHelper, inlineError)) {

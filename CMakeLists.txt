@@ -320,5 +320,12 @@ if(MINIJS_BUILD_TESTS)
         set_tests_properties(minijs_cli_arithmetic_assign_benchmark_enters_baseline PROPERTIES
             PASS_REGULAR_EXPRESSION "baseline_entries=[1-9][0-9]*"
         )
+        add_test(
+            NAME minijs_cli_comparison_assign_benchmark_enters_baseline
+            COMMAND minijs --benchmark-compare-jit "${CMAKE_CURRENT_SOURCE_DIR}/examples/baseline_comparison_assign_benchmark.js" --benchmark-samples 1 --benchmark-warmup 0
+        )
+        set_tests_properties(minijs_cli_comparison_assign_benchmark_enters_baseline PROPERTIES
+            PASS_REGULAR_EXPRESSION "baseline_entries=[1-9][0-9]*"
+        )
     endif()
 endif()
