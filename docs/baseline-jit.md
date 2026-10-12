@@ -1044,6 +1044,49 @@ movzx eax, al                       ; 清除高位，得到完整的 0/1
 
 专项测试验证合并映射、常量/动态比较与 decoded 的一致性、NaN、非数字相等 fallback、类型异常、短路值和副作用，以及直接跳进独立条件入口时保留原 Number 值。关闭采样的性能对照见 [报告](baseline-numeric-benchmark.md)，目前尚未证明稳定提速。
 
+### Windows x64 局部数字更新语句
+
+后端优先合并下面五条 bytecode，适用于 `value = value + 2;` 这样的表达式语句：
+
+```text
+OP_GET_LOCAL slot
+OP_CONSTANT numberIndex
+OP_ADD / OP_SUB / OP_MUL / OP_DIV
+OP_SET_LOCAL slot
+OP_POP
+```
+
+要求读写同一个槽、常量为 Number、赋值结果被紧邻的 `Pop` 丢弃，且后四条指令均不是独立跳转目标。除数为 `+0/-0` 时不匹配。返回或参与其它表达式的赋值结果、不同目标槽、global/upvalue 写入均保持原路径。
+
+快路径先检查局部槽编号加法溢出、有效边界和 Number 标签，之后直接用 SSE 运算更新局部槽。以加法为例，等价 C++ 是：
+
+```cpp
+// 所有 guard 通过后：
+stack_[frame.slotStart + slot].number_ += embeddedConstant;
+// 不新增临时栈槽，不修改真实栈深度或 frame.stackSize。
+```
+
+主要汇编操作为：
+
+```asm
+; rdx 已指向通过 guard 的局部 Value。
+mov rcx, rdx
+movsd xmm0, [rcx + numberOffset]
+mov rdx, constantBits
+movq xmm1, rdx
+addsd xmm0, xmm1
+movsd [rcx + numberOffset], xmm0
+mov eax, 1                           ; 五条指令组合成功
+```
+
+类型标签仍为 Number，不需要销毁或重建局部 Value，也不会分配 GC 对象。open upvalue 仍按原栈槽编号读取，因此捕获该局部变量的闭包立即看到新值；函数返回时仍由原有关闭机制保存更新后的值。
+
+guard 未命中前没有副作用。fallback 按顺序执行完整局部读取、常量运算、局部赋值和弹栈；每一步失败都直接退出，不继续下一步或重跑。字符串加数字仍可拼接，非数字赋值仍通过完整 Value 赋值管理资源，非法局部槽仍产生原有错误。helper 之间不保存旧栈地址。
+
+五个 decoded 指令保留，native offset 统一指向合并单元，不作为独立 deopt 入口。ARM64 和 decoded executor 不变。专项测试覆盖四种算术与特殊浮点数、负零符号、非数字 fallback、赋值保留值与不同目标、捕获槽关闭及 GC 后访问、内部跳转入口和非法槽错误。
+
+数字循环中实际减少的是临时局部读取压栈与末尾 `Pop`；常量二元合并此前已经省去了该处的同步，所以本次 `SyncStackSize` 调用数不变。详见 [性能报告](baseline-numeric-benchmark.md)。
+
 ### 栈同步边界验证
 
 `minijsBaselineSyncStackSize()` 仍使用通用 `stack_.resize(frame.stackSize)`。数字二元快路径先减少 frame 的快照深度，再调用该 helper 正常销毁右操作数槽，最后刷新栈地址和真实深度。helper 不允许扩大栈；超界时通过 C ABI 记录 `baseline stack size out of bounds` 并退出。

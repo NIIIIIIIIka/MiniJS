@@ -6396,6 +6396,153 @@ void testComparisonBranchFusionPreservesIndependentJumpEntry() {
 #endif
 }
 
+void testNativeLocalNumberUpdateFusionAndSpecialNumbers() {
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+  minijs::VM vm;
+  runBytecodeProgramOnVm(vm, "function update(value) { return value; }");
+  vm.setBaselineHelperProfilingEnabled(true);
+  const std::vector<double> numbers = {-0.0, 2.0, -3.0,
+      std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity(),
+      std::numeric_limits<double>::denorm_min()};
+  for (const auto op : {minijs::Opcode::Add, minijs::Opcode::Sub, minijs::Opcode::Mul, minijs::Opcode::Div}) {
+    for (const double right : numbers) {
+      if (op == minijs::Opcode::Div && right == 0.0) continue;
+      minijs::BytecodeFunction function;
+      function.chunk.addConstant(minijs::Value(right));
+      function.chunk.writeOpcode(minijs::Opcode::GetLocal);
+      function.chunk.writeByte(0);
+      function.chunk.writeOpcode(minijs::Opcode::Constant);
+      function.chunk.writeByte(0);
+      function.chunk.writeOpcode(op);
+      function.chunk.writeOpcode(minijs::Opcode::SetLocal);
+      function.chunk.writeByte(0);
+      function.chunk.writeOpcode(minijs::Opcode::Pop);
+      function.chunk.writeOpcode(minijs::Opcode::GetLocal);
+      function.chunk.writeByte(0);
+      function.chunk.writeOpcode(minijs::Opcode::Return);
+      const auto compiled = minijs::BaselineCompiler().compile(function);
+      EXPECT(compiled.succeeded());
+      EXPECT(compiled.code->instructions.size() == 7);
+      for (const std::size_t offset : {2, 4, 5, 7}) {
+        EXPECT(compiled.code->bytecodeOffsetToNativeOffset[offset] ==
+               compiled.code->bytecodeOffsetToNativeOffset[0]);
+      }
+      for (const double left : numbers) {
+        const auto result = vm.debugExecuteGlobalFunctionBaselineEntry(
+            "update", {minijs::Value(left)}, compiled.code->entry);
+        const double expected = op == minijs::Opcode::Add ? left + right
+                                : op == minijs::Opcode::Sub ? left - right
+                                : op == minijs::Opcode::Mul ? left * right : left / right;
+        EXPECT(result.isNumber());
+        EXPECT(std::isnan(expected) ? std::isnan(result.asNumber()) : result.asNumber() == expected);
+        if (expected == 0.0) EXPECT(std::signbit(result.asNumber()) == std::signbit(expected));
+      }
+    }
+  }
+  for (const auto& helper : vm.jitRuntimeStats().helpers) {
+    // 返回值读取仍需压栈；更新本身不应调用这些 helper。
+    EXPECT(helper.name != "minijsBaselinePop");
+    EXPECT(helper.name != "minijsBaselineSetLocal");
+    EXPECT(helper.name != "minijsBaselineSyncStackSize");
+  }
+#endif
+}
+
+void testLocalNumberUpdatePreservesFallbackRetainedValuesAndCaptures() {
+  for (const bool enabled : {false, true}) {
+    minijs::VM vm;
+    vm.setJitEnabled(enabled);
+    vm.setJitCallThreshold(1);
+    const auto result = runBytecodeProgramOnVm(vm, R"(
+      function update(value) { value = value + 2; return value; }
+      function retained(value) { return value = value + 2; }
+      function different(value) { let other = 0; other = value + 2; return [value, other]; }
+      function outer() {
+        let value = 1;
+        function read() { return value; }
+        value = value + 2;
+        let seen = read();
+        value = value * 2;
+        return [seen, read];
+      }
+      update(0); retained(0); different(0); outer();
+      let captured = outer();
+      [update("x"), retained(3), different(3), captured[0], captured[1]()];
+    )");
+    EXPECT(result.toString() == "[x2, 5, [3, 5], 3, 6]");
+    vm.collectGarbage();
+    EXPECT(runBytecodeProgramOnVm(vm, "captured[1]();").equals(minijs::Value(6.0)));
+  }
+  for (const std::string source : {
+      "function f(x) { x = x - 2; return x; } f(\"bad\");",
+      "function f(x) { x = x / 0; return x; } f(1);",
+      "function f(x) { x = x / -0; return x; } f(1);"}) {
+    std::string expectedError;
+    for (const bool enabled : {false, true}) {
+      minijs::VM vm;
+      vm.setJitEnabled(enabled);
+      vm.setJitCallThreshold(0);
+      try {
+        runBytecodeProgramOnVm(vm, source);
+        EXPECT(false);
+      } catch (const minijs::RuntimeError& error) {
+        if (!enabled) expectedError = error.what();
+        else EXPECT(expectedError == error.what());
+      }
+    }
+  }
+}
+
+void testLocalNumberUpdateDoesNotFuseIndependentPopEntry() {
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+  minijs::VM vm;
+  runBytecodeProgramOnVm(vm, "function entry(value) { return value; }");
+  minijs::BytecodeFunction function;
+  function.chunk.addConstant(minijs::Value(2.0));
+  function.chunk.addConstant(minijs::Value(42.0));
+  function.chunk.writeOpcode(minijs::Opcode::Constant);
+  function.chunk.writeByte(1);
+  function.chunk.writeOpcode(minijs::Opcode::Jump);
+  function.chunk.writeByte(0);
+  function.chunk.writeByte(7); // 从 offset 5 跳进更新序列末尾 offset 12 的 Pop。
+  function.chunk.writeOpcode(minijs::Opcode::GetLocal);
+  function.chunk.writeByte(0);
+  function.chunk.writeOpcode(minijs::Opcode::Constant);
+  function.chunk.writeByte(0);
+  function.chunk.writeOpcode(minijs::Opcode::Add);
+  function.chunk.writeOpcode(minijs::Opcode::SetLocal);
+  function.chunk.writeByte(0);
+  function.chunk.writeOpcode(minijs::Opcode::Pop);
+  function.chunk.writeOpcode(minijs::Opcode::GetLocal);
+  function.chunk.writeByte(0);
+  function.chunk.writeOpcode(minijs::Opcode::Return);
+  const auto compiled = minijs::BaselineCompiler().compile(function);
+  EXPECT(compiled.succeeded());
+  EXPECT(compiled.code->bytecodeOffsetToNativeOffset[5] != compiled.code->bytecodeOffsetToNativeOffset[12]);
+  EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("entry", {minijs::Value(7.0)}, compiled.code->entry)
+             .equals(minijs::Value(7.0)));
+  minijs::BytecodeFunction invalid;
+  invalid.chunk.addConstant(minijs::Value(2.0));
+  invalid.chunk.writeOpcode(minijs::Opcode::GetLocal);
+  invalid.chunk.writeByte(255);
+  invalid.chunk.writeOpcode(minijs::Opcode::Constant);
+  invalid.chunk.writeByte(0);
+  invalid.chunk.writeOpcode(minijs::Opcode::Mul);
+  invalid.chunk.writeOpcode(minijs::Opcode::SetLocal);
+  invalid.chunk.writeByte(255);
+  invalid.chunk.writeOpcode(minijs::Opcode::Pop);
+  invalid.chunk.writeOpcode(minijs::Opcode::Return);
+  const auto bad = minijs::BaselineCompiler().compile(invalid);
+  EXPECT(bad.succeeded());
+  try {
+    vm.debugExecuteGlobalFunctionBaselineEntry("entry", {minijs::Value(7.0)}, bad.code->entry);
+    EXPECT(false);
+  } catch (const minijs::RuntimeError& error) {
+    EXPECT(std::string_view(error.what()) == "RuntimeError: local slot out of bounds");
+  }
+#endif
+}
+
 void testJitDispatchInlineNegateFallbackPreservesTypeError() {
   minijs::VM vm;
   vm.setJitEnabled(true);
@@ -7148,6 +7295,9 @@ void runBytecodeTests() {
   testComparisonBranchFusionKeepsLogicalValuesAndSideEffects();
   testComparisonBranchFusionMatchesDecodedWithNaNAndFallback();
   testComparisonBranchFusionPreservesIndependentJumpEntry();
+  testNativeLocalNumberUpdateFusionAndSpecialNumbers();
+  testLocalNumberUpdatePreservesFallbackRetainedValuesAndCaptures();
+  testLocalNumberUpdateDoesNotFuseIndependentPopEntry();
   testJitDispatchInlineNegateFallbackPreservesTypeError();
   testJitDispatchInlineAddRunsNumberFastPath();
   testJitDispatchInlineAddFallbackPreservesStringConcat();
