@@ -698,3 +698,43 @@ Windows x64 扩展 Constant + SetLocal + Pop 合并。Boolean 目标直接写入
 合计减少 570,000 次 helper 调用。Boolean 初始化仍有 19 次压常量，数字初始化、回边和返回也仍保留。此微基准的目标均为 Boolean，不命中类型 fallback；专项测试另行确认完整赋值 helper。
 
 CTest 33/33 通过。测试覆盖布尔真假、Number 路径回归、类型变化、资源型旧值、闭包捕获/GC、方法帧、保留结果、非法索引/目标、临时目标及独立中间入口。
+
+### 布尔局部复制对照
+
+新增 `examples/baseline_boolean_copy_benchmark.js`，每轮执行 `flag = yes` 和 `flag = no`，随后用 if 校验真假并累计。20 次函数调用、每次 5000 轮，结果为 `100000`。修改前来自提交 `65bdb9f`，本机对照二进制为忽略的 `build-verify-release/boolean-copy-before-65bdb9f.exe`。
+
+Windows x64 扩展已有 GetLocal + SetLocal + Pop 合并：同类型 Boolean 直接复制一个字节载荷，Number 优先路径不变，其它组合仍使用完整 CopyLocal helper。没有修改 VM/helper ABI 或 bytecode 格式。
+
+关闭 helper 采样，每组每版本 3 轮预热、15 轮正式采样，第二组交换前后版本顺序。每次采样使用新 VM，包含 JIT 编译和冷调用：
+
+| 对照组 | 修改前 JIT on | 修改后 JIT on | 前 / 后 | 修改前 JIT off | 修改后 JIT off |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 10.343 ms | 5.166 ms | 2.002x | 74.482 ms | 81.228 ms |
+| 2 | 10.408 ms | 4.978 ms | 2.091x | 75.534 ms | 77.454 ms |
+| 3 | 10.372 ms | 5.066 ms | 2.047x | 72.061 ms | 72.535 ms |
+
+三组 JIT on 中位数降低约 50.1%、52.2%、51.2%；所有结果为 `100000`，baseline 入口计数为 19。普通 VM 仍有系统波动，这是布尔复制循环的专项收益，不能外推为任意程序的固定加速比。
+
+另行单轮开启 helper 采样，仅核对调用数量，不以采样耗时计算收益：
+
+| helper | 修改前调用 | 修改后调用 |
+| --- | ---: | ---: |
+| `CopyLocal` | 190,000 | 0 |
+| `PushConstant` | 57 | 57 |
+| `PushNumberSlot` | 38 | 38 |
+| `RecordLoopBackedge` | 95,000 | 95,000 |
+| `ReturnLocal` | 19 | 19 |
+
+合计减少 190,000 次 helper 调用。布尔/数字初始化、循环回边和返回仍保留；本微基准不会命中跨类型 fallback，专项测试另行验证该路径。
+
+同样以 3 轮预热、15 轮采样核对原数字局部复制基准，结果均为 `249950000`，baseline 入口计数均为 19：
+
+| 对照组 | 修改前 JIT on | 修改后 JIT on | 修改前 JIT off | 修改后 JIT off |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 3.822 ms | 4.061 ms | 55.408 ms | 65.945 ms |
+| 2（交换顺序） | 4.029 ms | 3.742 ms | 68.660 ms | 56.904 ms |
+| 3 | 3.817 ms | 3.751 ms | 56.910 ms | 60.350 ms |
+
+数字复制 JIT on 三组方向不一致，没有测得稳定退化或额外收益；保留原 Number guard/复制指令，仅改变其失败分支的目标。更大负载下仍应继续观测代码体积与指令缓存影响。
+
+CTest 34/34 通过。测试覆盖全部布尔组合、false 成功状态、数字逐位复制、类型变化与资源型旧目标、同槽自赋值、捕获/GC、方法帧、保留结果、非法源/目标、临时槽及独立 SetLocal/Pop 跳转入口。

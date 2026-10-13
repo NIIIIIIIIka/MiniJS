@@ -8080,8 +8080,10 @@ void testLocalCopyAbiPreservesFailureStackAndTemporaryTarget() {
     EXPECT(minijsBaselinePop(frame));
     EXPECT(minijsBaselineReturnLocal(frame, 0));
   };
-  EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("copy",
-      {minijs::Value(7.0), minijs::Value(0.0)}, entry).equals(minijs::Value(7.0)));
+  for (const auto& value : {minijs::Value(7.0), minijs::Value(false), minijs::Value(true)}) {
+    EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("copy",
+        {value, minijs::Value(0.0)}, entry).equals(value));
+  }
 }
 
 void testNativeLocalCopyPayloadFallbackAndBoundaries() {
@@ -8109,6 +8111,14 @@ void testNativeLocalCopyPayloadFallbackAndBoundaries() {
         "copy", {minijs::Value(number), minijs::Value(0.0)}, compiled.code->entry);
     const double actual = result.asNumber();
     EXPECT(std::memcmp(&number, &actual, sizeof(number)) == 0);
+  }
+  // false 载荷不是失败状态；同时覆盖真假互相覆盖和相同值复制。
+  for (const bool source : {false, true}) {
+    for (const bool target : {false, true}) {
+      EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("copy",
+          {minijs::Value(source), minijs::Value(target)}, compiled.code->entry)
+                 .equals(minijs::Value(source)));
+    }
   }
 #if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
   EXPECT(compiled.code->bytecodeOffsetToNativeOffset[0] == compiled.code->bytecodeOffsetToNativeOffset[2]);
@@ -8144,6 +8154,11 @@ void testNativeLocalCopyPayloadFallbackAndBoundaries() {
     EXPECT(code.succeeded());
     EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("copy",
         {minijs::Value(7.0), minijs::Value(std::string("old"))}, code.code->entry).equals(minijs::Value(7.0)));
+    for (const bool source : {false, true}) {
+      EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("copy",
+          {minijs::Value(source), minijs::Value(std::string("old"))}, code.code->entry)
+                 .equals(minijs::Value(source)));
+    }
   }
   for (const auto& slots : {std::pair<std::uint8_t,std::uint8_t>{255, 0}, {0, 255}}) {
     const auto code = compileCopy(slots.first, slots.second);
@@ -8151,6 +8166,13 @@ void testNativeLocalCopyPayloadFallbackAndBoundaries() {
     try {
       vm.debugExecuteGlobalFunctionBaselineEntry("copy",
           {minijs::Value(7.0), minijs::Value(0.0)}, code.code->entry);
+      EXPECT(false);
+    } catch (const minijs::RuntimeError& error) {
+      EXPECT(std::string_view(error.what()) == "RuntimeError: local slot out of bounds");
+    }
+    try {
+      vm.debugExecuteGlobalFunctionBaselineEntry("copy",
+          {minijs::Value(false), minijs::Value(true)}, code.code->entry);
       EXPECT(false);
     } catch (const minijs::RuntimeError& error) {
       EXPECT(std::string_view(error.what()) == "RuntimeError: local slot out of bounds");
@@ -8171,6 +8193,43 @@ void testNativeLocalCopyPayloadFallbackAndBoundaries() {
     EXPECT(code.code->bytecodeOffsetToNativeOffset[5] != code.code->bytecodeOffsetToNativeOffset[5 + jump]);
     EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("copy",
         {minijs::Value(7.0), minijs::Value(2.0)}, code.code->entry).equals(minijs::Value(jump == 2 ? 7.0 : 2.0)));
+    EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("copy",
+        {minijs::Value(false), minijs::Value(true)}, code.code->entry)
+               .equals(minijs::Value(jump != 2)));
+  }
+}
+
+void testBooleanLocalCopyCapturesMethodsAndTypeChanges() {
+  for (const bool enabled : {false, true}) {
+    minijs::VM vm;
+    vm.setJitEnabled(enabled);
+    vm.setJitCallThreshold(1);
+    const auto result = runBytecodeProgramOnVm(vm, R"(
+      function copy(source, target) { target = source; return target; }
+      function self(value) { value = value; return value; }
+      function retained(source, target) { return target = source; }
+      function outer(source) {
+        let target = true;
+        function read() { return target; }
+        target = source;
+        return read;
+      }
+      class Box { copy(source, target) { target = source; return target; } }
+      copy(false, true); self(false); retained(false, true); outer(false);
+      let box = Box(); box.copy(false, true);
+      let object = { n: 9 };
+      let read = outer(false);
+      [copy(false, true), copy(true, false), self(false), self(true),
+       retained(false, true), read(), box.copy(false, true),
+       copy(false, object), copy(object, true) == object,
+       copy(7, false), copy(false, 7), copy(true, "old"),
+       copy(false, null), copy(false, undefined), copy(false, [1]),
+       copy(false, read), copy(false, box), copy(false, box.copy), object.n];
+    )");
+    EXPECT(result.toString() ==
+        "[false, true, false, true, false, false, false, false, true, 7, false, true, false, false, false, false, false, false, 9]");
+    vm.collectGarbage();
+    EXPECT(runBytecodeProgramOnVm(vm, "read();").equals(minijs::Value(false)));
   }
 }
 
@@ -9281,6 +9340,7 @@ void runBytecodeTests() {
   testNativeConstantAssignmentBitsAndIndependentEntries();
   testLocalCopyAbiPreservesFailureStackAndTemporaryTarget();
   testNativeLocalCopyPayloadFallbackAndBoundaries();
+  testBooleanLocalCopyCapturesMethodsAndTypeChanges();
   testLocalReturnKeepsIdentityClosuresMethodsAndReceiverRule();
   testLocalReturnIndependentEntryAndInvalidSlot();
   testNumberReturnKeepsCapturedValuesAndOtherConstantTypes();

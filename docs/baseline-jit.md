@@ -1293,7 +1293,7 @@ mov eax, 1                          ; B8 01 00 00 00：操作成功
 
 这不是浮点运算，只搬运 64 位载荷，所以保留负零和 NaN 位编码，也支持源目标同槽。目标必须已经是 Number，否则直接写数字字段会遗漏旧 Value 的资源释放和类型更新。
 
-guard 未命中时，调用一次 `minijsBaselineCopyLocal(frame, sourceSlot, targetSlot)`。正常目标槽采用完整 Value 复制后移动赋值，支持类型变化、字符串、数组、对象、闭包和实例，不复制它们的运行时身份。该过程不创建 VM GC 对象；源值仍由 VM 栈持有，不需要新增 temporaryRoots。
+Number guard 未命中时，先尝试下面的 Boolean 复制路径；两种快路径均未命中时，调用一次 `minijsBaselineCopyLocal(frame, sourceSlot, targetSlot)`。正常目标槽采用完整 Value 复制后移动赋值，支持类型变化、字符串、数组、对象、闭包和实例，不复制它们的运行时身份。该过程不创建 VM GC 对象；源值仍由 VM 栈持有，不需要新增 temporaryRoots。
 
 ```asm
 mov rcx, rbx                        ; 第一个参数：BaselineFrame*
@@ -1306,6 +1306,31 @@ call rax
 特殊手写字节码的目标槽可能是 GetLocal 刚压入的临时槽。目标不在原栈中时，helper 按原顺序执行 GetLocal、SetLocal、Pop：临时目标合法时成功，目标仍越界时在成功压栈后报错。源越界则在压栈前报错；均保留 `local slot out of bounds` 及错误时的栈状态。
 
 三个 decoded 指令保留，native offset 指向同一合并单元；独立中间入口禁止合并。测试覆盖载荷逐位复制、完整 Value fallback、类型变化、自赋值、保留结果、捕获槽/GC、this、对象与闭包身份、独立 SetLocal/Pop 入口、非法源/目标槽及新增临时槽边界。新增 `examples/baseline_local_copy_benchmark.js` 与 CLI baseline smoke，Release 配对结果见 [性能报告](baseline-numeric-benchmark.md)。
+
+### Windows x64 布尔局部复制
+
+同样匹配 `GetLocal sourceSlot`、`SetLocal targetSlot`、`Pop`，不增加新 opcode。原 Number 路径优先；未命中时重新执行双槽边界、编号溢出与 Boolean 类型检查。不能复用 Number guard 失败时可能尚未准备好的地址。
+
+两槽都已是 Boolean 时，等价 C++ 如下：
+
+```cpp
+target.boolean = source.boolean;
+return true; // 操作成功；即使复制 false，也不是执行失败。
+```
+
+rdx 指向源 Value，rcx 指向目标 Value。disp32 是 `Value::booleanOffset()` 的四字节小端编码，每条指令与机器码分别如下：
+
+```asm
+movzx eax, byte ptr [rdx + booleanOffset] ; 0F B6 82 + disp32：读取 0/1 并清除高位
+mov byte ptr [rcx + booleanOffset], al    ; 88 81 + disp32：写入目标的一个字节
+mov eax, 1                               ; B8 01 00 00 00：返回操作成功
+```
+
+先读后写，因此同槽自赋值也正确。无需修改类型标签、创建临时 Value、改变 stack_ 深度或调用 SyncStackSize。被闭包捕获但尚未关闭的局部值仍在同一个真实栈槽中，闭包读取会看到更新；不新增 GC 对象或根集合。
+
+源或目标不是 Boolean/Number 同类型组合时仍走完整 CopyLocal helper。例如 Number 覆盖 Boolean、Boolean 覆盖对象或字符串时，必须完整赋值以更新类型、处理旧值的资源。非法源槽、非法目标槽和 GetLocal 临时目标继续保留原有执行顺序及错误栈快照。
+
+独立 SetLocal/Pop 跳转入口禁止合并；`return target = source` 保留赋值结果，不参与三条指令合并。ARM64 和 decoded 路径不变。测试覆盖四种真假组合、自赋值、类型变化、资源型目标、方法帧、捕获/GC、保留结果和错误边界；新增 `examples/baseline_boolean_copy_benchmark.js`，Release 数据见 [性能报告](baseline-numeric-benchmark.md)。
 
 ### Windows x64 数字常量赋值合并
 

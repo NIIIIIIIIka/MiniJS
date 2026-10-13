@@ -725,7 +725,7 @@ class WindowsX64Emitter {
     return patchBranchTo(done, offset(), false, error);
   }
 
-  // 等价于 target = source；只有两槽都是数字才直接复制 double 载荷。
+  // 等价于 target = source；同类型 Number/Boolean 直接复制载荷，不创建临时槽。
   bool emitLocalCopyOrRuntimeCall(std::uint32_t sourceSlot, std::uint32_t targetSlot,
                                  std::string& error) {
     std::vector<std::size_t> fallbacks;
@@ -737,6 +737,22 @@ class WindowsX64Emitter {
     emit({0xB8});  // mov eax, 1：栈深度不变，无需调用同步 helper。
     emit32(1);
     const std::size_t done = emitJumpPlaceholder();
+    const std::size_t booleanPath = offset();
+    for (const auto patch : fallbacks) {
+      if (!patchBranchTo(patch, booleanPath, true, error)) return false;
+    }
+    // Number guard 失败前未改栈；重新检查槽边界和 Boolean 类型，不能复用未就绪的地址。
+    fallbacks.clear();
+    if (!emitLoadTypedLocalPair(sourceSlot, targetSlot, Value::booleanTypeTag(), fallbacks, error)) {
+      return false;
+    }
+    emit({0x0F, 0xB6, 0x82});  // movzx eax, byte ptr [rdx + booleanOffset]：读源 0/1。
+    emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
+    emit({0x88, 0x81});  // mov byte ptr [rcx + booleanOffset], al：写目标，不改类型。
+    emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
+    emit({0xB8});  // mov eax, 1：赋值成功，不是刚复制的布尔真假值。
+    emit32(1);
+    const std::size_t booleanDone = emitJumpPlaceholder();
     const std::size_t fallback = offset();
     for (const auto patch : fallbacks) {
       if (!patchBranchTo(patch, fallback, true, error)) return false;
@@ -746,7 +762,8 @@ class WindowsX64Emitter {
     emitMoveU32ToThirdArg(targetSlot);
     emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselineCopyLocal));
     emitCallHelper();
-    return patchBranchTo(done, offset(), false, error);
+    return patchBranchTo(done, offset(), false, error) &&
+           patchBranchTo(booleanDone, offset(), false, error);
   }
 
   // 右操作数也是局部值；所有槽通过 guard，运算完成后才写入目标。
