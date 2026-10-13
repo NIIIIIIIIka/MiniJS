@@ -1535,6 +1535,39 @@ guard 未命中前不改栈，fallback 按原 GetLocal、PushConstant、Equal �
 
 token、Parser、AST、Interpreter、bytecode 格式、ARM64/decoded 不变。三条 native offset 指向同一合并单元。测试覆盖真假常量与源组合、返回/声明/短路值、源值保持、捕获/GC、方法帧、跨类型 fallback/helper 数量、80 个结果的扩容、非法源槽及两种独立中间入口。新增 `examples/baseline_boolean_constant_expression_benchmark.js`，配对结果见 [性能报告](baseline-numeric-benchmark.md)。
 
+### Windows x64 保留结果的 Null/Undefined 相等表达式
+
+`return value == null/undefined`、`let same = value == null`、数组元素和保留短路值的表达式合并 GetLocal + Constant + Equal。Constant/Equal 不能是独立跳转入口；丢弃结果的赋值和直接分支仍优先匹配专门路径。Less/Greater 和其它常量不参与此扩展。
+
+保留原 `emitBooleanConstantComparisonExpression()` 的结构，空值常量单独使用 `emitEmptyConstantComparisonExpression()`；结果槽构造和完整 fallback 的执行契约与原流程一致。共享 emitter 候选在布尔基准复核中出现持续较慢信号，未保留；分离实现不是对具体退化根因的证明。Boolean 仍验证源类型并比较载荷；空值常量只验证源槽边界和编号溢出，任意有效源类型都能通过标签比较得到结果。null 与 undefined 不相等，数字、Boolean、字符串或对象也不会被转成空值。
+
+guard 通过后，复用 PushNumberSlot 在真实栈上构造完整、无资源的占位 Value 并刷新帧快照。helper 可能扩容，返回后重新定位源地址；比较后将新槽写为 Boolean。等价 C++ 如下：
+
+```cpp
+stack.emplace_back(0.0);
+refreshFrameStack();
+bool result = stack[sourceIndex].type == constantType; // Null 或 Undefined
+stack.back().boolean = result;
+stack.back().type = Boolean;
+```
+
+净栈变化为 +1，不是无栈执行。只转换刚构造的无资源占位值，不能用此方式修改携带旧资源的 Value。源对象身份和内容不变；后续返回、局部声明、数组或短路代码消费完整 Boolean 结果。
+
+helper 成功后 rdx 指向重新定位的源 Value。disp32 为四字节小端字段偏移，imm32 为类型标签：
+
+```asm
+cmp dword ptr [rdx + typeOffset], typeTag ; 81 BA + disp32 + imm32：比较 Null/Undefined 标签
+sete al                                  ; 0F 94 C0：同类型为 1，其它为 0
+; 重新计算 rcx=栈顶地址，不覆盖 al。
+mov byte ptr [rcx + booleanOffset], al    ; 88 81 + disp32：写比较结果
+mov dword ptr [rcx + typeOffset], Boolean ; C7 81 + disp32 + imm32：写完整结果类型
+mov eax, 1                               ; B8 01 00 00 00：false 结果也成功
+```
+
+有效源类型不同直接为 false，不调用类型 fallback。非法源槽仍按原 GetLocal、PushConstant、Equal 顺序回退，每步失败立即退出；占位构造失败不重做 fallback。地址不跨 helper 使用，GC 根仍是真实栈，不新增 VM GC 对象或根集合。
+
+token、Parser、AST、Interpreter、bytecode 格式、ARM64/decoded 不变。三个 native offset 指向同一合并单元。测试覆盖相同/交叉空值类型、其它有效源类型、完整结果、源对象身份、声明/返回/短路值、捕获/GC、方法帧、80 个结果及资源源值的扩容、非法源槽和两种独立中间入口。新增 `examples/baseline_empty_constant_expression_benchmark.js`，配对结果见 [性能报告](baseline-numeric-benchmark.md)。
+
 ### Windows x64 比较赋值合并
 
 `flag = left < right;`、`flag = left > 2;` 和 `flag = left == right;` 支持五条指令合并：

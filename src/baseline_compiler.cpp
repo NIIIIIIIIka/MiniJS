@@ -985,6 +985,57 @@ class WindowsX64Emitter {
            patchBranchTo(done, offset(), false, error);
   }
 
+  // 空值表达式单独发射，保留原 Boolean emitter 的结构与类型 guard。
+  bool emitEmptyConstantComparisonExpression(std::uint32_t sourceSlot, std::uint32_t constantIndex,
+                                             std::uint32_t typeTag, std::string& error) {
+    if (!validateInlineValueSize("empty constant expression", error)) return false;
+    emitLoadLocalAddress(sourceSlot);
+    const auto overflow = emitJbPlaceholder();
+    emit({0x48, 0x3B, 0x83});  // cmp rax, [rbx + stackSize]：构造前检查源槽。
+    emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackSize)));
+    const auto outOfBounds = emitJaePlaceholder();
+    emitMoveFrameToFirstArg();
+    emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselinePushNumberSlot));
+    emitCallHelper();
+    const auto pushFailed = emitJumpIfFalsePlaceholder();
+    emitLoadLocalAddress(sourceSlot);  // 扩容后重新定位源，不复用旧指针。
+    emitLocalPointerFromIndex();
+    emit({0x81, 0xBA});  // cmp dword ptr [rdx + typeOffset], Null/Undefined
+    emit32(static_cast<std::uint32_t>(Value::typeOffset()));
+    emit32(typeTag);
+    emit({0x0F, 0x94, 0xC0});  // sete al
+    emitLoadTopPointer();  // 保留 al，重新定位 rcx=完整占位结果槽。
+    emit({0x88, 0x81});  // mov byte ptr [rcx + booleanOffset], al
+    emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
+    emit({0xC7, 0x81});  // mov dword ptr [rcx + typeOffset], Boolean
+    emit32(static_cast<std::uint32_t>(Value::typeOffset()));
+    emit32(Value::booleanTypeTag());
+    emit({0xB8});  // mov eax, 1：false 也成功，净压入一个结果。
+    emit32(1);
+    const auto done = emitJumpPlaceholder();
+    const auto fallback = offset();
+    if (!patchBranchTo(overflow, fallback, true, error) ||
+        !patchBranchTo(outOfBounds, fallback, true, error)) return false;
+    std::vector<std::size_t> failures;
+    emitMoveFrameToFirstArg();
+    emitMoveU32ToSecondArg(sourceSlot);
+    emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselineGetLocal));
+    emitCallHelper();
+    failures.push_back(emitJumpIfFalsePlaceholder());
+    emitMoveFrameToFirstArg();
+    emitMoveU32ToSecondArg(constantIndex);
+    emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselinePushConstant));
+    emitCallHelper();
+    failures.push_back(emitJumpIfFalsePlaceholder());
+    emitMoveFrameToFirstArg();
+    emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselineEqual));
+    emitCallHelper();
+    for (const auto patch : failures) {
+      if (!patchBranchTo(patch, offset(), true, error)) return false;
+    }
+    return patchBranchTo(pushFailed, offset(), true, error) && patchBranchTo(done, offset(), false, error);
+  }
+
   // Boolean/Null/Undefined 常量相等赋值：只更新已验证的 Boolean 目标。
   bool emitScalarConstantComparisonAssignment(std::uint32_t sourceSlot, std::uint32_t constantIndex,
                                               const Value& constant, std::uint32_t targetSlot, std::string& error) {
@@ -2069,14 +2120,22 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
     }
     if (instruction.opcode == Opcode::GetLocal && index + 2 < code->instructions.size() &&
         code->instructions[index + 1].opcode == Opcode::Constant &&
-        function.chunk.constant(code->instructions[index + 1].operands[0]).isBoolean() &&
+        (function.chunk.constant(code->instructions[index + 1].operands[0]).isBoolean() ||
+         function.chunk.constant(code->instructions[index + 1].operands[0]).isNull() ||
+         function.chunk.constant(code->instructions[index + 1].operands[0]).isUndefined()) &&
         code->instructions[index + 2].opcode == Opcode::Equal &&
         !branchTargets[verification.instructionOffsets[index + 1]] &&
         !branchTargets[verification.instructionOffsets[index + 2]]) {
       std::string inlineError;
       const auto constantIndex = code->instructions[index + 1].operands[0];
-      if (!emitter.emitBooleanConstantComparisonExpression(instruction.operands[0], constantIndex,
-              function.chunk.constant(constantIndex).isTruthy(), inlineError)) return failure(inlineError);
+      const auto& constant = function.chunk.constant(constantIndex);
+      if (constant.isBoolean()) {
+        if (!emitter.emitBooleanConstantComparisonExpression(instruction.operands[0], constantIndex,
+                constant.isTruthy(), inlineError)) return failure(inlineError);
+      } else {
+        if (!emitter.emitEmptyConstantComparisonExpression(instruction.operands[0], constantIndex,
+                constant.isNull() ? Value::nullTypeTag() : Value::undefinedTypeTag(), inlineError)) return failure(inlineError);
+      }
       epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
       for (std::size_t inner = 1; inner <= 2; ++inner) {
         code->bytecodeOffsetToNativeOffset[verification.instructionOffsets[index + inner]] =
