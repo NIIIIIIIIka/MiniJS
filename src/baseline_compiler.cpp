@@ -906,6 +906,56 @@ class WindowsX64Emitter {
     return patchBranchTo(done, offset(), false, error);
   }
 
+  // Boolean 常量相等赋值：目标与源均已是 Boolean 时直接写一个字节。
+  bool emitBooleanConstantComparisonAssignment(std::uint32_t sourceSlot, std::uint32_t constantIndex,
+                                               bool constant, std::uint32_t targetSlot, std::string& error) {
+    std::vector<std::size_t> fallbacks;
+    if (!emitLoadTypedLocalPair(targetSlot, targetSlot, Value::booleanTypeTag(), fallbacks, error)) return false;
+    emit({0x49, 0x89, 0xD2});  // mov r10, rdx：保存已验证的目标地址。
+    if (!emitLoadTypedLocalPair(sourceSlot, sourceSlot, Value::booleanTypeTag(), fallbacks, error)) return false;
+    emit({0x0F, 0xB6, 0x82});  // movzx eax, byte ptr [rdx + booleanOffset]：读源 0/1。
+    emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
+    emit({0x3C, static_cast<std::uint8_t>(constant ? 1 : 0)});  // cmp al, imm8：比较真假常量。
+    emit({0x0F, 0x94, 0xC0});  // sete al：相等为 1，不等为 0。
+    emit({0x41, 0x88, 0x82});  // mov byte ptr [r10 + booleanOffset], al：先读完源再写目标。
+    emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
+    emit({0xB8});  // mov eax, 1：写入 false 也表示赋值成功。
+    emit32(1);
+    const auto done = emitJumpPlaceholder();
+    const auto fallback = offset();
+    for (const auto patch : fallbacks) {
+      if (!patchBranchTo(patch, fallback, true, error)) return false;
+    }
+    // guard 不抛错、不改栈；fallback 保留源读取、常量读取、比较、赋值、Pop 的顺序。
+    std::vector<std::size_t> failures;
+    emitMoveFrameToFirstArg();
+    emitMoveU32ToSecondArg(sourceSlot);
+    emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselineGetLocal));
+    emitCallHelper();
+    failures.push_back(emitJumpIfFalsePlaceholder());
+    emitMoveFrameToFirstArg();
+    emitMoveU32ToSecondArg(constantIndex);
+    emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselinePushConstant));
+    emitCallHelper();
+    failures.push_back(emitJumpIfFalsePlaceholder());
+    emitMoveFrameToFirstArg();
+    emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselineEqual));
+    emitCallHelper();
+    failures.push_back(emitJumpIfFalsePlaceholder());
+    emitMoveFrameToFirstArg();
+    emitMoveU32ToSecondArg(targetSlot);
+    emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselineSetLocal));
+    emitCallHelper();
+    failures.push_back(emitJumpIfFalsePlaceholder());
+    emitMoveFrameToFirstArg();
+    emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselinePop));
+    emitCallHelper();
+    for (const auto patch : failures) {
+      if (!patchBranchTo(patch, offset(), true, error)) return false;
+    }
+    return patchBranchTo(done, offset(), false, error);
+  }
+
   // 比较赋值：仅更新已存在的 Boolean 目标；读取完成后再写，支持源目标别名。
   bool emitComparisonAssignment(std::uint32_t leftSlot, std::uint32_t rightSlot,
                                  bool constantRight, std::uint64_t bits, std::uint32_t targetSlot,
@@ -1767,6 +1817,23 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
       bool independentEntry = false;
       for (std::size_t inner = 1; inner <= 4; ++inner) {
         independentEntry = independentEntry || branchTargets[verification.instructionOffsets[index + inner]];
+      }
+      if (rightOperand.opcode == Opcode::Constant && arithmetic.opcode == Opcode::Equal &&
+          function.chunk.constant(rightOperand.operands[0]).isBoolean() &&
+          assign.opcode == Opcode::SetLocal && code->instructions[index + 4].opcode == Opcode::Pop &&
+          !independentEntry) {
+        std::string inlineError;
+        if (!emitter.emitBooleanConstantComparisonAssignment(instruction.operands[0], rightOperand.operands[0],
+                function.chunk.constant(rightOperand.operands[0]).isTruthy(), assign.operands[0], inlineError)) {
+          return failure(inlineError);
+        }
+        epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+        for (std::size_t inner = 1; inner <= 4; ++inner) {
+          code->bytecodeOffsetToNativeOffset[verification.instructionOffsets[index + inner]] =
+              code->bytecodeOffsetToNativeOffset[bytecodeOffset];
+        }
+        index += 4;
+        continue;
       }
       std::uintptr_t updateHelper = isArithmetic || isComparison ? constantBinaryHelper(index + 1) : 0;
       if ((isArithmetic || isComparison) && rightOperand.opcode == Opcode::GetLocal) {

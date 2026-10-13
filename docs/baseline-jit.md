@@ -1545,6 +1545,36 @@ mov eax, 1                               ; B8 01 00 00 00：写入 false 也返�
 
 ARM64/decoded、token、Parser、AST、Interpreter 和 bytecode 格式不变。测试覆盖全部布尔组合与旧目标真假、三种目标位置、同槽比较、源值保持、资源型回退、捕获/GC、方法帧、保留结果、非法槽、临时槽及四种独立中间入口。新增 `examples/baseline_boolean_equality_assign_benchmark.js`，实测数据见 [性能报告](baseline-numeric-benchmark.md)。
 
+### Windows x64 布尔常量相等结果赋值
+
+`target = flag == true/false;` 现在合并 GetLocal + Boolean Constant + Equal + SetLocal + Pop。四条中间指令不能是独立跳转入口，结果必须由紧邻 Pop 丢弃；需要保留结果的 `return target = flag == true` 仍走原路径。不会将 Boolean 的 Less/Greater 或其它常量类型带入此快路径。
+
+先检查目标已是 Boolean 并将地址保存到 r10，再检查源槽边界、编号溢出和 Boolean 类型。全部 guard 通过前不修改栈或 Value。等价 C++ 如下：
+
+```cpp
+bool result = source.boolean == constantBoolean;
+target.boolean = result;
+return true; // 写入 false 同样表示赋值成功。
+```
+
+编译期已确认常量为 Boolean，isTruthy 只提取 0/1；不是把其它 Value 转成真假值。源槽地址在 rdx，目标在 r10。disp32 是 `Value::booleanOffset()` 的四字节小端编码：
+
+```asm
+mov r10, rdx                            ; 49 89 D2：保存已验证的目标
+; 随后验证和重新定位源地址，不调用 helper。
+movzx eax, byte ptr [rdx + booleanOffset] ; 0F B6 82 + disp32：读源 0/1
+cmp al, constantBoolean                  ; 3C 00 或 3C 01：比较真假常量
+sete al                                  ; 0F 94 C0：相等为 1，不等为 0
+mov byte ptr [r10 + booleanOffset], al    ; 41 88 82 + disp32：读完源再覆盖目标
+mov eax, 1                               ; B8 01 00 00 00：赋值成功
+```
+
+目标与源可以同槽，例如 `flag = flag == false` 会正确翻转 Boolean；独立目标不会修改源。快路径不压常量、不创建临时 Value、不改变真实栈深度、不调用 SyncStackSize，不新增 GC 对象或根。捕获目标的 upvalue 仍读取原栈槽；r10 不跨 helper 使用。
+
+guard 失败后按完整 GetLocal、PushConstant、Equal、SetLocal、Pop 顺序执行，每步失败立即退出。常量从当前 closure 的实际常量池读取，跨类型源继续完整 Value 相等；旧目标的资源释放与类型更新仍通过完整赋值。目标 guard 不能提前抛错：非法源优先于非法目标，非法目标在成功比较之后才报错；临时结果槽目标仍由原顺序支持。
+
+token、Parser、AST、Interpreter、bytecode 格式、ARM64 和 decoded 不变。五条 native offset 指向同一合并单元，不提供独立 deopt 恢复点。测试覆盖真假常量、源/旧目标四种组合、同槽更新、资源型回退及 helper 计数、捕获/GC、方法帧、源值保持、保留结果、非法源/目标、临时结果槽和四种独立中间入口。新增 `examples/baseline_boolean_constant_assign_benchmark.js`，数据见 [性能报告](baseline-numeric-benchmark.md)。
+
 ### Windows x64 局部条件分支合并
 
 `if (flag)`、`while (flag)` 会先把局部值复制到操作数栈，再测试真假，并在真假两条路径上各自 Pop 条件副本。满足以下结构时，Windows x64 可以直接读局部槽：
