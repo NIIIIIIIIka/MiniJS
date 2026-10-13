@@ -796,14 +796,21 @@ class WindowsX64Emitter {
   }
 
   // 直接比较并返回三态分支值，不构造操作数或 Boolean 结果槽。
-  bool emitLocalComparisonBranch(std::uint32_t leftSlot, std::uint32_t rightSlot,
-                                  Opcode operation, std::string& error) {
+  bool emitComparisonBranch(std::uint32_t leftSlot, std::uint32_t rightOperand,
+                            Opcode operation, bool constantRight, std::uint64_t bits, std::string& error) {
     std::vector<std::size_t> fallbacks;
-    if (!emitLoadNumberLocalPair(leftSlot, rightSlot, fallbacks, error)) return false;
+    if (!emitLoadNumberLocalPair(leftSlot, constantRight ? leftSlot : rightOperand, fallbacks, error)) return false;
     emit({0xF2, 0x0F, 0x10, 0x82});  // movsd xmm0, [rdx + numberOffset]
     emit32(static_cast<std::uint32_t>(Value::numberOffset()));
-    emit({0x66, 0x0F, 0x2E, 0x81});  // ucomisd xmm0, [rcx + numberOffset]
-    emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+    if (constantRight) {
+      emit({0x48, 0xB8});  // mov rax, bits：常量的原始 double 位编码。
+      emit64(bits);
+      emit({0x66, 0x48, 0x0F, 0x6E, 0xC8});  // movq xmm1, rax：复制位，不转换整数。
+      emit({0x66, 0x0F, 0x2E, 0xC1});  // ucomisd xmm0, xmm1
+    } else {
+      emit({0x66, 0x0F, 0x2E, 0x81});  // ucomisd xmm0, [rcx + numberOffset]
+      emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+    }
     if (operation == Opcode::Greater) {
       emit({0x0F, 0x97, 0xC0});  // seta al：有序且大于。
     } else {
@@ -819,9 +826,10 @@ class WindowsX64Emitter {
     }
     emitMoveFrameToFirstArg();
     emitMoveU32ToSecondArg(leftSlot);
-    emitMoveU32ToThirdArg(rightSlot);
+    emitMoveU32ToThirdArg(rightOperand);
     emitMoveU32ToFourthArg(static_cast<std::uint32_t>(operation));
-    emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselineCompareLocalsTruthy));
+    emitLoadHelper(constantRight ? reinterpret_cast<std::uintptr_t>(&minijsBaselineCompareLocalConstantTruthy)
+                                : reinterpret_cast<std::uintptr_t>(&minijsBaselineCompareLocalsTruthy));
     emitCallHelper();
     return patchBranchTo(done, offset(), false, error);
   }
@@ -1714,6 +1722,39 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
         continue;
       }
     }
+    if (instruction.opcode == Opcode::GetLocal && index + 4 < code->instructions.size() &&
+        code->instructions[index + 1].opcode == Opcode::Constant &&
+        function.chunk.constant(code->instructions[index + 1].operands[0]).isNumber() &&
+        (code->instructions[index + 2].opcode == Opcode::Less ||
+         code->instructions[index + 2].opcode == Opcode::Greater ||
+         code->instructions[index + 2].opcode == Opcode::Equal) &&
+        code->instructions[index + 3].opcode == Opcode::JumpIfFalse &&
+        code->instructions[index + 4].opcode == Opcode::Pop) {
+      bool independentEntry = false;
+      for (std::size_t inner = 1; inner <= 4; ++inner) {
+        independentEntry = independentEntry || branchTargets[verification.instructionOffsets[index + inner]];
+      }
+      const auto falseIndex = code->bytecodeOffsetToInstructionIndex[code->instructions[index + 3].jumpTarget];
+      if (!independentEntry && falseIndex < code->instructions.size() &&
+          falseIndex + 1 < code->instructions.size() && code->instructions[falseIndex].opcode == Opcode::Pop) {
+        const auto constantIndex = code->instructions[index + 1].operands[0];
+        const double number = function.chunk.constant(constantIndex).asNumber();
+        std::uint64_t bits = 0;
+        std::memcpy(&bits, &number, sizeof(bits));
+        std::string inlineError;
+        if (!emitter.emitComparisonBranch(instruction.operands[0], constantIndex,
+                code->instructions[index + 2].opcode, true, bits, inlineError)) return failure(inlineError);
+        branchPatches.push_back({emitter.emitJumpIfZeroPlaceholder(),
+            verification.instructionOffsets[falseIndex + 1], NativeBranchKind::Zero});
+        epiloguePatches.push_back({emitter.emitJumpIfNotOnePlaceholder(), NativeBranchKind::NotOne});
+        for (std::size_t inner = 1; inner <= 4; ++inner) {
+          code->bytecodeOffsetToNativeOffset[verification.instructionOffsets[index + inner]] =
+              code->bytecodeOffsetToNativeOffset[bytecodeOffset];
+        }
+        index += 4;
+        continue;
+      }
+    }
     if (instruction.opcode == Opcode::GetLocal && index + 2 < code->instructions.size() &&
         code->instructions[index + 1].opcode == Opcode::GetLocal &&
         !branchTargets[verification.instructionOffsets[index + 1]] &&
@@ -1741,8 +1782,8 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
           const auto falseIndex = code->bytecodeOffsetToInstructionIndex[code->instructions[index + 3].jumpTarget];
           if (falseIndex < code->instructions.size() && falseIndex + 1 < code->instructions.size() &&
               code->instructions[falseIndex].opcode == Opcode::Pop) {
-            if (!emitter.emitLocalComparisonBranch(instruction.operands[0],
-                    code->instructions[index + 1].operands[0], operation, inlineError)) return failure(inlineError);
+            if (!emitter.emitComparisonBranch(instruction.operands[0],
+                    code->instructions[index + 1].operands[0], operation, false, 0, inlineError)) return failure(inlineError);
             branchPatches.push_back({emitter.emitJumpIfZeroPlaceholder(),
                 verification.instructionOffsets[falseIndex + 1], NativeBranchKind::Zero});
             epiloguePatches.push_back({emitter.emitJumpIfNotOnePlaceholder(), NativeBranchKind::NotOne});

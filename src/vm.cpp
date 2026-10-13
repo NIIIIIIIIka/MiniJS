@@ -1524,17 +1524,18 @@ std::uint8_t VM::baselineRuntimeLocalTruthy(BaselineFrame& frame, std::uint32_t 
   return stack_[frame.slotStart + slot].isTruthy() ? 1 : 0;
 }
 
-std::uint8_t VM::baselineRuntimeCompareLocalsTruthy(BaselineFrame& frame, std::uint32_t leftSlot,
-                                                   std::uint32_t rightSlot, std::uint32_t operation) {
+std::uint8_t VM::baselineRuntimeCompareOperandsTruthy(BaselineFrame& frame, std::uint32_t leftSlot,
+    std::uint32_t rightOperand, std::uint32_t operation, bool constantRight) {
   validateBaselineRuntimeFrame(frame);
   if (operation != static_cast<std::uint32_t>(Opcode::Less) &&
       operation != static_cast<std::uint32_t>(Opcode::Greater) &&
       operation != static_cast<std::uint32_t>(Opcode::Equal)) {
     throw RuntimeError("unsupported local comparison opcode");
   }
-  // 保留原顺序，包括第二个槽指向第一次读取新增槽、越界或类型错误的状态。
+  // 先读左局部值，再读右局部值或常量；索引/类型错误保留原始顺序和失败栈。
   baselineRuntimeGetLocal(frame, leftSlot);
-  baselineRuntimeGetLocal(frame, rightSlot);
+  if (constantRight) baselineRuntimePushConstant(frame, rightOperand);
+  else baselineRuntimeGetLocal(frame, rightOperand);
   switch (static_cast<Opcode>(operation)) {
     case Opcode::Less: baselineRuntimeLess(frame); break;
     case Opcode::Greater: baselineRuntimeGreater(frame); break;

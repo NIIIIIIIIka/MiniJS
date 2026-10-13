@@ -792,7 +792,23 @@ extern "C" std::uint8_t minijsBaselineCompareLocalsTruthy(minijs::BaselineFrame*
   if (!frameCanRun(frame)) return 2;
   try {
     HelperProfileScope profile(*frame->vm, __func__);
-    return frame->vm->baselineRuntimeCompareLocalsTruthy(*frame, leftSlot, rightSlot, operation);
+    return frame->vm->baselineRuntimeCompareOperandsTruthy(*frame, leftSlot, rightSlot, operation, false);
+  } catch (const minijs::RuntimeError& error) {
+    markFailedFromException(frame, error);
+  } catch (const std::exception& error) {
+    markFailedFromException(frame, error);
+  } catch (...) {
+    markFailed(frame);
+  }
+  return 2;
+}
+
+extern "C" std::uint8_t minijsBaselineCompareLocalConstantTruthy(minijs::BaselineFrame* frame,
+    std::uint32_t leftSlot, std::uint32_t constantIndex, std::uint32_t operation) {
+  if (!frameCanRun(frame)) return 2;
+  try {
+    HelperProfileScope profile(*frame->vm, __func__);
+    return frame->vm->baselineRuntimeCompareOperandsTruthy(*frame, leftSlot, constantIndex, operation, true);
   } catch (const minijs::RuntimeError& error) {
     markFailedFromException(frame, error);
   } catch (const std::exception& error) {

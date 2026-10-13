@@ -1548,7 +1548,7 @@ Pop                            // 假路径清理结果
 ...
 ```
 
-后四条指令不能是独立跳转入口，假路径 Pop 必须有后续指令。真路径直接继续，假路径跳到其 Pop 之后；原假路径 Pop 保留给其他跳转。需要保留比较或短路结果时，继续使用原有结果槽路径。数字常量右值、非局部操作数和其它比较形式不参与本节合并。
+后四条指令不能是独立跳转入口，假路径 Pop 必须有后续指令。真路径直接继续，假路径跳到其 Pop 之后；原假路径 Pop 保留给其他跳转。需要保留比较或短路结果时，继续使用原有结果槽路径。数字常量右值见后面的扩展，非局部左操作数和其它比较形式不参与本节合并。
 
 两源槽通过边界、编号溢出和 Number 类型 guard 后，机器码比较原始数字，不改源值或栈深度。等价 C++ 如下：
 
@@ -1584,6 +1584,49 @@ helper 内部按原顺序完整 GetLocal、GetLocal、比较、PeekTruthy、Pop�
 token、Parser、AST、Interpreter、bytecode 格式、ARM64 与 decoded 不变。五条 decoded 指令保留，native offset 指向同一合并单元；四个独立中间入口禁止合并，原假路径 Pop 单独保留，不提供独立 deopt 恢复点。
 
 测试覆盖三种比较、真假分支、NaN 位于任一侧、正负零/无穷大、源值不变、类型 fallback、对象身份/GC、保留及丢弃的短路结果、循环 break/continue、方法帧、四个中间独立入口、共享假路径 Pop、临时右槽、非法源槽和 operation。新增 `examples/baseline_comparison_branch_benchmark.js` 与 CLI baseline smoke，配对数据见 [性能报告](baseline-numeric-benchmark.md)。
+
+### Windows x64 直接与数字常量比较并分支
+
+直接比较分支现在也支持数字常量右值，例如 `if (value < 2)`、`while (i < 5000)` 和 `if (i == 2500)`。Less/Greater/Equal 匹配下面五条指令，且假路径也以 Pop 清理结果：
+
+```text
+GetLocal leftSlot
+Constant numberIndex
+Less / Greater / Equal
+JumpIfFalse falseCleanup
+Pop
+```
+
+四个中间指令不能是独立跳转入口，假路径 Pop 必须有后续指令。真假路径都不再创建或清理比较结果副本；原假路径 Pop 保留给其他跳转。需要保留比较或短路值时仍走原路径，字符串等非数字常量不参与本节合并。
+
+Number 左值通过槽边界、编号溢出和类型 guard 后，直接和嵌入的常量位编码比较。常量由 memcpy 提取 double 的原始 64 位编码，装入 xmm1；不是把 uint64_t 数值转换成 double。等价 C++ 为 `if (!(left.asNumber() < constantNumber)) goto afterFalseCleanup`，不改左值或栈深度。
+
+以小于为例，每条汇编和机器码对应如下：
+
+```asm
+movsd xmm0, [rdx + numberOffset] ; F2 0F 10 82 + disp32：读取左数字
+mov rax, numberBits             ; 48 B8 + imm64：常量的原始位编码
+movq xmm1, rax                  ; 66 48 0F 6E C8：把位编码复制到 xmm1
+ucomisd xmm0, xmm1              ; 66 0F 2E C1：比较两个 double
+setb al                        ; 0F 92 C0：小于或 unordered
+setnp dl                       ; 0F 9B C2：排除 NaN；源地址已用完
+and al, dl                     ; 20 D0
+movzx eax, al                  ; 0F B6 C0：完整 0/1 分支结果
+test eax, eax                  ; 85 C0
+jz afterFalseCleanup           ; 0F 84 + rel32：越过假路径 Pop
+cmp eax, 1                     ; 83 F8 01：2 是失败
+jne epilogue                   ; 0F 85 + rel32
+```
+
+位移、立即数和跳转均按小端编码，实际代码还有 guard 汇合跳转。Equal 使用 sete 再 setnp，Greater 使用 seta；左右任一数字是 NaN 时均为 false，正负零相等，无穷大与非规格化数按原 double 比较规则处理。
+
+非 Number 左值或非法槽进入 `minijsBaselineCompareLocalConstantTruthy(frame, leftSlot, constantIndex, operation)`。Windows x64 参数依次在 rcx、edx、r8d、r9d，返回 0=false、1=true、2=失败。helper 从当前 closure 的实际常量池读取，不把常量池 Value 裸指针写入机器码。
+
+两个比较分支 helper 共用 `baselineRuntimeCompareOperandsTruthy()`：先读左局部值，再读右局部值或常量，然后完整比较、检查真假并 Pop。非法左槽优先于常量索引错误；常量索引错误保留已压入的左值副本。operation 仍在读取前验证，不允许截断为其它 opcode。Equal 的完整 Value 规则和 Less/Greater 的类型错误不变。
+
+数字快路径没有临时 Value 或 GC 分配；fallback 仍使用原始栈与常量读取协议。token、Parser、AST、Interpreter、bytecode 格式、ARM64 和 decoded 不变。五条 decoded 指令保留，native offset 指向同一合并单元，不提供独立 deopt 恢复点。
+
+测试覆盖三种比较、真假分支、NaN 位于任一侧、正负零、无穷大、非规格化数、源值不变、类型 fallback、保留短路值、循环、方法帧、四个独立中间入口、共享假路径 Pop、非法槽/常量索引/operation 及错误优先级。新增 `examples/baseline_constant_branch_benchmark.js`，配对数据见 [性能报告](baseline-numeric-benchmark.md)。
 
 ### 栈同步边界验证
 
