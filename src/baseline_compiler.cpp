@@ -1049,8 +1049,8 @@ class WindowsX64Emitter {
            (!booleanEquality || patchBranchTo(booleanDone, offset(), false, error));
   }
 
-  // GetLocal + GetLocal + 二元运算：只构造一个结果槽，不复制源局部值。
-  bool emitNumberLocalPairExpressionOrRuntimeCall(std::uint32_t leftSlot, std::uint32_t rightSlot,
+  // GetLocal + GetLocal + 二元运算：Number 运算/Boolean 相等只构造一个结果槽。
+  bool emitLocalPairExpressionOrRuntimeCall(std::uint32_t leftSlot, std::uint32_t rightSlot,
                                                  Opcode operation, std::uintptr_t helperAddress,
                                                  std::string& error) {
     std::vector<std::size_t> fallbacks;
@@ -1100,6 +1100,43 @@ class WindowsX64Emitter {
     emit({0xB8});  // mov eax, 1：组合净压入一个结果，无需 SyncStackSize。
     emit32(1);
     const std::size_t done = emitJumpPlaceholder();
+    std::size_t booleanDone = 0;
+    std::size_t booleanPushFailed = 0;
+    if (operation == Opcode::Equal) {
+      const auto booleanPath = offset();
+      for (const auto patch : fallbacks) {
+        if (!patchBranchTo(patch, booleanPath, true, error)) return false;
+      }
+      fallbacks.clear();
+      if (!emitLoadTypedLocalPair(leftSlot, rightSlot, Value::booleanTypeTag(), fallbacks, error)) return false;
+      // 必须构造完整 Value；复用无资源的 Number 占位槽，随后改成 Boolean 结果。
+      emitMoveFrameToFirstArg();
+      emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselinePushNumberSlot));
+      emitCallHelper();
+      booleanPushFailed = emitJumpIfFalsePlaceholder();
+      // 构造可能使 vector 扩容；guard 前的地址均已失效，重新定位两源。
+      emitLoadLocalAddress(leftSlot);
+      emitLocalPointerFromIndex();
+      emit({0x49, 0x89, 0xD0});  // mov r8, rdx：暂存左地址，不跨 helper。
+      emitLoadLocalAddress(rightSlot);
+      emitLocalPointerFromIndex();
+      emit({0x48, 0x89, 0xD1});  // mov rcx, rdx：右地址。
+      emit({0x4C, 0x89, 0xC2});  // mov rdx, r8：左地址。
+      emit({0x0F, 0xB6, 0x82});  // movzx eax, byte ptr [rdx + booleanOffset]
+      emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
+      emit({0x3A, 0x81});  // cmp al, byte ptr [rcx + booleanOffset]
+      emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
+      emit({0x0F, 0x94, 0xC0});  // sete al：读取完成后才写新结果槽。
+      emitLoadTopPointer();  // 只改变 rcx，al 中的结果仍有效。
+      emit({0x88, 0x81});  // mov byte ptr [rcx + booleanOffset], al
+      emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
+      emit({0xC7, 0x81});  // mov dword ptr [rcx + typeOffset], Boolean：完整结果类型。
+      emit32(static_cast<std::uint32_t>(Value::typeOffset()));
+      emit32(Value::booleanTypeTag());
+      emit({0xB8});  // mov eax, 1：false 结果也执行成功，净栈变化为 +1。
+      emit32(1);
+      booleanDone = emitJumpPlaceholder();
+    }
     const std::size_t fallback = offset();
     if (zero.hasRightZero) fallbacks.push_back(zero.rightZero);
     for (const auto patch : fallbacks) {
@@ -1120,7 +1157,10 @@ class WindowsX64Emitter {
       if (!patchBranchTo(patch, offset(), true, error)) return false;
     }
     return patchBranchTo(pushFailed, offset(), true, error) &&
-           patchBranchTo(done, offset(), false, error);
+           patchBranchTo(done, offset(), false, error) &&
+           (operation != Opcode::Equal ||
+            (patchBranchTo(booleanPushFailed, offset(), true, error) &&
+             patchBranchTo(booleanDone, offset(), false, error)));
   }
 
   // 仅在比较成功后使用：比较一定产生 Boolean，无需重复类型和空栈 guard。
@@ -1966,7 +2006,7 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
             continue;
           }
         }
-        if (!emitter.emitNumberLocalPairExpressionOrRuntimeCall(
+        if (!emitter.emitLocalPairExpressionOrRuntimeCall(
                 instruction.operands[0], code->instructions[index + 1].operands[0], operation, helper, inlineError)) {
           return failure(inlineError);
         }

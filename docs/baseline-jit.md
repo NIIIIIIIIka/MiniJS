@@ -1466,6 +1466,42 @@ Sub/Mul/Div 的 SSE 算术 opcode 分别为 5C/59/5E；常量右值仍用原始 
 
 捕获目标的 upvalue 立即读取更新后的同一槽，正常关闭和 GC 规则不变。五条 decoded 指令保留，native offset 指向同一合并单元。测试覆盖四种算术、两种右值、三种目标位置、源值不变、负零/NaN、动态除零、类型变化、保留结果、闭包/GC、方法帧、独立中间入口、非法槽、临时结果槽和错误优先级。新增 `examples/baseline_arithmetic_assign_benchmark.js`，数据见 [性能报告](baseline-numeric-benchmark.md)。
 
+### Windows x64 保留结果的布尔局部相等表达式
+
+`return left == right`、`let same = left == right`、数组元素和保留短路值的表达式现在支持 Boolean 快路径，合并 GetLocal + GetLocal + Equal。后两条指令不能是独立跳转入口；数字表达式仍优先执行原路径。需要丢弃结果的赋值/条件分支继续优先使用专门合并，不构造此结果槽。
+
+两个源槽通过边界、编号溢出和 Boolean 类型 guard 后，调用 PushNumberSlot 构造一个完整、无资源的 Number 占位 Value 并刷新帧快照。这个 helper 名称没有改变，但占位槽在返回后立即转换为 Boolean 比较结果；此前数字比较也使用同样的占位机制。
+
+等价 C++ 如下：
+
+```cpp
+// 先确认两个 Boolean 源槽都在原栈内。
+stack.emplace_back(0.0);
+refreshFrameStack();
+// 扩容后重新定位两源和新结果槽；不持有旧栈地址。
+bool result = stack[leftIndex].boolean == stack[rightIndex].boolean;
+stack.back().boolean = result;
+stack.back().type = Boolean;
+```
+
+结果必须继续存在，所以净栈深度变化是 +1，不是零。机器码不能只写未构造的 vector 容量，也不能把携带资源的旧 Value 直接改类型；这里转换的是刚构造的无资源 Number。源值不变，后续 Return、数组构造、局部声明或短路代码消费完整 Boolean 结果。
+
+helper 成功后，重新计算 rdx=左源、rcx=右源地址；每条核心汇编与机器码对应如下，位移为四字节小端编码：
+
+```asm
+movzx eax, byte ptr [rdx + booleanOffset] ; 0F B6 82 + disp32：读左 0/1
+cmp al, byte ptr [rcx + booleanOffset]    ; 3A 81 + disp32：与右 0/1 比较
+sete al                                  ; 0F 94 C0：相等为 1，不等为 0
+; 用 stackSize/stackData 重新计算 rcx=栈顶；只改 rcx，不覆盖 al。
+mov byte ptr [rcx + booleanOffset], al    ; 88 81 + disp32：写结果载荷
+mov dword ptr [rcx + typeOffset], Boolean ; C7 81 + disp32 + imm32：写结果类型
+mov eax, 1                               ; B8 01 00 00 00：false 结果也表示成功
+```
+
+guard 未命中前不改栈，随后按原 GetLocal、GetLocal、Equal 顺序调用完整 helper；每步失败立即退出，保留临时右槽合法性和非法槽错误状态。占位槽构造失败直接退出，不回退重做读取或留下错误类型的结果。源地址不跨 helper 使用，GC 根仍是真实 VM 栈，不增加新的根或 VM 堆对象。
+
+token、Parser、AST、Interpreter、bytecode 格式、ARM64 和 decoded 不变。三个 native offset 指向同一合并单元。测试覆盖全部布尔组合、同源槽、结果类型、源值保持、返回/声明/短路结果、捕获/GC、方法帧、跨类型 fallback、80 个结果的栈扩容、临时右槽、非法源槽和两种独立中间入口。新增 `examples/baseline_boolean_expression_benchmark.js`，数据见 [性能报告](baseline-numeric-benchmark.md)。
+
 ### Windows x64 比较赋值合并
 
 `flag = left < right;`、`flag = left > 2;` 和 `flag = left == right;` 支持五条指令合并：
