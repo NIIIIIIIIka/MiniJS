@@ -906,6 +906,56 @@ class WindowsX64Emitter {
     return patchBranchTo(done, offset(), false, error);
   }
 
+  // 保留 Boolean 常量相等结果：构造一个结果槽，不压源副本或常量。
+  bool emitBooleanConstantComparisonExpression(std::uint32_t sourceSlot, std::uint32_t constantIndex,
+                                               bool constant, std::string& error) {
+    std::vector<std::size_t> fallbacks;
+    if (!emitLoadTypedLocalPair(sourceSlot, sourceSlot, Value::booleanTypeTag(), fallbacks, error)) return false;
+    emitMoveFrameToFirstArg();
+    emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselinePushNumberSlot));
+    emitCallHelper();  // 完整无资源占位 Value；构造失败不能再回退重做。
+    const auto pushFailed = emitJumpIfFalsePlaceholder();
+    emitLoadLocalAddress(sourceSlot);  // helper 可能扩容，必须重新定位源槽。
+    emitLocalPointerFromIndex();
+    emit({0x0F, 0xB6, 0x82});  // movzx eax, byte ptr [rdx + booleanOffset]：读源 0/1。
+    emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
+    emit({0x3C, static_cast<std::uint8_t>(constant ? 1 : 0)});  // cmp al, imm8
+    emit({0x0F, 0x94, 0xC0});  // sete al：相等为 1，不等为 0。
+    emitLoadTopPointer();  // 只改变 rcx，保留 al 中的比较结果。
+    emit({0x88, 0x81});  // mov byte ptr [rcx + booleanOffset], al
+    emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
+    emit({0xC7, 0x81});  // mov dword ptr [rcx + typeOffset], Boolean
+    emit32(static_cast<std::uint32_t>(Value::typeOffset()));
+    emit32(Value::booleanTypeTag());
+    emit({0xB8});  // mov eax, 1：false 结果也成功，净压入一个结果。
+    emit32(1);
+    const auto done = emitJumpPlaceholder();
+    const auto fallback = offset();
+    for (const auto patch : fallbacks) {
+      if (!patchBranchTo(patch, fallback, true, error)) return false;
+    }
+    // guard 前没有副作用；按原顺序读源、从实际常量池压值、完整比较。
+    std::vector<std::size_t> failures;
+    emitMoveFrameToFirstArg();
+    emitMoveU32ToSecondArg(sourceSlot);
+    emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselineGetLocal));
+    emitCallHelper();
+    failures.push_back(emitJumpIfFalsePlaceholder());
+    emitMoveFrameToFirstArg();
+    emitMoveU32ToSecondArg(constantIndex);
+    emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselinePushConstant));
+    emitCallHelper();
+    failures.push_back(emitJumpIfFalsePlaceholder());
+    emitMoveFrameToFirstArg();
+    emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselineEqual));
+    emitCallHelper();
+    for (const auto patch : failures) {
+      if (!patchBranchTo(patch, offset(), true, error)) return false;
+    }
+    return patchBranchTo(pushFailed, offset(), true, error) &&
+           patchBranchTo(done, offset(), false, error);
+  }
+
   // Boolean 常量相等赋值：目标与源均已是 Boolean 时直接写一个字节。
   bool emitBooleanConstantComparisonAssignment(std::uint32_t sourceSlot, std::uint32_t constantIndex,
                                                bool constant, std::uint32_t targetSlot, std::string& error) {
@@ -1965,6 +2015,24 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
         index += 4;
         continue;
       }
+    }
+    if (instruction.opcode == Opcode::GetLocal && index + 2 < code->instructions.size() &&
+        code->instructions[index + 1].opcode == Opcode::Constant &&
+        function.chunk.constant(code->instructions[index + 1].operands[0]).isBoolean() &&
+        code->instructions[index + 2].opcode == Opcode::Equal &&
+        !branchTargets[verification.instructionOffsets[index + 1]] &&
+        !branchTargets[verification.instructionOffsets[index + 2]]) {
+      std::string inlineError;
+      const auto constantIndex = code->instructions[index + 1].operands[0];
+      if (!emitter.emitBooleanConstantComparisonExpression(instruction.operands[0], constantIndex,
+              function.chunk.constant(constantIndex).isTruthy(), inlineError)) return failure(inlineError);
+      epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
+      for (std::size_t inner = 1; inner <= 2; ++inner) {
+        code->bytecodeOffsetToNativeOffset[verification.instructionOffsets[index + inner]] =
+            code->bytecodeOffsetToNativeOffset[bytecodeOffset];
+      }
+      index += 2;
+      continue;
     }
     if (instruction.opcode == Opcode::GetLocal && index + 2 < code->instructions.size() &&
         code->instructions[index + 1].opcode == Opcode::GetLocal &&
