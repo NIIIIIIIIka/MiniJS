@@ -1600,15 +1600,48 @@ jne epilogue                      ; 0F 85 + rel32：2 是失败
 
 实际发射器还有 guard 汇合跳转。Equal 用 sete 再 setnp 排除 NaN，Greater 用 seta；任一操作数为 NaN 时三种比较均为 false，正负零相等。false 在这里是正常假分支，而不是失败状态。
 
-guard 未命中时，调用一次 `minijsBaselineCompareLocalsTruthy(frame, leftSlot, rightSlot, operation)`。Windows x64 四个参数依次在 rcx、edx、r8d、r9d；operation 是 Opcode 对应的 uint32_t 编码，只允许 Less/Greater/Equal。返回协议是 0=false、1=true、2=失败。
+Number guard 未命中时，局部值之间的 Equal 先尝试下面的 Boolean 快路径；其它情况调用一次 `minijsBaselineCompareLocalsTruthy(frame, leftSlot, rightSlot, operation)`。Windows x64 四个参数依次在 rcx、edx、r8d、r9d；operation 是 Opcode 对应的 uint32_t 编码，只允许 Less/Greater/Equal。返回协议是 0=false、1=true、2=失败。
 
 helper 内部按原顺序完整 GetLocal、GetLocal、比较、PeekTruthy、Pop，再返回真假值。成功后净栈深度不变；非数字关系比较保留类型错误，Equal 保留字符串内容和对象身份规则。非法左槽在压栈前失败，非法右槽保留第一次读取的副本；右槽恰好指向首次读取新增的临时槽时仍合法。非法 operation 在读取前拒绝，避免枚举截断误执行。
 
-非数字 fallback 仍可能构造临时值，这次省的是其多次 C ABI 往返；只有数字快路径完全消除结果槽。没有缓存栈裸指针跨 helper 使用，也不改变 GC 根协议。
+通用 fallback 仍可能构造临时值，这次省的是其多次 C ABI 往返；数字快路径和下面的 Boolean 相等快路径完全消除结果槽。没有缓存栈裸指针跨 helper 使用，也不改变 GC 根协议。
 
 token、Parser、AST、Interpreter、bytecode 格式、ARM64 与 decoded 不变。五条 decoded 指令保留，native offset 指向同一合并单元；四个独立中间入口禁止合并，原假路径 Pop 单独保留，不提供独立 deopt 恢复点。
 
 测试覆盖三种比较、真假分支、NaN 位于任一侧、正负零/无穷大、源值不变、类型 fallback、对象身份/GC、保留及丢弃的短路结果、循环 break/continue、方法帧、四个中间独立入口、共享假路径 Pop、临时右槽、非法源槽和 operation。新增 `examples/baseline_comparison_branch_benchmark.js` 与 CLI baseline smoke，配对数据见 [性能报告](baseline-numeric-benchmark.md)。
+
+### Windows x64 布尔局部相等直接分支
+
+`if (left == right)` 的五条指令合并沿用上一节的入口条件和真假路径 Pop 契约。Number 快路径优先；仅在 `operation == Equal` 且右值也是局部槽时，失败分支再尝试 Boolean guard。重新检查两槽边界、编号溢出和类型，验证完成前不改源值或栈。布尔常量右值、比较赋值和需要保留结果的表达式不参与本次扩展。
+
+两个源值均为 Boolean 时，等价 C++ 如下：
+
+```cpp
+bool result = left.boolean == right.boolean;
+if (!result) goto afterFalseCleanup;
+// 源值不变，不创建两个操作数副本或比较结果 Value。
+```
+
+rdx 指向左 Value，rcx 指向右 Value。disp32 是 `Value::booleanOffset()` 的四字节小端编码。每条指令与机器码对应如下：
+
+```asm
+movzx eax, byte ptr [rdx + booleanOffset] ; 0F B6 82 + disp32：读取左侧的 0/1
+cmp al, byte ptr [rcx + booleanOffset]    ; 3A 81 + disp32：比较右侧的 0/1
+sete al                                  ; 0F 94 C0：相等为 1，不等为 0
+movzx eax, al                            ; 0F B6 C0：清除结果高位
+test eax, eax                            ; 85 C0：检查比较真假
+jz afterFalseCleanup                     ; 0F 84 + rel32：假分支越过清理 Pop
+cmp eax, 1                               ; 83 F8 01：1 为真，2 为执行失败
+jne epilogue                             ; 0F 85 + rel32：失败退出
+```
+
+实际代码还包含 guard 汇合跳转。Boolean 的载荷只有 0/1，不是 double，不需要 ucomisd 或 NaN 的 PF 检查。同槽比较自然为 true；false 结果是正常假分支，不能当成 helper 失败。
+
+跨类型相等仍走 CompareLocalsTruthy 的完整 Value 规则，例如 false 不等于数字 0，true 不等于数字 1；字符串内容、对象身份与 GC 行为不变。Less/Greater 不使用 Boolean 快路径，布尔关系比较仍报 `value is not a number`。异常和临时右槽继续由原 helper 按原顺序处理，0/1/2 协议不变。
+
+五条 native offset 指向同一合并单元；中间独立入口禁止合并，原假路径 Pop 仍服务其它跳转。`return (left == right) && value` 保留短路结果，继续原有结果槽路径。token、Parser、AST、Interpreter、bytecode 格式、ARM64 和 decoded 均不变。
+
+测试覆盖四种真假组合、同槽比较、跨类型 fallback、短路值与副作用、while、方法帧、捕获/GC、临时右槽和错误栈状态、独立中间入口及共享假路径 Pop。新增 `examples/baseline_boolean_equality_benchmark.js`，Release 配对数据见 [性能报告](baseline-numeric-benchmark.md)。
 
 ### Windows x64 直接与数字常量比较并分支
 

@@ -7211,6 +7211,127 @@ void testComparisonBranchAbiPreservesTemporarySlotsAndErrors() {
   };
   EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("branch", {minijs::Value(1.0),minijs::Value(2.0)}, entry)
              .equals(minijs::Value(1.0)));
+  EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("branch", {minijs::Value(false),minijs::Value(true)}, entry)
+             .equals(minijs::Value(false)));
+}
+
+void testBooleanEqualityBranchSemanticsAndFallback() {
+  for (const bool enabled : {false, true}) {
+    minijs::VM vm;
+    vm.setJitEnabled(enabled);
+    vm.setJitCallThreshold(1);
+    const auto result = runBytecodeProgramOnVm(vm, R"(
+      function equal(left, right) { if (left == right) { return 1; } return 0; }
+      function self(value) { if (value == value) { return 1; } return 0; }
+      function kept(left, right) { return (left == right) && "right"; }
+      function outer(left, right) {
+        function read() { return [left, right]; }
+        if (left == right) {} return read;
+      }
+      function loop(left, right) {
+        let n = 0;
+        while (left == right) { n = n + 1; right = !right; }
+        return n;
+      }
+      let hits = 0;
+      function bump() { hits = hits + 1; return true; }
+      function discard(left, right) { (left == right) && bump(); return hits; }
+      class Compare { equal(left, right) { if (left == right) { return 1; } return 0; } }
+      equal(false, true); self(false); kept(false, true); outer(false, true);
+      loop(false, true); discard(false, true);
+      let compare = Compare(); compare.equal(false, true);
+      let object = {}; let read = outer(false, true);
+      discard(false, true); discard(false, false);
+      [equal(false, false), equal(false, true), equal(true, false), equal(true, true),
+       self(false), self(true), equal(false, 0), equal(1, true),
+       equal(false, ""), equal(null, undefined), equal("x", "x"),
+       equal(object, object), equal(object, {}), kept(false, true), kept(false, false),
+       loop(false, false), loop(false, true), hits, compare.equal(true, true), read()];
+    )");
+    EXPECT(result.toString() ==
+        "[1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 1, 1, 0, false, right, 1, 0, 1, 1, [false, true]]");
+    vm.collectGarbage();
+    EXPECT(runBytecodeProgramOnVm(vm, "read();").toString() == "[false, true]");
+    try {
+      runBytecodeProgramOnVm(vm, "function less(a,b) { if (a < b) {} } less(1,2); less(false,true);");
+      EXPECT(false);
+    } catch (const minijs::RuntimeError& error) {
+      EXPECT(std::string_view(error.what()) == "RuntimeError: value is not a number");
+    }
+  }
+}
+
+void testNativeBooleanEqualityBranchGuardsAndEntries() {
+  if (!nativeBaselineBackendAvailable()) return;
+  minijs::VM vm;
+  vm.setJitEnabled(true);
+  vm.setJitCallThreshold(1);
+  runBytecodeProgramOnVm(vm,
+      "function equal(left,right) { if (left == right) { return 1; } return 0; } equal(false,true);");
+  const auto* code = vm.debugGlobalFunctionBaselineCode("equal");
+  vm.setBaselineHelperProfilingEnabled(true);
+  for (const bool left : {false, true}) {
+    for (const bool right : {false, true}) {
+      EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("equal",
+          {minijs::Value(left), minijs::Value(right)}, code->entry)
+                 .equals(minijs::Value(left == right ? 1.0 : 0.0)));
+    }
+  }
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+  for (const auto& helper : vm.jitRuntimeStats().helpers) {
+    EXPECT(helper.name == "minijsBaselineReturnNumberBits");
+  }
+  for (const std::size_t inner : {2u, 4u, 5u, 8u}) {
+    EXPECT(code->bytecodeOffsetToNativeOffset[0] == code->bytecodeOffsetToNativeOffset[inner]);
+  }
+#endif
+  vm.resetBaselineHelperProfile();
+  for (const auto& values : {std::pair<minijs::Value, minijs::Value>{minijs::Value(false), minijs::Value(0.0)},
+                            {minijs::Value(1.0), minijs::Value(true)},
+                            {minijs::Value(std::string("x")), minijs::Value(std::string("x"))}}) {
+    EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("equal", {values.first, values.second}, code->entry)
+               .equals(minijs::Value(values.first.equals(values.second) ? 1.0 : 0.0)));
+  }
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+  bool found = false;
+  for (const auto& helper : vm.jitRuntimeStats().helpers) {
+    if (helper.name == "minijsBaselineCompareLocalsTruthy") { EXPECT(helper.calls == 3); found = true; }
+    EXPECT(helper.name != "minijsBaselineGetLocal" && helper.name != "minijsBaselinePop");
+  }
+  EXPECT(found);
+#endif
+  // 手写中间入口及共享假路径 Pop，不得被五条指令的合并误吞。
+  for (const std::uint8_t jump : {std::uint8_t(2), std::uint8_t(4), std::uint8_t(5), std::uint8_t(8), std::uint8_t(12)}) {
+    minijs::BytecodeFunction function;
+    function.chunk.addConstant(minijs::Value(1.0)); function.chunk.addConstant(minijs::Value(0.0));
+    function.chunk.writeOpcode(minijs::Opcode::GetLocal); function.chunk.writeByte(0);
+    function.chunk.writeOpcode(minijs::Opcode::GetLocal); function.chunk.writeByte(1);
+    function.chunk.writeOpcode(minijs::Opcode::Jump); function.chunk.writeByte(0); function.chunk.writeByte(jump);
+    function.chunk.writeOpcode(minijs::Opcode::GetLocal); function.chunk.writeByte(0);
+    function.chunk.writeOpcode(minijs::Opcode::GetLocal); function.chunk.writeByte(1);
+    function.chunk.writeOpcode(minijs::Opcode::Equal);
+    function.chunk.writeOpcode(minijs::Opcode::JumpIfFalse); function.chunk.writeByte(0); function.chunk.writeByte(4);
+    function.chunk.writeOpcode(minijs::Opcode::Pop);
+    function.chunk.writeOpcode(minijs::Opcode::Constant); function.chunk.writeByte(0);
+    function.chunk.writeOpcode(minijs::Opcode::Return);
+    function.chunk.writeOpcode(minijs::Opcode::Pop);
+    function.chunk.writeOpcode(minijs::Opcode::Constant); function.chunk.writeByte(1);
+    function.chunk.writeOpcode(minijs::Opcode::Return);
+    const auto compiled = minijs::BaselineCompiler().compile(function);
+    EXPECT(compiled.succeeded());
+    EXPECT(compiled.code->bytecodeOffsetToNativeOffset[7] != compiled.code->bytecodeOffsetToNativeOffset[7 + jump]);
+    vm.resetBaselineHelperProfile();
+    EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("equal",
+        {minijs::Value(false), minijs::Value(true)}, compiled.code->entry)
+               .equals(minijs::Value(jump == 4 || jump == 12 ? 0.0 : 1.0)));
+    if (jump == 12) {
+      bool popped = false;
+      for (const auto& helper : vm.jitRuntimeStats().helpers) {
+        if (helper.name == "minijsBaselinePop") { EXPECT(helper.calls == 1); popped = true; }
+      }
+      EXPECT(popped);
+    }
+  }
 }
 
 void testComparisonBranchKeepsIndependentEntries() {
@@ -9326,6 +9447,8 @@ void runBytecodeTests() {
   testConstantComparisonBranchAbiErrorsAndIndependentEntries();
   testNativeComparisonBranchSpecialValuesAndMergedHelper();
   testComparisonBranchAbiPreservesTemporarySlotsAndErrors();
+  testBooleanEqualityBranchSemanticsAndFallback();
+  testNativeBooleanEqualityBranchGuardsAndEntries();
   testComparisonBranchKeepsIndependentEntries();
   testNativeLocalBranchValuesAndHelperCounts();
   testLocalTruthyAbiPreservesStackAndErrors();

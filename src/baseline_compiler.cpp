@@ -846,6 +846,26 @@ class WindowsX64Emitter {
     }
     emit({0x0F, 0xB6, 0xC0});  // movzx eax, al：0/1 是比较结果，不是成功标志。
     const auto done = emitJumpPlaceholder();
+    std::size_t booleanDone = 0;
+    const bool booleanEquality = operation == Opcode::Equal && !constantRight;
+    if (booleanEquality) {
+      const auto booleanPath = offset();
+      for (const auto patch : fallbacks) {
+        if (!patchBranchTo(patch, booleanPath, true, error)) return false;
+      }
+      // 数字 guard 未命中前没有副作用；重新验证两槽均为 Boolean。
+      fallbacks.clear();
+      if (!emitLoadTypedLocalPair(leftSlot, rightOperand, Value::booleanTypeTag(), fallbacks, error)) {
+        return false;
+      }
+      emit({0x0F, 0xB6, 0x82});  // movzx eax, byte ptr [rdx + booleanOffset]：读左 0/1。
+      emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
+      emit({0x3A, 0x81});  // cmp al, byte ptr [rcx + booleanOffset]：只比较布尔载荷。
+      emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
+      emit({0x0F, 0x94, 0xC0});  // sete al：相等为 1，不等为 0；无需 NaN 检查。
+      emit({0x0F, 0xB6, 0xC0});  // movzx eax, al：false 是正常分支结果，不是失败。
+      booleanDone = emitJumpPlaceholder();
+    }
     const auto fallback = offset();
     for (const auto patch : fallbacks) {
       if (!patchBranchTo(patch, fallback, true, error)) return false;
@@ -857,7 +877,8 @@ class WindowsX64Emitter {
     emitLoadHelper(constantRight ? reinterpret_cast<std::uintptr_t>(&minijsBaselineCompareLocalConstantTruthy)
                                 : reinterpret_cast<std::uintptr_t>(&minijsBaselineCompareLocalsTruthy));
     emitCallHelper();
-    return patchBranchTo(done, offset(), false, error);
+    return patchBranchTo(done, offset(), false, error) &&
+           (!booleanEquality || patchBranchTo(booleanDone, offset(), false, error));
   }
 
   // 比较赋值：仅更新已存在的 Boolean 目标，Number 源值不变，无临时结果槽。
