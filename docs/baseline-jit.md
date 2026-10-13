@@ -1644,7 +1644,7 @@ token、Parser、AST、Interpreter、bytecode 格式、ARM64 与 decoded 不变�
 
 ### Windows x64 布尔局部相等直接分支
 
-`if (left == right)` 的五条指令合并沿用上一节的入口条件和真假路径 Pop 契约。Number 快路径优先；仅在 `operation == Equal` 且右值也是局部槽时，失败分支再尝试 Boolean guard。重新检查两槽边界、编号溢出和类型，验证完成前不改源值或栈。布尔常量右值、比较赋值和需要保留结果的表达式不参与本次扩展。
+`if (left == right)` 的五条指令合并沿用上一节的入口条件和真假路径 Pop 契约。Number 快路径优先；仅在 `operation == Equal` 且右值也是局部槽时，失败分支再尝试 Boolean guard。重新检查两槽边界、编号溢出和类型，验证完成前不改源值或栈。布尔常量右值见后面的专门扩展，比较赋值和需要保留结果的表达式不参与本节扩展。
 
 两个源值均为 Boolean 时，等价 C++ 如下：
 
@@ -1717,6 +1717,47 @@ jne epilogue                   ; 0F 85 + rel32
 数字快路径没有临时 Value 或 GC 分配；fallback 仍使用原始栈与常量读取协议。token、Parser、AST、Interpreter、bytecode 格式、ARM64 和 decoded 不变。五条 decoded 指令保留，native offset 指向同一合并单元，不提供独立 deopt 恢复点。
 
 测试覆盖三种比较、真假分支、NaN 位于任一侧、正负零、无穷大、非规格化数、源值不变、类型 fallback、保留短路值、循环、方法帧、四个独立中间入口、共享假路径 Pop、非法槽/常量索引/operation 及错误优先级。新增 `examples/baseline_constant_branch_benchmark.js`，配对数据见 [性能报告](baseline-numeric-benchmark.md)。
+
+### Windows x64 直接与布尔常量比较并分支
+
+`if (flag == true)`、`if (flag == false)` 和 `while (flag == true)` 支持下面五条指令合并，假路径也必须以 Pop 清理比较结果：
+
+```text
+GetLocal leftSlot
+Constant booleanIndex
+Equal
+JumpIfFalse falseCleanup
+Pop
+```
+
+四条中间指令不能是独立跳转入口，假路径 Pop 必须有后续指令。真路径继续，假路径跳过自身清理 Pop；原假路径 Pop 保留给其它跳转。需要保留短路值的 `return (flag == false) && value` 不参与合并。Boolean 的 Less/Greater、不在左侧的局部值和相等结果赋值也不参与本次扩展。
+
+编译期确认常量为 Boolean 后，isTruthy 只用于提取其 0/1 载荷，不是通用真假值转换。运行时先检查左槽边界、编号溢出和 Boolean 类型，再直接与嵌入的一个字节立即数比较。等价 C++ 如下：
+
+```cpp
+bool result = left.boolean == constantBoolean;
+if (!result) goto afterFalseCleanup;
+// 不改源值，不压常量，不创建操作数副本或比较结果 Value。
+```
+
+rdx 指向左 Value，disp32 是 `Value::booleanOffset()` 的四字节小端编码。每条汇编与机器码对应如下：
+
+```asm
+movzx eax, byte ptr [rdx + booleanOffset] ; 0F B6 82 + disp32：读左侧的 0/1
+cmp al, constantBoolean                  ; 3C 00 或 3C 01：与 false/true 比较
+sete al                                  ; 0F 94 C0：相等为 1，不等为 0
+movzx eax, al                            ; 0F B6 C0：清除高位，完整 0/1
+test eax, eax                            ; 85 C0：测试比较结果
+jz afterFalseCleanup                     ; 0F 84 + rel32：假分支越过 Pop
+cmp eax, 1                               ; 83 F8 01：真为 1，失败为 2
+jne epilogue                             ; 0F 85 + rel32：失败退出
+```
+
+实际代码还有 guard 汇合跳转。false 是正常假分支，不是执行失败；不用浮点比较或 NaN 检查，也不改变真实栈深度。guard 未命中前没有副作用，随后调用已有 `minijsBaselineCompareLocalConstantTruthy(frame, leftSlot, constantIndex, Equal)`，从当前 closure 的实际常量池读取完整 Value，返回 0/1/2。
+
+因此数字 1 不等于 true，数字 0 不等于 false，字符串、null/undefined、对象等也不会被误做 truthy 比较。非法左槽在压栈前失败，非法常量索引保留左值副本，错误优先级和失败栈快照不变。没有新增 VM/helper ABI、GC 对象或根集合；源值继续在原栈槽中，捕获和关闭规则不变。
+
+token、Parser、AST、Interpreter、bytecode 格式、ARM64 和 decoded 不变。五条 native offset 指向同一合并单元，不构成独立 deopt 恢复点。测试覆盖真假常量与四种组合、跨类型 fallback、短路值/副作用、while、方法帧、捕获/GC、非法源槽、C ABI 索引错误快照、独立中间入口和共享假路径 Pop。新增 `examples/baseline_boolean_constant_branch_benchmark.js`，配对结果见 [性能报告](baseline-numeric-benchmark.md)。
 
 ### Windows x64 布尔常量赋值合并
 

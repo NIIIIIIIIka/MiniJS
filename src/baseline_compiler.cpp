@@ -881,6 +881,31 @@ class WindowsX64Emitter {
            (!booleanEquality || patchBranchTo(booleanDone, offset(), false, error));
   }
 
+  // GetLocal + Boolean Constant + Equal + 分支：常量进入立即数，不进入 VM 栈。
+  bool emitBooleanConstantComparisonBranch(std::uint32_t leftSlot, std::uint32_t constantIndex,
+                                           bool constant, std::string& error) {
+    std::vector<std::size_t> fallbacks;
+    if (!emitLoadTypedLocalPair(leftSlot, leftSlot, Value::booleanTypeTag(), fallbacks, error)) return false;
+    emit({0x0F, 0xB6, 0x82});  // movzx eax, byte ptr [rdx + booleanOffset]：读取左 0/1。
+    emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
+    emit({0x3C, static_cast<std::uint8_t>(constant ? 1 : 0)});  // cmp al, imm8：比较布尔常量。
+    emit({0x0F, 0x94, 0xC0});  // sete al：相等为 1，不等为 0。
+    emit({0x0F, 0xB6, 0xC0});  // movzx eax, al：0/1 是条件结果，不是成功状态。
+    const auto done = emitJumpPlaceholder();
+    const auto fallback = offset();
+    for (const auto patch : fallbacks) {
+      if (!patchBranchTo(patch, fallback, true, error)) return false;
+    }
+    // 未通过 guard 前没有改栈；从实际常量池读取，保留完整相等规则与失败快照。
+    emitMoveFrameToFirstArg();
+    emitMoveU32ToSecondArg(leftSlot);
+    emitMoveU32ToThirdArg(constantIndex);
+    emitMoveU32ToFourthArg(static_cast<std::uint32_t>(Opcode::Equal));
+    emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselineCompareLocalConstantTruthy));
+    emitCallHelper();
+    return patchBranchTo(done, offset(), false, error);
+  }
+
   // 比较赋值：仅更新已存在的 Boolean 目标；读取完成后再写，支持源目标别名。
   bool emitComparisonAssignment(std::uint32_t leftSlot, std::uint32_t rightSlot,
                                  bool constantRight, std::uint64_t bits, std::uint32_t targetSlot,
@@ -1794,7 +1819,9 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
     }
     if (instruction.opcode == Opcode::GetLocal && index + 4 < code->instructions.size() &&
         code->instructions[index + 1].opcode == Opcode::Constant &&
-        function.chunk.constant(code->instructions[index + 1].operands[0]).isNumber() &&
+        (function.chunk.constant(code->instructions[index + 1].operands[0]).isNumber() ||
+         (function.chunk.constant(code->instructions[index + 1].operands[0]).isBoolean() &&
+          code->instructions[index + 2].opcode == Opcode::Equal)) &&
         (code->instructions[index + 2].opcode == Opcode::Less ||
          code->instructions[index + 2].opcode == Opcode::Greater ||
          code->instructions[index + 2].opcode == Opcode::Equal) &&
@@ -1808,12 +1835,19 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
       if (!independentEntry && falseIndex < code->instructions.size() &&
           falseIndex + 1 < code->instructions.size() && code->instructions[falseIndex].opcode == Opcode::Pop) {
         const auto constantIndex = code->instructions[index + 1].operands[0];
-        const double number = function.chunk.constant(constantIndex).asNumber();
-        std::uint64_t bits = 0;
-        std::memcpy(&bits, &number, sizeof(bits));
+        const auto& constant = function.chunk.constant(constantIndex);
         std::string inlineError;
-        if (!emitter.emitComparisonBranch(instruction.operands[0], constantIndex,
-                code->instructions[index + 2].opcode, true, bits, inlineError)) return failure(inlineError);
+        if (constant.isBoolean()) {
+          // 编译期已确认 Boolean；isTruthy 这里只提取 0/1，不转换其它 Value。
+          if (!emitter.emitBooleanConstantComparisonBranch(instruction.operands[0], constantIndex,
+                  constant.isTruthy(), inlineError)) return failure(inlineError);
+        } else {
+          const double number = constant.asNumber();
+          std::uint64_t bits = 0;
+          std::memcpy(&bits, &number, sizeof(bits));
+          if (!emitter.emitComparisonBranch(instruction.operands[0], constantIndex,
+                  code->instructions[index + 2].opcode, true, bits, inlineError)) return failure(inlineError);
+        }
         branchPatches.push_back({emitter.emitJumpIfZeroPlaceholder(),
             verification.instructionOffsets[falseIndex + 1], NativeBranchKind::Zero});
         epiloguePatches.push_back({emitter.emitJumpIfNotOnePlaceholder(), NativeBranchKind::NotOne});
