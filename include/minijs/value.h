@@ -323,6 +323,8 @@ class Value {
   static std::size_t booleanOffset();
   static std::uint32_t numberTypeTag();
   static std::uint32_t booleanTypeTag();
+  static std::uint32_t nullTypeTag();
+  static std::uint32_t undefinedTypeTag();
 
  private:
   explicit Value(ValueType type);

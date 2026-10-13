@@ -1858,6 +1858,36 @@ jne epilogue                             ; 0F 85 + rel32：失败退出
 
 token、Parser、AST、Interpreter、bytecode 格式、ARM64 和 decoded 不变。五条 native offset 指向同一合并单元，不构成独立 deopt 恢复点。测试覆盖真假常量与四种组合、跨类型 fallback、短路值/副作用、while、方法帧、捕获/GC、非法源槽、C ABI 索引错误快照、独立中间入口和共享假路径 Pop。新增 `examples/baseline_boolean_constant_branch_benchmark.js`，配对结果见 [性能报告](baseline-numeric-benchmark.md)。
 
+### Windows x64 Null/Undefined 常量相等直接分支
+
+`if (value == null)`、`if (value == undefined)` 和相应 while 条件支持 GetLocal + Constant + Equal + JumpIfFalse + Pop 合并。四条中间指令不能是独立入口，假路径必须有清理 Pop 和后续指令；真路径继续、假路径越过清理 Pop，原 Pop 保留给其它跳转。保留短路结果、相等结果赋值和 Less/Greater 不参与此扩展。
+
+MiniJS 当前的 Value::equals 先比较类型：Null 与 Null 相等，Undefined 与 Undefined 相等，Null 与 Undefined 不相等。这不是把所有假值视为相等，也不照搬 JavaScript 的宽松相等规则。两类值没有需要比较的载荷，所以对任意有效源槽，直接比较类型标签就能完整决定结果；类型不匹配是正常 false，不需要类型 fallback。
+
+Value 新增 nullTypeTag/undefinedTypeTag，沿用已有 native 字段偏移/类型标签接口；枚举及 bytecode 编码不变。先检查源槽编号加法溢出及边界，再读取类型标签。等价 C++ 如下：
+
+```cpp
+bool result = source.type == constantType; // Null 或 Undefined
+if (!result) goto afterFalseCleanup;
+// 不读载荷、不复制源、不压常量、不创建比较结果 Value。
+```
+
+rdx 指向有效源 Value，disp32 是 Value::typeOffset() 的四字节小端编码，imm32 是对应类型标签：
+
+```asm
+cmp dword ptr [rdx + typeOffset], typeTag ; 81 BA + disp32 + imm32：只比较类型
+sete al                                  ; 0F 94 C0：同类型为 1，其它为 0
+movzx eax, al                            ; 0F B6 C0：完整分支结果
+test eax, eax                            ; 85 C0
+jz afterFalseCleanup                     ; 0F 84 + rel32：假分支跳过 Pop
+cmp eax, 1                               ; 83 F8 01：1 真，2 失败
+jne epilogue                             ; 0F 85 + rel32：失败退出
+```
+
+实际代码还包括编号溢出、栈边界 guard 及汇合跳转。只有非法槽进入已有 CompareLocalConstantTruthy helper，仍按原读取、常量、比较顺序产生错误并返回 2；有效槽只返回 0/1。源值和栈深度均不变，字符串/数组/对象/闭包/类/实例等资源不被修改，不分配 GC 对象或增加根。
+
+token、Parser、AST、Interpreter、bytecode 格式、ARM64/decoded 不变。五条 native offset 指向同一合并单元，不提供独立 deopt 恢复点。测试覆盖两个相同类型和两个交叉类型、其它假值与资源类型、NaN、捕获/GC、方法帧、短路值与副作用、while、非法源槽、四种独立中间入口及共享假路径 Pop。新增 `examples/baseline_empty_constant_branch_benchmark.js`，数据见 [性能报告](baseline-numeric-benchmark.md)。
+
 ### Windows x64 布尔常量赋值合并
 
 常量赋值合并扩展到 `flag = true;`、`flag = false;`。匹配 Constant + SetLocal + Pop，且 SetLocal/Pop 都不是独立跳转入口。需要保留赋值结果的表达式不合并；字符串、null/undefined 等常量不参与本次扩展。

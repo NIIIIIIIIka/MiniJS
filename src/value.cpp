@@ -520,4 +520,12 @@ std::uint32_t Value::numberTypeTag() {
 std::uint32_t Value::booleanTypeTag() {
   return static_cast<std::uint32_t>(ValueType::Boolean);
 }
+
+std::uint32_t Value::nullTypeTag() {
+  return static_cast<std::uint32_t>(ValueType::Null);
+}
+
+std::uint32_t Value::undefinedTypeTag() {
+  return static_cast<std::uint32_t>(ValueType::Undefined);
+}
 }  // namespace minijs

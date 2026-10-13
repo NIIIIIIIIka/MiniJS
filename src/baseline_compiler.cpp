@@ -906,6 +906,35 @@ class WindowsX64Emitter {
     return patchBranchTo(done, offset(), false, error);
   }
 
+  // Null/Undefined 常量相等条件：只比较类型标签，没有载荷或类型回退。
+  bool emitEmptyConstantComparisonBranch(std::uint32_t sourceSlot, std::uint32_t constantIndex,
+                                         std::uint32_t typeTag, std::string& error) {
+    if (!validateInlineValueSize("empty constant comparison", error)) return false;
+    emitLoadLocalAddress(sourceSlot);
+    const auto overflow = emitJbPlaceholder();
+    emit({0x48, 0x3B, 0x83});  // cmp rax, [rbx + stackSize]：源槽必须在原栈内。
+    emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackSize)));
+    const auto outOfBounds = emitJaePlaceholder();
+    emitLocalPointerFromIndex();
+    emit({0x81, 0xBA});  // cmp dword ptr [rdx + typeOffset], Null/Undefined
+    emit32(static_cast<std::uint32_t>(Value::typeOffset()));
+    emit32(typeTag);
+    emit({0x0F, 0x94, 0xC0});  // sete al：同类型为 true，其它类型直接为 false。
+    emit({0x0F, 0xB6, 0xC0});  // movzx eax, al：正常分支结果 0/1。
+    const auto done = emitJumpPlaceholder();
+    const auto fallback = offset();
+    if (!patchBranchTo(overflow, fallback, true, error) ||
+        !patchBranchTo(outOfBounds, fallback, true, error)) return false;
+    // 非法槽按原顺序执行完整 helper，保留错误和失败栈状态；类型不匹配不来这里。
+    emitMoveFrameToFirstArg();
+    emitMoveU32ToSecondArg(sourceSlot);
+    emitMoveU32ToThirdArg(constantIndex);
+    emitMoveU32ToFourthArg(static_cast<std::uint32_t>(Opcode::Equal));
+    emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselineCompareLocalConstantTruthy));
+    emitCallHelper();
+    return patchBranchTo(done, offset(), false, error);
+  }
+
   // 保留 Boolean 常量相等结果：构造一个结果槽，不压源副本或常量。
   bool emitBooleanConstantComparisonExpression(std::uint32_t sourceSlot, std::uint32_t constantIndex,
                                                bool constant, std::string& error) {
@@ -1977,7 +2006,9 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
     if (instruction.opcode == Opcode::GetLocal && index + 4 < code->instructions.size() &&
         code->instructions[index + 1].opcode == Opcode::Constant &&
         (function.chunk.constant(code->instructions[index + 1].operands[0]).isNumber() ||
-         (function.chunk.constant(code->instructions[index + 1].operands[0]).isBoolean() &&
+         ((function.chunk.constant(code->instructions[index + 1].operands[0]).isBoolean() ||
+           function.chunk.constant(code->instructions[index + 1].operands[0]).isNull() ||
+           function.chunk.constant(code->instructions[index + 1].operands[0]).isUndefined()) &&
           code->instructions[index + 2].opcode == Opcode::Equal)) &&
         (code->instructions[index + 2].opcode == Opcode::Less ||
          code->instructions[index + 2].opcode == Opcode::Greater ||
@@ -1994,7 +2025,12 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
         const auto constantIndex = code->instructions[index + 1].operands[0];
         const auto& constant = function.chunk.constant(constantIndex);
         std::string inlineError;
-        if (constant.isBoolean()) {
+        if (constant.isNull() || constant.isUndefined()) {
+          if (!emitter.emitEmptyConstantComparisonBranch(instruction.operands[0], constantIndex,
+                  constant.isNull() ? Value::nullTypeTag() : Value::undefinedTypeTag(), inlineError)) {
+            return failure(inlineError);
+          }
+        } else if (constant.isBoolean()) {
           // 编译期已确认 Boolean；isTruthy 这里只提取 0/1，不转换其它 Value。
           if (!emitter.emitBooleanConstantComparisonBranch(instruction.operands[0], constantIndex,
                   constant.isTruthy(), inlineError)) return failure(inlineError);
