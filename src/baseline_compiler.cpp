@@ -881,7 +881,7 @@ class WindowsX64Emitter {
            (!booleanEquality || patchBranchTo(booleanDone, offset(), false, error));
   }
 
-  // 比较赋值：仅更新已存在的 Boolean 目标，Number 源值不变，无临时结果槽。
+  // 比较赋值：仅更新已存在的 Boolean 目标；读取完成后再写，支持源目标别名。
   bool emitComparisonAssignment(std::uint32_t leftSlot, std::uint32_t rightSlot,
                                  bool constantRight, std::uint64_t bits, std::uint32_t targetSlot,
                                  Opcode operation, std::uintptr_t helperAddress, std::string& error) {
@@ -912,6 +912,29 @@ class WindowsX64Emitter {
     emit({0xB8});  // mov eax, 1：执行成功；false 结果不是失败。
     emit32(1);
     const auto done = emitJumpPlaceholder();
+    std::size_t booleanDone = 0;
+    const bool booleanEquality = operation == Opcode::Equal && !constantRight;
+    if (booleanEquality) {
+      const auto booleanPath = offset();
+      for (const auto patch : fallbacks) {
+        if (!patchBranchTo(patch, booleanPath, true, error)) return false;
+      }
+      // 数字路径可能在目标 guard 就失败；重新验证目标并保存地址，不能沿用 r10。
+      fallbacks.clear();
+      if (!emitLoadTypedLocalPair(targetSlot, targetSlot, Value::booleanTypeTag(), fallbacks, error)) return false;
+      emit({0x49, 0x89, 0xD2});  // mov r10, rdx：Boolean 目标，不跨 helper 持有。
+      if (!emitLoadTypedLocalPair(leftSlot, rightSlot, Value::booleanTypeTag(), fallbacks, error)) return false;
+      emit({0x0F, 0xB6, 0x82});  // movzx eax, byte ptr [rdx + booleanOffset]：读左 0/1。
+      emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
+      emit({0x3A, 0x81});  // cmp al, byte ptr [rcx + booleanOffset]：比较右 0/1。
+      emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
+      emit({0x0F, 0x94, 0xC0});  // sete al：相等为 1，不等为 0。
+      emit({0x41, 0x88, 0x82});  // mov byte ptr [r10 + booleanOffset], al：两源读完才覆盖。
+      emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
+      emit({0xB8});  // mov eax, 1：赋值成功；写入 false 也必须返回成功。
+      emit32(1);
+      booleanDone = emitJumpPlaceholder();
+    }
     const auto fallback = offset();
     for (const auto patch : fallbacks) {
       if (!patchBranchTo(patch, fallback, true, error)) return false;
@@ -947,7 +970,8 @@ class WindowsX64Emitter {
     for (const auto patch : failures) {
       if (!patchBranchTo(patch, offset(), true, error)) return false;
     }
-    return patchBranchTo(done, offset(), false, error);
+    return patchBranchTo(done, offset(), false, error) &&
+           (!booleanEquality || patchBranchTo(booleanDone, offset(), false, error));
   }
 
   // GetLocal + GetLocal + 二元运算：只构造一个结果槽，不复制源局部值。

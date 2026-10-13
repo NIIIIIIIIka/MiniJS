@@ -1480,7 +1480,7 @@ Pop
 
 后四条指令都不能是独立跳转入口，赋值结果必须由紧邻 Pop 丢弃。需要保留结果的赋值表达式仍走原路径。token、Parser、AST、Interpreter、bytecode 格式、ARM64 和 decoded 不变。
 
-快路径要求局部源值均是 Number，目标已是 Boolean。先检查目标和源槽的边界、编号溢出及类型，保存目标地址到 r10，比较完成后才写入目标的布尔载荷。等价 C++ 为：
+数字快路径要求局部源值均是 Number，目标已是 Boolean；局部 Boolean 相等见下面的扩展。先检查目标和源槽的边界、编号溢出及类型，保存目标地址到 r10，比较完成后才写入目标的布尔载荷。等价 C++ 为：
 
 ```cpp
 double left = sourceLeft.asNumber();
@@ -1505,13 +1505,45 @@ mov eax, 1                              ; B8 01 00 00 00：执行成功，与结
 
 相等使用 `sete al`（0F 94 C0），再同样用 setnp 排除 NaN；大于使用 `seta al`（0F 97 C0），NaN 时自然为 false。任一数字是 NaN 时三种比较都为 false，正负零相等。数字常量右值用 memcpy 提取原始位编码并装入 xmm1，再执行 `ucomisd xmm0, xmm1`。
 
-因为目标已经是 Boolean，不需要写类型标签或销毁旧资源。目标原来是 Number、字符串、对象等类型，或与 Number 源槽别名时，guard 未命中，执行原始比较和完整 Value 赋值。Equal 对字符串、Boolean、null/undefined、对象、闭包、实例和绑定方法继续使用 Value::equals 的原有内容/身份规则；Less/Greater 的非数字错误不改变。
+因为目标已经是 Boolean，不需要写类型标签或销毁旧资源。目标原来是 Number、字符串、对象等类型，或与 Number 源槽别名时，guard 未命中，执行原始比较和完整 Value 赋值。局部源与目标均为 Boolean 的 Equal 使用下面的新路径；其它 Equal 继续使用 Value::equals 的原有内容/身份规则，Less/Greater 的非数字错误不改变。
 
 fallback 先完整读取左值；局部右值依次读取、比较，常量右值复用已有常量二元路径；然后 SetLocal、Pop。任何一步失败立即退出。即使目标非法，也不能提前抛出目标错误而跳过源值读取或比较；新临时结果槽作为目标的边界行为仍由原顺序处理。
 
 r10 和源地址只在无 helper 的快路径使用，不跨扩容或 GC 保存。捕获目标的 upvalue 仍读取同一个栈槽，关闭和 GC 协议不变。五条 decoded 指令保留，native offset 指向同一合并单元；不提供独立 deopt 恢复点。
 
 测试覆盖三种比较与两种右值、NaN 位于任一侧、无穷大、正负零、false 成功状态、源值不变、类型变化、源目标别名、各类相等 fallback、赋值结果保留、捕获槽/GC、方法帧、非法槽、临时槽、错误优先级及四个中间独立入口。新增 `examples/baseline_comparison_assign_benchmark.js` 与 CLI baseline smoke，配对结果见 [性能报告](baseline-numeric-benchmark.md)。
+
+### Windows x64 布尔局部相等结果赋值
+
+`flag = left == right;` 沿用 GetLocal + GetLocal + Equal + SetLocal + Pop 的五条指令合并。仅匹配局部右值且赋值结果由紧邻 Pop 丢弃；数字常量、其它比较和保留结果的表达式仍走原路径。四条中间指令不能是独立跳转入口。
+
+Number 路径优先；未命中时重新验证目标槽已是 Boolean，再把目标地址保存到 r10，最后验证左右源槽均为 Boolean。目标 guard 可能尚未成功，所以不能复用数字路径失败时的旧 r10。所有边界、编号溢出和类型检查通过前均没有副作用。
+
+等价 C++ 如下，先读取两源再覆盖目标：
+
+```cpp
+bool result = sourceLeft.boolean == sourceRight.boolean;
+target.boolean = result;
+return true; // 赋值成功，与 result 的真假无关。
+```
+
+rdx=左源 Value，rcx=右源 Value，r10=目标 Value。disp32 是 `Value::booleanOffset()` 的四字节小端编码，每条汇编与机器码分别如下：
+
+```asm
+mov r10, rdx                            ; 49 89 D2：保存已验证的目标地址
+; 随后重新定位两源地址，不调用 helper。
+movzx eax, byte ptr [rdx + booleanOffset] ; 0F B6 82 + disp32：读取左 0/1
+cmp al, byte ptr [rcx + booleanOffset]    ; 3A 81 + disp32：比较右 0/1
+sete al                                  ; 0F 94 C0：相等为 1，不等为 0
+mov byte ptr [r10 + booleanOffset], al    ; 41 88 82 + disp32：两源读完才写目标
+mov eax, 1                               ; B8 01 00 00 00：写入 false 也返回成功
+```
+
+目标可以与左源、右源别名，也支持 `value = value == value`。仅别名目标会改变原源槽；独立目标不会修改两源。无需写类型标签、构造临时 Value、改变栈深度或调用 SyncStackSize；r10 不跨 helper、扩容或 GC 使用。捕获目标的 upvalue 仍指向同一个真实栈槽。
+
+目标原来持有字符串、对象等资源，或两源类型不一致时，回退按完整 GetLocal、GetLocal、Equal、SetLocal、Pop 顺序执行，正确更新类型和处理旧资源。非法目标不能抢先于源读取/比较报错；首次读取产生的临时右槽、比较结果临时目标仍保留原字节码行为。
+
+ARM64/decoded、token、Parser、AST、Interpreter 和 bytecode 格式不变。测试覆盖全部布尔组合与旧目标真假、三种目标位置、同槽比较、源值保持、资源型回退、捕获/GC、方法帧、保留结果、非法槽、临时槽及四种独立中间入口。新增 `examples/baseline_boolean_equality_assign_benchmark.js`，实测数据见 [性能报告](baseline-numeric-benchmark.md)。
 
 ### Windows x64 局部条件分支合并
 

@@ -7631,17 +7631,33 @@ void testNativeComparisonAssignmentNumbersAliasesAndErrors() {
 #endif
     }
   }
+  // 三种目标位置覆盖独立目标、左别名和右别名；两源读完后才允许写入。
+  for (const std::uint8_t target : {std::uint8_t(0), std::uint8_t(1), std::uint8_t(2)}) {
+    const auto compiled = compileAssign(minijs::Opcode::Equal, false, 1, target);
+    EXPECT(compiled.succeeded());
+    for (const bool left : {false, true}) {
+      for (const bool right : {false, true}) {
+        for (const bool oldTarget : {false, true}) {
+          EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("update",
+              {minijs::Value(left), minijs::Value(right), minijs::Value(oldTarget)}, compiled.code->entry)
+                     .equals(minijs::Value(left == right)));
+        }
+      }
+    }
+  }
 #if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
   for (const auto& helper : vm.jitRuntimeStats().helpers) EXPECT(helper.name == "minijsBaselineReturnLocal");
 #endif
   vm.resetBaselineHelperProfile();
   const auto equal = compileAssign(minijs::Opcode::Equal,false,1,2);
-  EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("update",
-      {minijs::Value(2.0),minijs::Value(2.0),minijs::Value(std::string("old"))}, equal.code->entry).equals(minijs::Value(true)));
+  for (const auto& value : {minijs::Value(2.0), minijs::Value(true)}) {
+    EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("update",
+        {value, value, minijs::Value(std::string("old"))}, equal.code->entry).equals(minijs::Value(true)));
+  }
 #if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
   EXPECT(vm.jitRuntimeStats().helpers.size() == 5);
   for (const auto& helper : vm.jitRuntimeStats().helpers) {
-    EXPECT(helper.calls == (helper.name == "minijsBaselineGetLocal" ? 2u : 1u));
+    EXPECT(helper.calls == (helper.name == "minijsBaselineGetLocal" ? 4u : 2u));
   }
 #endif
   for (const bool constant : {false,true}) {
@@ -7675,6 +7691,24 @@ void testNativeComparisonAssignmentNumbersAliasesAndErrors() {
   } catch (const minijs::RuntimeError& error) {
     EXPECT(std::string_view(error.what()) == "RuntimeError: local slot out of bounds");
   }
+  for (const auto& code : {badRight, compileAssign(minijs::Opcode::Equal, false, 1, 255)}) {
+    EXPECT(code.succeeded());
+    try {
+      vm.debugExecuteGlobalFunctionBaselineEntry("update",
+          {minijs::Value(false), minijs::Value(true), minijs::Value(false)}, code.code->entry);
+      EXPECT(false);
+    } catch (const minijs::RuntimeError& error) {
+      EXPECT(std::string_view(error.what()) == "RuntimeError: local slot out of bounds");
+    }
+  }
+  // GetLocal 产生的临时右槽和比较结果临时目标仍按原始顺序执行。
+  for (const auto& slots : {std::pair<std::uint8_t, std::uint8_t>{3, 2}, {1, 3}}) {
+    const auto compiled = compileAssign(minijs::Opcode::Equal, false, slots.first, slots.second);
+    EXPECT(compiled.succeeded());
+    EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("update",
+        {minijs::Value(false), minijs::Value(true), minijs::Value(false)}, compiled.code->entry)
+               .equals(minijs::Value(slots.first == 3)));
+  }
 }
 
 void testComparisonAssignmentIndependentEntries() {
@@ -7703,7 +7737,45 @@ void testComparisonAssignmentIndependentEntries() {
       const auto expected = jump == 5 ? minijs::Value(2.0) : minijs::Value(jump == 2);
       EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("update",
           {minijs::Value(8.0),minijs::Value(2.0),minijs::Value(false)}, compiled.code->entry).equals(expected));
+      if (!constant) {
+        EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("update",
+            {minijs::Value(false), minijs::Value(true), minijs::Value(false)}, compiled.code->entry)
+                   .equals(minijs::Value(jump == 2 || jump == 5)));
+      }
     }
+  }
+}
+
+void testBooleanEqualityAssignmentCapturesMethodsAndFallback() {
+  for (const bool enabled : {false, true}) {
+    minijs::VM vm;
+    vm.setJitEnabled(enabled);
+    vm.setJitCallThreshold(1);
+    const auto result = runBytecodeProgramOnVm(vm, R"(
+      function update(left, right, target) { target = left == right; return target; }
+      function preserve(left, right) { let flag = false; flag = left == right; return [left, right, flag]; }
+      function retained(left, right) { let flag = false; return flag = left == right; }
+      function self(value) { value = value == value; return value; }
+      function outer(left, right) {
+        let flag = false; function read() { return flag; }
+        flag = left == right; return read;
+      }
+      class Compare { equal(left, right) { let flag = false; flag = left == right; return flag; } }
+      update(false, true, false); preserve(false, true); retained(false, true); self(false); outer(false, true);
+      let compare = Compare(); compare.equal(false, true);
+      let object = { n: 9 }; let read = outer(true, true);
+      [update(false, false, false), update(false, true, true), update(true, false, true), update(true, true, false),
+       preserve(false, true), preserve(true, true), retained(false, true), retained(false, false),
+       self(false), self(true), read(), compare.equal(false, true), compare.equal(true, true),
+       update(false, false, object), update(false, true, "old"), update(true, true, null),
+       update(true, false, undefined), update(false, false, [1]), update(true, true, read),
+       update(false, true, compare), update(false, false, compare.equal), object.n,
+       update(false, 0, false), update(1, true, false), update("x", "x", false)];
+    )");
+    EXPECT(result.toString() ==
+        "[true, false, false, true, [false, true, false], [true, true, true], false, true, true, true, true, false, true, true, false, true, false, true, true, false, true, 9, false, false, true]");
+    vm.collectGarbage();
+    EXPECT(runBytecodeProgramOnVm(vm, "read();").equals(minijs::Value(true)));
   }
 }
 
@@ -9454,6 +9526,7 @@ void runBytecodeTests() {
   testLocalTruthyAbiPreservesStackAndErrors();
   testLocalBranchIndependentEntriesAndInvalidSlot();
   testNativeComparisonAssignmentNumbersAliasesAndErrors();
+  testBooleanEqualityAssignmentCapturesMethodsAndFallback();
   testComparisonAssignmentIndependentEntries();
   testNativeArithmeticAssignmentTargetsNumbersAndErrors();
   testArithmeticAssignmentIndependentEntries();
