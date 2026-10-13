@@ -136,6 +136,7 @@ ctest --test-dir build-ninja --output-on-failure
 - [FeedbackSlot 与 Inline Cache](docs/inline-cache.md)
 - [Baseline JIT 设计](docs/baseline-jit.md)
 - [Baseline JIT 阶段收口与验收](docs/baseline-jit-closeout.md)
+- [项目演示与结果解读](docs/project-demo.md)
 - [Optimize JIT 设计](docs/optimizing-jit.md)
 - [表达式 AST 与 Opcode 对照](docs/ast-bytecode-expressions.md)
 - [Bytecode Closure 设计](docs/bytecode-closure.md)
