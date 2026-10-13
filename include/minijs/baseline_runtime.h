@@ -14,7 +14,7 @@ extern "C" bool minijsBaselinePushNumberSlot(minijs::BaselineFrame* frame);
 extern "C" bool minijsBaselineGetLocalAndPushNumberSlot(minijs::BaselineFrame* frame,
                                                        std::uint32_t slot);
 extern "C" bool minijsBaselineSetLocal(minijs::BaselineFrame* frame, std::uint32_t slot);
-// 合并数字常量赋值语句，目标类型变化时仍更新完整 Value。
+// 合并数字/布尔常量赋值语句，目标类型变化时仍更新完整 Value。
 extern "C" bool minijsBaselineAssignConstant(minijs::BaselineFrame* frame,
                                             std::uint32_t constantIndex, std::uint32_t targetSlot);
 // 合并结果被丢弃的局部赋值；非数字仍复制完整 Value。

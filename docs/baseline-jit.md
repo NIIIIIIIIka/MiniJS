@@ -1309,7 +1309,7 @@ call rax
 
 ### Windows x64 数字常量赋值合并
 
-`target = 7;` 的字节码为 `Constant index`、`SetLocal slot`、`Pop`。常量是 Number，且 SetLocal/Pop 都不是独立跳转入口时，Windows x64 将三条指令合并。需要保留结果的 `return target = 7;` 没有紧邻 Pop，不参与合并。非数字常量、token、Parser、AST、Interpreter、ARM64 和 decoded 的执行方式均不变。
+`target = 7;` 的字节码为 `Constant index`、`SetLocal slot`、`Pop`。常量是 Number，且 SetLocal/Pop 都不是独立跳转入口时，Windows x64 将三条指令合并。需要保留结果的 `return target = 7;` 没有紧邻 Pop，不参与合并。Boolean 常量见后面的扩展；其它常量、token、Parser、AST、Interpreter、ARM64 和 decoded 的执行方式均不变。
 
 快路径先检查目标槽存在且类型为 Number，再直接覆盖数字载荷。等价 C++ 如下：
 
@@ -1339,7 +1339,7 @@ mov rax, assignConstantHelper
 call rax
 ```
 
-helper 先检查常量索引，保留 Constant 的错误优先级。目标不在原栈内时，仍依次压常量、SetLocal、Pop：目标恰好是新临时槽则合法，真正越界时保留已压入的常量和 `local slot out of bounds`。非数字常量若通过 C ABI 调用该 helper，也使用原顺序，包括原有字符串创建和 GC 根保护。
+helper 先检查常量索引，保留 Constant 的错误优先级。目标不在原栈内时，仍依次压常量、SetLocal、Pop：目标恰好是新临时槽则合法，真正越界时保留已压入的常量和 `local slot out of bounds`。Number/Boolean 以外的常量若通过 C ABI 调用该 helper，也使用原顺序，包括原有字符串创建和 GC 根保护。
 
 guard 未命中前不修改栈；helper 失败由 C ABI 记录并退出。三条 decoded 指令仍保留，native offset 指向同一合并单元，中间独立入口禁止合并。
 
@@ -1627,6 +1627,36 @@ jne epilogue                   ; 0F 85 + rel32
 数字快路径没有临时 Value 或 GC 分配；fallback 仍使用原始栈与常量读取协议。token、Parser、AST、Interpreter、bytecode 格式、ARM64 和 decoded 不变。五条 decoded 指令保留，native offset 指向同一合并单元，不提供独立 deopt 恢复点。
 
 测试覆盖三种比较、真假分支、NaN 位于任一侧、正负零、无穷大、非规格化数、源值不变、类型 fallback、保留短路值、循环、方法帧、四个独立中间入口、共享假路径 Pop、非法槽/常量索引/operation 及错误优先级。新增 `examples/baseline_constant_branch_benchmark.js`，配对数据见 [性能报告](baseline-numeric-benchmark.md)。
+
+### Windows x64 布尔常量赋值合并
+
+常量赋值合并扩展到 `flag = true;`、`flag = false;`。匹配 Constant + SetLocal + Pop，且 SetLocal/Pop 都不是独立跳转入口。需要保留赋值结果的表达式不合并；字符串、null/undefined 等常量不参与本次扩展。
+
+Number 和 Boolean 常量共用 `emitScalarConstantAssignment()`。guard 检查目标槽存在、编号不溢出且与常量类型一致；Number 仍写原始 64 位载荷，Boolean 只写 0/1 的一个字节。等价 C++ 为：
+
+```cpp
+// 已验证 target 和 constant 都是 Boolean。
+target.boolean = constant.isTruthy();
+// 无临时栈槽，无栈深度变化，无同步 helper。
+```
+
+Boolean 使用 Value 现有 isTruthy 接口提取编译期值，但这不是对任意类型做真假转换，因为常量类型已限定为 Boolean。机器码逐行如下：
+
+```asm
+mov byte ptr [rdx + booleanOffset], 1 ; C6 82 + disp32 + 01：赋 true
+; 赋 false 时立即数为 00，上面两种写入只选一种。
+mov eax, 1                           ; B8 01 00 00 00：执行成功
+```
+
+disp32 为 Value::booleanOffset() 的 4 字节小端编码。false 是写入的值，不是执行失败；目标已是 Boolean，无需更新类型标签，也不能覆盖其他类型的资源字段。
+
+目标原来是 Number、字符串、数组、对象、闭包、实例或绑定方法时，guard 未命中，调用既有 `minijsBaselineAssignConstant(frame, index, slot)`。helper 现在支持 Number/Boolean 对合法目标的完整 Value 赋值，释放旧资源并更新类型，不创建临时操作数。捕获该槽的 upvalue 仍读取同一槽，关闭和 GC 规则不变。
+
+常量索引仍先检查，错误优先级不变。目标不在原栈时仍按原顺序压常量、SetLocal、Pop，保留新增临时槽目标及越界时的失败栈。Number 赋值快路径保持原有位编码和机器码行为。
+
+token、Parser、AST、Interpreter、bytecode 格式、ARM64 和 decoded 不变。三条 decoded 指令保留，native offset 指向同一合并单元，中间独立入口禁止合并，不提供独立 deopt 恢复点。
+
+测试覆盖 true/false、无 helper 命中、类型变化、资源型旧值、捕获槽与 GC、方法帧、保留赋值结果、非法常量/目标槽、临时目标槽、独立 SetLocal/Pop 入口及错误优先级。新增 `examples/baseline_boolean_assign_benchmark.js`，配对数据见 [性能报告](baseline-numeric-benchmark.md)。
 
 ### 栈同步边界验证
 

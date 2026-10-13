@@ -6836,6 +6836,110 @@ void testLocalPairExpressionPreservesIndependentOperationEntry() {
   }
 }
 
+void testBooleanConstantAssignmentTypesCapturesAndMethods() {
+  for (const bool enabled : {false,true}) {
+    minijs::VM vm;
+    vm.setJitEnabled(enabled); vm.setJitCallThreshold(1);
+    EXPECT(runBytecodeProgramOnVm(vm, R"(
+      function yes(value) { value = true; return value; }
+      function no(value) { value = false; return value; }
+      function retained(value) { return value = false; }
+      function outer(value) { function read() { return value; } value = true; return read; }
+      class Box { self() { return this; } assign(value) { value = false; return value; } }
+      yes(false); no(true); retained(true); outer(false);
+      let box = Box(); box.assign(true); let object = {}; let read = outer(object);
+      [yes(false),no(true),yes(0),no("old"),yes(null),no(undefined),yes([1]),no(object),
+       yes(read),no(box),yes(box.self),retained(object),read(),box.assign(object)];
+    )").toString() == "[true, false, true, false, true, false, true, false, true, false, true, false, true, false]");
+    vm.collectGarbage();
+    EXPECT(runBytecodeProgramOnVm(vm,"read();").equals(minijs::Value(true)));
+  }
+}
+
+void testNativeBooleanConstantAssignmentHelpersAndBoundaries() {
+  if (!nativeBaselineBackendAvailable()) return;
+  minijs::VM vm;
+  vm.setJitEnabled(true); vm.setJitCallThreshold(1);
+  runBytecodeProgramOnVm(vm,"function yes(value) { value = true; return value; } function no(value) { value = false; return value; } yes(false); no(true);");
+  vm.setBaselineHelperProfilingEnabled(true);
+  for (const auto* name : {"yes","no"}) {
+    const bool expected = std::string_view(name) == "yes";
+    const auto* code = vm.debugGlobalFunctionBaselineCode(name);
+    EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry(name,{minijs::Value(!expected)},code->entry)
+               .equals(minijs::Value(expected)));
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+    EXPECT(code->bytecodeOffsetToNativeOffset[0] == code->bytecodeOffsetToNativeOffset[2]);
+    EXPECT(code->bytecodeOffsetToNativeOffset[0] == code->bytecodeOffsetToNativeOffset[4]);
+#endif
+  }
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+  for (const auto& helper : vm.jitRuntimeStats().helpers) EXPECT(helper.name == "minijsBaselineReturnLocal");
+#endif
+  vm.resetBaselineHelperProfile();
+  const auto* yes = vm.debugGlobalFunctionBaselineCode("yes");
+  EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("yes",{minijs::Value(std::string("old"))},yes->entry)
+             .equals(minijs::Value(true)));
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+  bool found = false;
+  for (const auto& helper : vm.jitRuntimeStats().helpers) {
+    if (helper.name == "minijsBaselineAssignConstant") { EXPECT(helper.calls == 1); found = true; }
+    EXPECT(helper.name != "minijsBaselinePop" && helper.name != "minijsBaselinePushConstant");
+  }
+  EXPECT(found);
+#endif
+  for (const std::uint8_t target : {std::uint8_t(1),std::uint8_t(255)}) {
+    minijs::BytecodeFunction function;
+    function.chunk.addConstant(minijs::Value(true));
+    function.chunk.writeOpcode(minijs::Opcode::Constant); function.chunk.writeByte(0);
+    function.chunk.writeOpcode(minijs::Opcode::SetLocal); function.chunk.writeByte(target);
+    function.chunk.writeOpcode(minijs::Opcode::Pop);
+    function.chunk.writeOpcode(minijs::Opcode::GetLocal); function.chunk.writeByte(0);
+    function.chunk.writeOpcode(minijs::Opcode::Return);
+    const auto compiled = minijs::BaselineCompiler().compile(function);
+    EXPECT(compiled.succeeded());
+    try {
+      const auto result = vm.debugExecuteGlobalFunctionBaselineEntry("yes",{minijs::Value(false)},compiled.code->entry);
+      EXPECT(target == 1 && result.equals(minijs::Value(false)));
+    } catch (const minijs::RuntimeError& error) {
+      EXPECT(target == 255 && std::string_view(error.what()) == "RuntimeError: local slot out of bounds");
+    }
+  }
+  for (const std::uint8_t jump : {std::uint8_t(2),std::uint8_t(4)}) {
+    minijs::BytecodeFunction function;
+    function.chunk.addConstant(minijs::Value(true));
+    function.chunk.writeOpcode(minijs::Opcode::GetLocal); function.chunk.writeByte(0);
+    function.chunk.writeOpcode(minijs::Opcode::Jump); function.chunk.writeByte(0); function.chunk.writeByte(jump);
+    function.chunk.writeOpcode(minijs::Opcode::Constant); function.chunk.writeByte(0);
+    function.chunk.writeOpcode(minijs::Opcode::SetLocal); function.chunk.writeByte(0);
+    function.chunk.writeOpcode(minijs::Opcode::Pop);
+    function.chunk.writeOpcode(minijs::Opcode::GetLocal); function.chunk.writeByte(0);
+    function.chunk.writeOpcode(minijs::Opcode::Return);
+    const auto compiled = minijs::BaselineCompiler().compile(function);
+    EXPECT(compiled.succeeded());
+    EXPECT(compiled.code->bytecodeOffsetToNativeOffset[5] != compiled.code->bytecodeOffsetToNativeOffset[5 + jump]);
+    EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("yes",{minijs::Value(false)},compiled.code->entry)
+               .equals(minijs::Value(false)));
+  }
+}
+
+void testBooleanConstantAssignmentAbiErrorOrder() {
+  minijs::VM vm;
+  runBytecodeProgramOnVm(vm,"function yes(value) { value = true; return value; }");
+  const auto entry = +[](minijs::BaselineFrame* frame) {
+    const auto size = frame->stackSize;
+    EXPECT(minijsBaselineAssignConstant(frame,0,0));
+    EXPECT(frame->stackSize == size);
+    EXPECT(!minijsBaselineAssignConstant(frame,255,255));
+    EXPECT(frame->stackSize == size && frame->errorMessage == "constant index out of bounds");
+    frame->failed = false; frame->errorMessage.clear();
+    EXPECT(!minijsBaselineAssignConstant(frame,0,255));
+    EXPECT(frame->stackSize == size + 1 && frame->errorMessage == "local slot out of bounds");
+    frame->failed = false; frame->errorMessage.clear(); EXPECT(minijsBaselinePop(frame));
+    EXPECT(minijsBaselineReturnLocal(frame,0));
+  };
+  EXPECT(vm.debugExecuteGlobalFunctionBaselineEntry("yes",{minijs::Value(false)},entry).equals(minijs::Value(true)));
+}
+
 void testConstantComparisonBranchSemanticsAndFallback() {
   for (const bool enabled : {false,true}) {
     minijs::VM vm;
@@ -9156,6 +9260,9 @@ void runBytecodeTests() {
   testLocalBranchPreservesLoopsShortCircuitAndCaptures();
   testComparisonBranchPreservesLoopsShortCircuitAndFallback();
   testConstantComparisonBranchSemanticsAndFallback();
+  testBooleanConstantAssignmentTypesCapturesAndMethods();
+  testNativeBooleanConstantAssignmentHelpersAndBoundaries();
+  testBooleanConstantAssignmentAbiErrorOrder();
   testNativeConstantComparisonBranchSpecialNumbersAndCounts();
   testConstantComparisonBranchAbiErrorsAndIndependentEntries();
   testNativeComparisonBranchSpecialValuesAndMergedHelper();

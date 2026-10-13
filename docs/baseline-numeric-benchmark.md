@@ -666,3 +666,35 @@ Windows x64 把直接比较分支扩展到数字常量右值，Number 左值直�
 四个常量比较条件连同 while 的最后假条件，合计少 760,038 次 helper 调用。剩余 38 次数字压栈用于初始化，回边和返回仍保留。此 Number 微基准不命中类型 fallback，另由专项测试确认一次合并 helper。
 
 CTest 32/32 通过。测试覆盖特殊数字、三种比较、源值不变、完整类型 fallback、保留短路结果、循环和方法帧、独立中间入口、共享假路径 Pop、索引/operation 错误及失败栈状态。
+
+### 布尔常量赋值对照
+
+新增 `examples/baseline_boolean_assign_benchmark.js`，每轮依次执行 `flag = true`、`flag = false`，各自用 if 检查并累计。运行 20 轮、每轮 5000 次，只有 true 条件增加 total，预期结果为 `100000`。修改前来自提交 `83855a5`，保存为本机忽略的 `build-verify-release/boolean-assign-before-83855a5.exe`。
+
+Windows x64 扩展 Constant + SetLocal + Pop 合并。Boolean 目标直接写入 0/1 载荷，其它旧类型通过完整 Value 赋值处理。Number 赋值继续使用原有 64 位写入路径。
+
+关闭 helper 采样，每组每版本 3 轮预热、15 轮正式采样，第二组交换执行顺序；每次采样使用新 VM，包含 JIT 编译与前期冷调用：
+
+| 对照组 | 修改前 JIT on | 修改后 JIT on | 前 / 后 | 修改前 JIT off | 修改后 JIT off |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 15.653 ms | 4.962 ms | 3.155x | 79.212 ms | 73.682 ms |
+| 2 | 15.439 ms | 5.958 ms | 2.591x | 71.626 ms | 73.838 ms |
+| 3 | 15.422 ms | 4.735 ms | 3.257x | 71.960 ms | 76.876 ms |
+
+三组 JIT on 中位数降低约 68.3%、61.4%、69.3%。普通 VM 仍有波动，这是同机布尔赋值循环的专项收益，不是任意脚本的固定加速比。所有结果为 `100000`，baseline 入口计数为 19。
+
+另行单轮开启采样，仅核对 helper 数量，不使用采样耗时计算收益：
+
+| helper | 修改前调用 | 修改后调用 |
+| --- | ---: | ---: |
+| `PushConstant` | 190,019 | 19 |
+| `SetLocal` | 190,000 | 0 |
+| `Pop` | 190,000 | 0 |
+| `PushNumberSlot` | 38 | 38 |
+| `RecordLoopBackedge` | 95,000 | 95,000 |
+| `ReturnLocal` | 19 | 19 |
+| `AssignConstant` | 0 | 0 |
+
+合计减少 570,000 次 helper 调用。Boolean 初始化仍有 19 次压常量，数字初始化、回边和返回也仍保留。此微基准的目标均为 Boolean，不命中类型 fallback；专项测试另行确认完整赋值 helper。
+
+CTest 33/33 通过。测试覆盖布尔真假、Number 路径回归、类型变化、资源型旧值、闭包捕获/GC、方法帧、保留结果、非法索引/目标、临时目标及独立中间入口。

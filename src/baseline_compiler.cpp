@@ -516,9 +516,9 @@ class WindowsX64Emitter {
            patchBranchTo(done, offset(), false, error);
   }
 
-  // Constant + SetLocal + Pop：目标已是数字时直接写载荷，不创建临时栈槽。
-  bool emitNumberConstantAssignment(std::uint32_t constantIndex, std::uint32_t targetSlot,
-                                    std::uint64_t bits, std::string& error) {
+  // Constant + SetLocal + Pop：Number/Boolean 同类型目标直接写载荷，无临时栈槽。
+  bool emitScalarConstantAssignment(std::uint32_t constantIndex, std::uint32_t targetSlot,
+                                    const Value& constant, std::string& error) {
     if (!validateInlineValueSize("constant local assignment", error)) return false;
     std::vector<std::size_t> fallbacks;
     emitLoadLocalAddress(targetSlot);
@@ -527,14 +527,23 @@ class WindowsX64Emitter {
     emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackSize)));
     fallbacks.push_back(emitJaePlaceholder());
     emitLocalPointerFromIndex();
-    emit({0x81, 0xBA});  // cmp dword ptr [rdx + typeOffset], Number
+    emit({0x81, 0xBA});  // cmp dword ptr [rdx + typeOffset], Number/Boolean
     emit32(static_cast<std::uint32_t>(Value::typeOffset()));
-    emit32(Value::numberTypeTag());
+    emit32(constant.isNumber() ? Value::numberTypeTag() : Value::booleanTypeTag());
     fallbacks.push_back(emitJnePlaceholder());
-    emit({0x48, 0xB8});  // mov rax, bits：数字的原始 64 位编码，不是整数转 double。
-    emit64(bits);
-    emit({0x48, 0x89, 0x82});  // mov [rdx + numberOffset], rax：覆盖目标数字。
-    emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+    if (constant.isNumber()) {
+      const double number = constant.asNumber();
+      std::uint64_t bits = 0;
+      std::memcpy(&bits, &number, sizeof(bits));
+      emit({0x48, 0xB8});  // mov rax, bits：数字的原始 64 位编码，不是整数转 double。
+      emit64(bits);
+      emit({0x48, 0x89, 0x82});  // mov [rdx + numberOffset], rax
+      emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+    } else {
+      emit({0xC6, 0x82});  // mov byte ptr [rdx + booleanOffset], imm8：覆盖已有 Boolean。
+      emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
+      emit8(constant.isTruthy() ? 1 : 0);
+    }
     emit({0xB8});  // mov eax, 1：成功；栈深度未变。
     emit32(1);
     const auto done = emitJumpPlaceholder();
@@ -1605,17 +1614,16 @@ BaselineCompileResult BaselineCompiler::compile(const BytecodeFunction& function
       }
     }
     if (instruction.opcode == Opcode::Constant && index + 2 < code->instructions.size() &&
-        function.chunk.constant(instruction.operands[0]).isNumber() &&
+        (function.chunk.constant(instruction.operands[0]).isNumber() ||
+         function.chunk.constant(instruction.operands[0]).isBoolean()) &&
         code->instructions[index + 1].opcode == Opcode::SetLocal &&
         code->instructions[index + 2].opcode == Opcode::Pop &&
         !branchTargets[verification.instructionOffsets[index + 1]] &&
         !branchTargets[verification.instructionOffsets[index + 2]]) {
-      const double number = function.chunk.constant(instruction.operands[0]).asNumber();
-      std::uint64_t bits = 0;
-      std::memcpy(&bits, &number, sizeof(bits));
       std::string inlineError;
-      if (!emitter.emitNumberConstantAssignment(instruction.operands[0],
-              code->instructions[index + 1].operands[0], bits, inlineError)) return failure(inlineError);
+      if (!emitter.emitScalarConstantAssignment(instruction.operands[0],
+              code->instructions[index + 1].operands[0], function.chunk.constant(instruction.operands[0]),
+              inlineError)) return failure(inlineError);
       epiloguePatches.push_back({emitter.emitJumpIfFalsePlaceholder(), true});
       for (std::size_t inner = 1; inner <= 2; ++inner) {
         code->bytecodeOffsetToNativeOffset[verification.instructionOffsets[index + inner]] =
