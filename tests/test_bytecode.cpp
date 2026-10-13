@@ -5786,6 +5786,34 @@ void testBaselineBooleanBranchesAndTruthyFallback() {
   }
 }
 
+void testNativeRuntimeHelperReturnIsByteNormalized() {
+  if (!nativeBaselineBackendAvailable()) return;
+  minijs::BytecodeFunction function;
+  function.chunk.writeOpcode(minijs::Opcode::GetLocal); function.chunk.writeByte(0);
+  function.chunk.writeOpcode(minijs::Opcode::Return);
+  const auto compiled = minijs::BaselineCompiler().compile(function);
+  EXPECT(compiled.succeeded());
+  const auto* bytes = static_cast<const std::uint8_t*>(compiled.code->executableMemory->data());
+  const auto start = compiled.code->bytecodeOffsetToNativeOffset[0];
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+  // mov rcx,rbx(3) + mov edx,slot(5) + mov rax,helper(10)，随后调用并零扩展 al。
+  const std::size_t call = start + 18;
+  if (call + 5 > compiled.code->executableMemory->size()) { EXPECT(false); return; }
+  EXPECT(bytes[call] == 0xFF && bytes[call + 1] == 0xD0);
+  EXPECT(bytes[call + 2] == 0x0F && bytes[call + 3] == 0xB6 && bytes[call + 4] == 0xC0);
+#elif defined(__aarch64__) || defined(_M_ARM64)
+  // slot=0 的 w1 只需 movz；helper 地址仅为非零高段发射 movk，不能假定固定长度。
+  const auto address = reinterpret_cast<std::uintptr_t>(&minijsBaselineGetLocal);
+  std::size_t call = start + 4 + 4 + 4; // frame、slot、helper 低段各一条指令。
+  for (std::uint32_t shift = 1; shift < 4; ++shift) {
+    if (((address >> (shift * 16)) & 0xffff) != 0) call += 4;
+  }
+  if (call + 8 > compiled.code->executableMemory->size()) { EXPECT(false); return; }
+  EXPECT(bytes[call] == 0x00 && bytes[call + 1] == 0x02 && bytes[call + 2] == 0x3F && bytes[call + 3] == 0xD6);
+  EXPECT(bytes[call + 4] == 0x00 && bytes[call + 5] == 0x1C && bytes[call + 6] == 0x00 && bytes[call + 7] == 0x53);
+#endif
+}
+
 void testJitBooleanBranchesPreserveLogicalOperandsAndSideEffects() {
   for (const bool enabled : {false, true}) {
     minijs::VM vm;
@@ -10282,6 +10310,7 @@ void runBytecodeTests() {
   testDiscardedValuesPreserveSurvivorsAcrossExecutors();
   testDiscardTopPreservesStackUnderflowError();
   testBaselineBooleanBranchesAndTruthyFallback();
+  testNativeRuntimeHelperReturnIsByteNormalized();
   testJitBooleanBranchesPreserveLogicalOperandsAndSideEffects();
   testBooleanBranchFallbackPreservesStackUnderflow();
   testBaselineBooleanNotAndTruthyFallback();

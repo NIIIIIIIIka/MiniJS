@@ -4,6 +4,8 @@
 
 ## 当前状态
 
+本阶段已进入功能冻结与维护。范围、验收命令和平台限制见 [收口记录](baseline-jit-closeout.md)；不再默认增加 opcode 快路径，复杂对象/调用操作保留 helper，Optimize JIT 另行立项。
+
 - [x] `BytecodeFunction` 持有 `JitFeedback`，记录 `callCount`、`backedgeCount` 和 `JitState`。
 - [x] `VM` 持有 `JitOptions`，可以通过 `setJitEnabled()`、`setJitCallThreshold()`、`setJitBackedgeThreshold()` 控制热度收集。
 - [x] 函数调用通过 `recordFunctionCall()` 计数，循环回边通过 `recordLoopBackedge()` 计数。
@@ -1996,8 +1998,19 @@ token、Parser、AST、Interpreter、bytecode 格式、ARM64 和 decoded 不变�
 
 当前 offset 映射用于分支回填和定位指令起点，不包含上述恢复信息。现有类型 guard 直接调用当前 opcode 的 helper，因此暂时无需恢复整个 VM 帧。未来只有确定恢复状态和副作用边界后，才可以增加执行中切回 VM 的机制。
 
-## 下一步
+## 阶段停止线
 
-1. 对现有数字快路径集中验证 guard 命中、类型 fallback、零除数、NaN 和嵌套 helper 调用后的栈快照刷新。
-2. 数字局部变量、数字常量、Boolean 条件跳转和取反已有快路径，`OP_POP` 已消除丢弃时的 Value 副本，数字槽已改为原地构造；[性能报告](baseline-numeric-benchmark.md) 记录 Release 前后对照。后续先测量剩余 helper 成本，再选择下一条值得内联的 opcode。
-3. 引入执行中恢复需求时，再增加 safepoint 元数据和 deopt 帧恢复协议。
+1. 本阶段不再添加新的 opcode 内联、比较组合或语法功能。现有数字、Boolean、空值比较与局部槽合并作为冻结范围，复杂对象/调用路径保留 runtime helper。
+2. 后续仅修复正确性、ABI/GC 安全、可复现性能回归、构建/文档问题。验收必须同时运行常规和 Release 测试，不能只用未优化构建宣布通过。
+3. safepoint、deopt、OSR、优化 IR 和 shape 专门化均属于下一阶段，不在本次实现。未经明确新目标，不启动 Optimize JIT 或外部 VM 的扩展对比工程。
+
+### 窄返回值 ABI 收口修复
+
+当前所有 runtime helper 返回 bool 或 uint8_t。Windows x64 只保证低字节 al 有效，不能直接把未清理的 eax 高位当作状态；Release 验收曾因此误判正常三态返回并报 baseline entry did not complete。所有 helper 调用出口统一零扩展，再执行现有 0/1 或 0/1/2 检查：
+
+```asm
+call rax       ; FF D0
+movzx eax, al  ; 0F B6 C0：清除不属于返回值的高位
+```
+
+ARM64 同样在 blr x16 后发射 uxtb w0,w0（00 1C 00 53），再检查 w0。helper 原型、字节码和业务语义不变，只有 ABI 结果归一化；新测试检查生成字节序列，Release 全套测试覆盖实际窄返回值回退。ARM64 实机验证仍是平台验收缺口，不因发射代码存在而宣称已验证。

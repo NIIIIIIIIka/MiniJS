@@ -88,7 +88,11 @@ class Arm64Emitter {
 
   void emitLoadHelper(std::uintptr_t value) { emitLoadX16Imm64(value); }
 
-  void emitCallHelper() { emitBlrX16(); }
+  void emitCallHelper() {
+    emitBlrX16();
+    // Runtime ABI 只返回 bool/uint8_t；分支检查 w0 前先清除窄返回值的高位。
+    emit32(0x53001C00);  // uxtb w0, w0
+  }
 
   std::size_t emitJumpIfFalsePlaceholder() { return emitCbzW0Placeholder(); }
 
@@ -287,6 +291,8 @@ class WindowsX64Emitter {
 
   void emitCallHelper() {
     emit({0xFF, 0xD0});  // call rax
+    // bool/uint8_t 只保证 al 有效；不能让 Release 下的 eax 高位参与状态判断。
+    emit({0x0F, 0xB6, 0xC0});  // movzx eax, al
   }
 
   std::size_t emitJumpIfFalsePlaceholder() {

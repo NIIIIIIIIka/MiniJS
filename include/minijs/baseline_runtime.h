@@ -5,6 +5,8 @@
 #include "minijs/baseline_frame.h"
 #include "minijs/value.h"
 
+// native emitter 将 helper 返回值按低字节零扩展；新增接口必须保持 bool/uint8_t 返回协议。
+// 若改为其它返回类型，必须同步修改调用方的寄存器处理与对应 ABI 测试。
 extern "C" bool minijsBaselinePush(minijs::BaselineFrame* frame, const minijs::Value* value);
 extern "C" bool minijsBaselinePushConstant(minijs::BaselineFrame* frame,
                                             std::uint32_t constantIndex);

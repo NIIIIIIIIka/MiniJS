@@ -1,5 +1,7 @@
 # Baseline 数字循环性能对比
 
+阶段已收口，见 [验收记录](baseline-jit-closeout.md)。下文保留各次提交的历史实验，不代表统一发布性能承诺。收口验收修复了 runtime helper 窄返回值的高位归一化问题；旧数据不包含该修复，不能直接充当当前版本的完整 Release 性能基线。本次只做正确性和端到端结果一致性验收，不继续增加微基准或宣传新提速。
+
 ## 测试目标
 
 `examples/baseline_numeric_benchmark.js` 集中覆盖数字 `Add`、`Sub`、`Mul`、`Div`、`Less`、`Greater` 和 `Equal`，用于比较当前普通 VM 与 native baseline 的整体运行成本。它不包含对象、数组或属性访问，避免 inline cache 工作混入数字循环结果。
