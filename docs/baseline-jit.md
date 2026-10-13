@@ -1644,6 +1644,37 @@ guard 失败后按完整 GetLocal、PushConstant、Equal、SetLocal、Pop 顺序
 
 token、Parser、AST、Interpreter、bytecode 格式、ARM64 和 decoded 不变。五条 native offset 指向同一合并单元，不提供独立 deopt 恢复点。测试覆盖真假常量、源/旧目标四种组合、同槽更新、资源型回退及 helper 计数、捕获/GC、方法帧、源值保持、保留结果、非法源/目标、临时结果槽和四种独立中间入口。新增 `examples/baseline_boolean_constant_assign_benchmark.js`，数据见 [性能报告](baseline-numeric-benchmark.md)。
 
+### Windows x64 Null/Undefined 常量相等结果赋值
+
+`flag = value == null/undefined;` 合并 GetLocal + Constant + Equal + SetLocal + Pop。四条中间指令不能是独立入口，赋值结果必须由紧邻 Pop 丢弃；保留结果和 Less/Greater 不参与此扩展。沿用当前类型相等语义，null 不等于 undefined 或其它假值。
+
+Boolean、Null、Undefined 常量共用 `emitScalarConstantComparisonAssignment()` 及同一完整 fallback。Boolean 常量仍比较布尔载荷；Null/Undefined 没有载荷，直接比较源类型标签即可对任意有效源类型给出结果。源类型不同是正常 false，不需要源类型 fallback。
+
+目标必须已经是 Boolean，先验证目标并保存地址到 r10；随后检查源槽编号溢出与边界，读取源标签，比较完成后才写入目标。等价 C++ 如下：
+
+```cpp
+bool result = source.type == constantType; // Null 或 Undefined
+target.boolean = result;
+return true; // 写入 false 也代表执行成功。
+```
+
+rdx=源 Value，r10=目标 Value。disp32 是字段偏移的四字节小端编码，imm32 是空值类型标签：
+
+```asm
+mov r10, rdx                            ; 49 89 D2：保存已验证的 Boolean 目标
+; 随后重新定位有效源槽，不调用 helper。
+cmp dword ptr [rdx + typeOffset], typeTag ; 81 BA + disp32 + imm32：比较 Null/Undefined 标签
+sete al                                  ; 0F 94 C0：同类型为 1，其它为 0
+mov byte ptr [r10 + booleanOffset], al    ; 41 88 82 + disp32：读完源再写目标
+mov eax, 1                               ; B8 01 00 00 00：赋值成功
+```
+
+源与目标同槽且旧值是 Boolean 时可直接写 false；旧值是 Null/Undefined 或资源类型时，目标 guard 失败，必须完整 Value 赋值才能更新类型和处理旧资源。独立目标不会修改源对象身份或内容。快路径没有临时 Value、栈深度变化、helper 或 GC 分配，捕获目标仍指向同一个真实栈槽；r10 不跨 helper 使用。
+
+所有 guard 都不抛错、不改栈。fallback 仍按 GetLocal、PushConstant、Equal、SetLocal、Pop 原顺序执行，每步失败立即退出；提前检查目标不能抢先报错。非法源优先于非法目标，临时比较结果槽目标仍合法。常量从当前 closure 的实际常量池读取，旧资源通过完整赋值管理。
+
+token、Parser、AST、Interpreter、bytecode 格式、ARM64/decoded 不变。五条 native offset 指向同一合并单元。测试覆盖空值同/交叉类型、其它源类型和旧目标真假、同槽更新、资源型回退/helper 数量、源对象身份、保留结果、捕获/GC、方法帧、非法源/目标顺序、临时结果槽及四种独立中间入口。新增 `examples/baseline_empty_constant_assign_benchmark.js`，数据见 [性能报告](baseline-numeric-benchmark.md)。
+
 ### Windows x64 局部条件分支合并
 
 `if (flag)`、`while (flag)` 会先把局部值复制到操作数栈，再测试真假，并在真假两条路径上各自 Pop 条件副本。满足以下结构时，Windows x64 可以直接读局部槽：
