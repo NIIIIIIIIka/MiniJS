@@ -268,12 +268,14 @@ class VM {
   friend bool ::minijsBaselineGreater(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineLess(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineNot(minijs::BaselineFrame* frame);
-  friend std::uint8_t ::minijsBaselinePeekTruthy(minijs::BaselineFrame* frame);
-  friend std::uint8_t ::minijsBaselineLocalTruthy(minijs::BaselineFrame* frame, std::uint32_t slot);
-  friend std::uint8_t ::minijsBaselineCompareLocalsTruthy(minijs::BaselineFrame* frame,
-      std::uint32_t leftSlot, std::uint32_t rightSlot, std::uint32_t operation);
-  friend std::uint8_t ::minijsBaselineCompareLocalConstantTruthy(minijs::BaselineFrame* frame,
-      std::uint32_t leftSlot, std::uint32_t constantIndex, std::uint32_t operation);
+  // 尾置返回类型避免 Clang 将 std::uint8_t 后的全局限定符解析为类型成员。
+  friend auto ::minijsBaselinePeekTruthy(minijs::BaselineFrame* frame) -> std::uint8_t;
+  friend auto ::minijsBaselineLocalTruthy(minijs::BaselineFrame* frame, std::uint32_t slot)
+      -> std::uint8_t;
+  friend auto ::minijsBaselineCompareLocalsTruthy(minijs::BaselineFrame* frame,
+      std::uint32_t leftSlot, std::uint32_t rightSlot, std::uint32_t operation) -> std::uint8_t;
+  friend auto ::minijsBaselineCompareLocalConstantTruthy(minijs::BaselineFrame* frame,
+      std::uint32_t leftSlot, std::uint32_t constantIndex, std::uint32_t operation) -> std::uint8_t;
   friend bool ::minijsBaselineRecordLoopBackedge(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineSyncStackSize(minijs::BaselineFrame* frame);
   friend bool ::minijsBaselineReturn(minijs::BaselineFrame* frame);
