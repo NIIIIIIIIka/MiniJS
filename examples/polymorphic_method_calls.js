@@ -1,13 +1,23 @@
-class A {
-  get() { return 1; }
+class First {
+  get() {
+    return 1;
+  }
 }
 
-class B {
-  get() { return 2; }
+class Second {
+  get() {
+    return 2;
+  }
 }
 
-function read(value) {
-  return value.get();
+function read(box) {
+  return box.get();
 }
 
-read(A()) + read(B()) + read(A()) + read(B());
+let first = First();
+let second = Second();
+
+read(first);
+read(second);
+read(first);
+read(second);

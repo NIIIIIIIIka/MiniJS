@@ -1,17 +1,20 @@
-class Alpha {
-  static make(value) {
-    return value + 1;
+class First {
+  static get() {
+    return 1;
   }
 }
 
-class Beta {
-  static make(value) {
-    return value + 10;
+class Second {
+  static get() {
+    return 2;
   }
 }
 
-function read(type) {
-  return type.make(1);
+function read(Box) {
+  return Box.get();
 }
 
-read(Alpha) + read(Beta) + read(Alpha) + read(Beta);
+read(First);
+read(Second);
+read(First);
+read(Second);

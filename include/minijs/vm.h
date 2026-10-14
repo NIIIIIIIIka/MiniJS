@@ -1,7 +1,8 @@
-﻿#pragma once
+#pragma once
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <type_traits>
@@ -9,11 +10,85 @@
 #include <utility>
 #include <vector>
 
+#include "minijs/baseline_frame.h"
 #include "minijs/bytecode_function.h"
 #include "minijs/bytecode_closure.h"
 #include "minijs/chunk.h"
 #include "minijs/object.h"
 #include "minijs/value.h"
+
+extern "C" bool minijsBaselinePush(minijs::BaselineFrame* frame, const minijs::Value* value);
+extern "C" bool minijsBaselinePushConstant(minijs::BaselineFrame* frame,
+                                            std::uint32_t constantIndex);
+extern "C" bool minijsBaselineGetLocal(minijs::BaselineFrame* frame, std::uint32_t slot);
+extern "C" bool minijsBaselinePushNumberSlot(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineGetLocalAndPushNumberSlot(minijs::BaselineFrame* frame,
+                                                       std::uint32_t slot);
+extern "C" bool minijsBaselineSetLocal(minijs::BaselineFrame* frame, std::uint32_t slot);
+extern "C" bool minijsBaselineAssignConstant(minijs::BaselineFrame* frame,
+                                            std::uint32_t constantIndex, std::uint32_t targetSlot);
+extern "C" bool minijsBaselineCopyLocal(minijs::BaselineFrame* frame, std::uint32_t sourceSlot,
+                                       std::uint32_t targetSlot);
+extern "C" bool minijsBaselinePop(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineDefineGlobal(minijs::BaselineFrame* frame,
+                                            std::uint32_t nameIndex);
+extern "C" bool minijsBaselineGetGlobal(minijs::BaselineFrame* frame,
+                                         std::uint32_t nameIndex);
+extern "C" bool minijsBaselineSetGlobal(minijs::BaselineFrame* frame,
+                                         std::uint32_t nameIndex);
+extern "C" bool minijsBaselineArray(minijs::BaselineFrame* frame, std::uint32_t count);
+extern "C" bool minijsBaselineGetIndex(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineSetIndex(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineObject(minijs::BaselineFrame* frame, std::uint32_t namesIndex);
+extern "C" bool minijsBaselineGetProperty(minijs::BaselineFrame* frame,
+                                           std::uint32_t nameIndex,
+                                           std::uint32_t feedbackSlotIndex);
+extern "C" bool minijsBaselineSetProperty(minijs::BaselineFrame* frame,
+                                           std::uint32_t nameIndex,
+                                           std::uint32_t feedbackSlotIndex);
+extern "C" bool minijsBaselineClass(minijs::BaselineFrame* frame, std::uint32_t nameIndex);
+extern "C" bool minijsBaselineMethod(minijs::BaselineFrame* frame, std::uint32_t nameIndex);
+extern "C" bool minijsBaselineStaticMethod(minijs::BaselineFrame* frame,
+                                            std::uint32_t nameIndex);
+extern "C" bool minijsBaselineInherit(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineGetUpvalue(minijs::BaselineFrame* frame, std::uint32_t slot);
+extern "C" bool minijsBaselineSetUpvalue(minijs::BaselineFrame* frame, std::uint32_t slot);
+extern "C" bool minijsBaselineCloseUpvalue(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineGetCurrentClosure(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineClosure(minijs::BaselineFrame* frame,
+                                       std::uint32_t functionIndex,
+                                       std::uint32_t bytecodeOffset);
+extern "C" bool minijsBaselineCall(minijs::BaselineFrame* frame, std::uint32_t argCount);
+extern "C" bool minijsBaselineMethodCall(minijs::BaselineFrame* frame,
+                                          std::uint32_t nameIndex,
+                                          std::uint32_t argCount,
+                                          std::uint32_t feedbackSlotIndex);
+extern "C" bool minijsBaselineSuperCall(minijs::BaselineFrame* frame,
+                                         std::uint32_t nameIndex,
+                                         std::uint32_t argCount);
+extern "C" bool minijsBaselineAdd(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineSub(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineMul(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineDiv(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineMod(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineModNumber(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineNegate(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineEqual(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineGreater(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineLess(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineNot(minijs::BaselineFrame* frame);
+extern "C" std::uint8_t minijsBaselinePeekTruthy(minijs::BaselineFrame* frame);
+extern "C" std::uint8_t minijsBaselineLocalTruthy(minijs::BaselineFrame* frame, std::uint32_t slot);
+extern "C" std::uint8_t minijsBaselineCompareLocalsTruthy(minijs::BaselineFrame* frame,
+    std::uint32_t leftSlot, std::uint32_t rightSlot, std::uint32_t operation);
+extern "C" std::uint8_t minijsBaselineCompareLocalConstantTruthy(minijs::BaselineFrame* frame,
+    std::uint32_t leftSlot, std::uint32_t constantIndex, std::uint32_t operation);
+extern "C" bool minijsBaselineRecordLoopBackedge(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineSyncStackSize(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineReturn(minijs::BaselineFrame* frame);
+extern "C" bool minijsBaselineReturnLocal(minijs::BaselineFrame* frame, std::uint32_t slot);
+extern "C" bool minijsBaselineReturnNumberBits(minijs::BaselineFrame* frame, std::uint64_t bits);
+extern "C" bool minijsBaselineReturnConstant(minijs::BaselineFrame* frame, std::uint32_t constantIndex);
 
 namespace minijs {
 
@@ -22,6 +97,7 @@ struct ObjClass;
 struct ObjShape;
 struct ObjUpvalue;
 struct ObjFunction;
+struct BaselineCode;
 
 // 一次字节码函数调用的执行状态。
 struct CallFrame {
@@ -42,6 +118,49 @@ struct PropertyInlineCacheStats {
   std::size_t misses = 0;
   std::size_t updates = 0;
   std::size_t bypasses = 0;
+
+  std::size_t setHits = 0;
+  std::size_t setMisses = 0;
+  std::size_t setUpdates = 0;
+  std::size_t setBypasses = 0;
+
+  std::size_t methodCallInstanceDispatches = 0;
+  std::size_t methodCallStaticDispatches = 0;
+  std::size_t methodCallArrayPushes = 0;
+  std::size_t methodCallArrayPops = 0;
+  std::size_t methodCallDispatchErrors = 0;
+  std::size_t methodCallHits = 0;
+  std::size_t methodCallMisses = 0;
+  std::size_t methodCallUpdates = 0;
+  std::size_t methodCallBypasses = 0;
+};
+
+struct JitOptions {
+  bool enabled = false;
+  std::uint32_t callThreshold = 100;
+  std::uint32_t backedgeThreshold = 1000;
+};
+
+// 可选的 native C ABI helper 采样；耗时包含嵌套调用，不能相加当作总耗时。
+struct BaselineHelperStats {
+  std::string name;
+  std::uint64_t calls = 0;
+  std::uint64_t nanoseconds = 0;
+};
+
+struct JitRuntimeStats {
+  std::size_t functions = 0;
+  std::size_t cold = 0;
+  std::size_t scheduled = 0;
+  std::size_t compiled = 0;
+  std::size_t failed = 0;
+  std::uint64_t calls = 0;
+  std::uint64_t backedges = 0;
+  std::uint64_t baselineEntries = 0;
+  std::size_t nativeEntries = 0;
+  std::size_t decodedEntries = 0;
+  bool helperProfilingEnabled = false;
+  std::vector<BaselineHelperStats> helpers;
 };
 
 // 执行 Chunk 的栈式虚拟机。
@@ -52,6 +171,20 @@ class VM {
 
   Value run(const Chunk& chunk);
   std::size_t objectCount() const;
+  PropertyInlineCacheStats propertyInlineCacheStats() const;
+  void resetPropertyInlineCacheStats();
+  bool inlineCachesEnabled() const;
+  void setInlineCachesEnabled(bool enabled);
+  bool jitEnabled() const;
+  void setJitEnabled(bool enabled);
+  void setJitCallThreshold(std::uint32_t threshold);
+  void setJitBackedgeThreshold(std::uint32_t threshold);
+  JitRuntimeStats jitRuntimeStats() const;
+  void setBaselineHelperProfilingEnabled(bool enabled) { helperProfilingEnabled_ = enabled; }
+  bool baselineHelperProfilingEnabled() const { return helperProfilingEnabled_; }
+  void resetBaselineHelperProfile() { helperProfile_.clear(); }
+  // 诊断统计不能让异常穿过 C ABI，也不能改变脚本的执行结果。
+  void recordBaselineHelperProfile(const char* name, std::uint64_t nanoseconds) noexcept;
 
   void collectGarbage();
 
@@ -59,11 +192,97 @@ class VM {
   bool debugHasRootObjectShape() const { return rootObjectShape_ != nullptr; }
   const ObjShape* debugGlobalObjectShape(const std::string& name) const;
   bool debugGlobalObjectUsesDictionary(const std::string& name) const;
+  const JitFeedback* debugGlobalFunctionJitFeedback(const std::string& name) const;
+  const JitFeedback* debugGlobalClassMethodJitFeedback(const std::string& className,
+                                                       const std::string& methodName,
+                                                       bool isStatic = false) const;
+  const BaselineCode* debugGlobalFunctionBaselineCode(const std::string& name) const;
+  std::string debugGlobalFunctionJitCompileError(const std::string& name) const;
+  Value debugExecuteGlobalFunctionBaseline(const std::string& name,
+                                           const std::vector<Value>& arguments);
+  Value debugExecuteGlobalFunctionBaselineEntry(const std::string& name,
+                                                const std::vector<Value>& arguments,
+                                                BaselineEntry entry);
   PropertyInlineCacheStats debugPropertyInlineCacheStats() const;
   void debugResetPropertyInlineCacheStats();
 #endif
 
  private:
+  friend bool ::minijsBaselinePush(minijs::BaselineFrame* frame, const minijs::Value* value);
+  friend bool ::minijsBaselinePushConstant(minijs::BaselineFrame* frame,
+                                           std::uint32_t constantIndex);
+  friend bool ::minijsBaselineGetLocal(minijs::BaselineFrame* frame, std::uint32_t slot);
+  friend bool ::minijsBaselinePushNumberSlot(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineGetLocalAndPushNumberSlot(minijs::BaselineFrame* frame,
+                                                       std::uint32_t slot);
+  friend bool ::minijsBaselineSetLocal(minijs::BaselineFrame* frame, std::uint32_t slot);
+  friend bool ::minijsBaselineAssignConstant(minijs::BaselineFrame* frame,
+                                            std::uint32_t constantIndex, std::uint32_t targetSlot);
+  friend bool ::minijsBaselineCopyLocal(minijs::BaselineFrame* frame, std::uint32_t sourceSlot,
+                                       std::uint32_t targetSlot);
+  friend bool ::minijsBaselinePop(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineDefineGlobal(minijs::BaselineFrame* frame,
+                                           std::uint32_t nameIndex);
+  friend bool ::minijsBaselineGetGlobal(minijs::BaselineFrame* frame,
+                                        std::uint32_t nameIndex);
+  friend bool ::minijsBaselineSetGlobal(minijs::BaselineFrame* frame,
+                                        std::uint32_t nameIndex);
+  friend bool ::minijsBaselineArray(minijs::BaselineFrame* frame, std::uint32_t count);
+  friend bool ::minijsBaselineGetIndex(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineSetIndex(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineObject(minijs::BaselineFrame* frame, std::uint32_t namesIndex);
+  friend bool ::minijsBaselineGetProperty(minijs::BaselineFrame* frame,
+                                          std::uint32_t nameIndex,
+                                          std::uint32_t feedbackSlotIndex);
+  friend bool ::minijsBaselineSetProperty(minijs::BaselineFrame* frame,
+                                          std::uint32_t nameIndex,
+                                          std::uint32_t feedbackSlotIndex);
+  friend bool ::minijsBaselineClass(minijs::BaselineFrame* frame, std::uint32_t nameIndex);
+  friend bool ::minijsBaselineMethod(minijs::BaselineFrame* frame, std::uint32_t nameIndex);
+  friend bool ::minijsBaselineStaticMethod(minijs::BaselineFrame* frame,
+                                           std::uint32_t nameIndex);
+  friend bool ::minijsBaselineInherit(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineGetUpvalue(minijs::BaselineFrame* frame, std::uint32_t slot);
+  friend bool ::minijsBaselineSetUpvalue(minijs::BaselineFrame* frame, std::uint32_t slot);
+  friend bool ::minijsBaselineCloseUpvalue(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineGetCurrentClosure(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineClosure(minijs::BaselineFrame* frame,
+                                      std::uint32_t functionIndex,
+                                      std::uint32_t bytecodeOffset);
+  friend bool ::minijsBaselineCall(minijs::BaselineFrame* frame, std::uint32_t argCount);
+  friend bool ::minijsBaselineMethodCall(minijs::BaselineFrame* frame,
+                                         std::uint32_t nameIndex,
+                                         std::uint32_t argCount,
+                                         std::uint32_t feedbackSlotIndex);
+  friend bool ::minijsBaselineSuperCall(minijs::BaselineFrame* frame,
+                                        std::uint32_t nameIndex,
+                                        std::uint32_t argCount);
+  friend bool ::minijsBaselineAdd(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineSub(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineMul(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineDiv(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineMod(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineModNumber(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineNegate(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineEqual(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineGreater(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineLess(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineNot(minijs::BaselineFrame* frame);
+  // 尾置返回类型避免 Clang 将 std::uint8_t 后的全局限定符解析为类型成员。
+  friend auto ::minijsBaselinePeekTruthy(minijs::BaselineFrame* frame) -> std::uint8_t;
+  friend auto ::minijsBaselineLocalTruthy(minijs::BaselineFrame* frame, std::uint32_t slot)
+      -> std::uint8_t;
+  friend auto ::minijsBaselineCompareLocalsTruthy(minijs::BaselineFrame* frame,
+      std::uint32_t leftSlot, std::uint32_t rightSlot, std::uint32_t operation) -> std::uint8_t;
+  friend auto ::minijsBaselineCompareLocalConstantTruthy(minijs::BaselineFrame* frame,
+      std::uint32_t leftSlot, std::uint32_t constantIndex, std::uint32_t operation) -> std::uint8_t;
+  friend bool ::minijsBaselineRecordLoopBackedge(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineSyncStackSize(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineReturn(minijs::BaselineFrame* frame);
+  friend bool ::minijsBaselineReturnLocal(minijs::BaselineFrame* frame, std::uint32_t slot);
+  friend bool ::minijsBaselineReturnNumberBits(minijs::BaselineFrame* frame, std::uint64_t bits);
+  friend bool ::minijsBaselineReturnConstant(minijs::BaselineFrame* frame, std::uint32_t constantIndex);
+
   class TemporaryRootScope {
    public:
     explicit TemporaryRootScope(VM& vm);
@@ -101,10 +320,111 @@ class VM {
 
   void push(Value value);
   Value pop();
+  // 丢弃栈顶，不复制即将销毁的 Value；需要返回值时仍使用 pop()。
+  void discardTop();
   const Value& peek() const;
+  void refreshBaselineFrameStack(BaselineFrame& frame);
+  void validateBaselineRuntimeFrame(const BaselineFrame& frame) const;
+  bool baselineRuntimePush(BaselineFrame& frame, const Value& value);
+  bool baselineRuntimePushConstant(BaselineFrame& frame, std::uint32_t constantIndex);
+  bool baselineRuntimeGetLocal(BaselineFrame& frame, std::uint32_t slot);
+  bool baselineRuntimePushNumberSlot(BaselineFrame& frame);
+  bool baselineRuntimeGetLocalAndPushNumberSlot(BaselineFrame& frame, std::uint32_t slot);
+  bool baselineRuntimeSetLocal(BaselineFrame& frame, std::uint32_t slot);
+  bool baselineRuntimeAssignConstant(BaselineFrame& frame, std::uint32_t constantIndex,
+                                     std::uint32_t targetSlot);
+  bool baselineRuntimeCopyLocal(BaselineFrame& frame, std::uint32_t sourceSlot,
+                                std::uint32_t targetSlot);
+  bool baselineRuntimePop(BaselineFrame& frame);
+  bool baselineRuntimeDefineGlobal(BaselineFrame& frame, std::uint32_t nameIndex);
+  bool baselineRuntimeGetGlobal(BaselineFrame& frame, std::uint32_t nameIndex);
+  bool baselineRuntimeSetGlobal(BaselineFrame& frame, std::uint32_t nameIndex);
+  bool baselineRuntimeArray(BaselineFrame& frame, std::uint32_t count);
+  bool baselineRuntimeGetIndex(BaselineFrame& frame);
+  bool baselineRuntimeSetIndex(BaselineFrame& frame);
+  bool baselineRuntimeObject(BaselineFrame& frame, std::uint32_t namesIndex);
+  bool baselineRuntimeGetProperty(BaselineFrame& frame, std::uint32_t nameIndex,
+                                  std::uint32_t feedbackSlotIndex);
+  bool baselineRuntimeSetProperty(BaselineFrame& frame, std::uint32_t nameIndex,
+                                  std::uint32_t feedbackSlotIndex);
+  bool baselineRuntimeClass(BaselineFrame& frame, std::uint32_t nameIndex);
+  bool baselineRuntimeMethod(BaselineFrame& frame, std::uint32_t nameIndex);
+  bool baselineRuntimeStaticMethod(BaselineFrame& frame, std::uint32_t nameIndex);
+  bool baselineRuntimeInherit(BaselineFrame& frame);
+  bool baselineRuntimeGetUpvalue(BaselineFrame& frame, std::uint32_t slot);
+  bool baselineRuntimeSetUpvalue(BaselineFrame& frame, std::uint32_t slot);
+  bool baselineRuntimeCloseUpvalue(BaselineFrame& frame);
+  bool baselineRuntimeGetCurrentClosure(BaselineFrame& frame);
+  bool baselineRuntimeClosure(BaselineFrame& frame, std::uint32_t functionIndex,
+                              std::uint32_t bytecodeOffset);
+  bool baselineRuntimeCall(BaselineFrame& frame, std::uint32_t argCount);
+  bool baselineRuntimeMethodCall(BaselineFrame& frame, std::uint32_t nameIndex,
+                                 std::uint32_t argCount,
+                                 std::uint32_t feedbackSlotIndex);
+  bool baselineRuntimeSuperCall(BaselineFrame& frame, std::uint32_t nameIndex,
+                                std::uint32_t argCount);
+  bool baselineRuntimeAdd(BaselineFrame& frame);
+  bool baselineRuntimeSub(BaselineFrame& frame);
+  bool baselineRuntimeMul(BaselineFrame& frame);
+  bool baselineRuntimeDiv(BaselineFrame& frame);
+  bool baselineRuntimeMod(BaselineFrame& frame);
+  bool baselineRuntimeModNumber(BaselineFrame& frame);
+  bool baselineRuntimeNegate(BaselineFrame& frame);
+  bool baselineRuntimeEqual(BaselineFrame& frame);
+  bool baselineRuntimeGreater(BaselineFrame& frame);
+  bool baselineRuntimeLess(BaselineFrame& frame);
+  bool baselineRuntimeNot(BaselineFrame& frame);
+  std::uint8_t baselineRuntimePeekTruthy(BaselineFrame& frame);
+  std::uint8_t baselineRuntimeLocalTruthy(BaselineFrame& frame, std::uint32_t slot);
+  std::uint8_t baselineRuntimeCompareOperandsTruthy(BaselineFrame& frame, std::uint32_t leftSlot,
+      std::uint32_t rightOperand, std::uint32_t operation, bool constantRight);
+  bool baselineRuntimeRecordLoopBackedge(BaselineFrame& frame);
+  bool baselineRuntimeSyncStackSize(BaselineFrame& frame);
+  bool baselineRuntimeReturn(BaselineFrame& frame);
+  bool baselineRuntimeReturnLocal(BaselineFrame& frame, std::uint32_t slot);
+  bool baselineRuntimeReturnNumberBits(BaselineFrame& frame, std::uint64_t bits);
+  bool baselineRuntimeReturnConstant(BaselineFrame& frame, std::uint32_t constantIndex);
+  bool finishBaselineReturn(BaselineFrame& frame, Value result);
+  void executeDefineGlobal(const Chunk& chunk, std::size_t nameIndex);
+  void executeGetGlobal(const Chunk& chunk, std::size_t nameIndex);
+  void executeSetGlobal(const Chunk& chunk, std::size_t nameIndex);
+  void executeArrayLiteral(std::size_t count);
+  void executeGetIndex();
+  void executeSetIndex();
+  void executeObjectLiteral(const Chunk& chunk, std::size_t namesIndex);
+  void executeGetProperty(const Chunk& chunk, std::size_t nameIndex,
+                          std::size_t feedbackSlotIndex);
+  void executeSetProperty(const Chunk& chunk, std::size_t nameIndex,
+                          std::size_t feedbackSlotIndex);
+  void executeClass(const Chunk& chunk, std::size_t nameIndex);
+  void executeMethod(const Chunk& chunk, std::size_t nameIndex);
+  void executeStaticMethod(const Chunk& chunk, std::size_t nameIndex);
+  void executeInherit();
+  void executeGetUpvalue(const CallFrame& frame, std::size_t slot);
+  void executeSetUpvalue(const CallFrame& frame, std::size_t slot);
+  void executeCloseUpvalue();
+  void executeGetCurrentClosure(const CallFrame& frame);
+  void executeClosure(const Chunk& chunk, std::size_t functionIndex, std::size_t bytecodeOffset,
+                      ObjClosure* currentClosure, std::size_t slotStart);
+  void executeCall(std::size_t argCount, bool requireSynchronousCallee = false);
+  void executeMethodCall(const Chunk& chunk, std::size_t nameIndex, std::size_t argCount,
+                         std::size_t feedbackSlotIndex,
+                         bool requireSynchronousCallee = false);
+  void executeSuperCall(const Chunk& chunk, std::size_t nameIndex, std::size_t argCount,
+                        bool requireSynchronousCallee = false);
   void callBytecodeClosure(ObjClosure* closure, std::size_t argCount, std::size_t returnSlot,
                            std::size_t slotStart, const std::string& label,
                            bool returnsReceiver = false);
+  void callBytecodeClosureSynchronously(ObjClosure* closure, std::size_t argCount,
+                                        std::size_t returnSlot, std::size_t slotStart,
+                                        const std::string& label,
+                                        bool returnsReceiver = false);
+  void recordFunctionCall(ObjFunction& function);
+  void recordLoopBackedge(ObjFunction& function);
+  void maybeScheduleJit(BytecodeFunction& function);
+  void compileScheduledJit(BytecodeFunction& function);
+  Value executeBaselineCode(const BaselineCode& code, CallFrame& frame);
+  Value executeBaselineEntry(BaselineEntry entry, CallFrame& frame);
   ObjUpvalue* captureUpvalue(std::size_t stackIndex);
   void closeUpvalues(std::size_t firstStackIndex);
   void collectGarbageIfNeeded();
@@ -135,6 +455,10 @@ class VM {
   ObjShape* rootObjectShape_ = nullptr;
   std::size_t nextGcObjectCount_ = 8;
   PropertyInlineCacheStats propertyInlineCacheStats_;
+  bool inlineCachesEnabled_ = true;
+  JitOptions jitOptions_;
+  bool helperProfilingEnabled_ = false;
+  std::unordered_map<std::string, BaselineHelperStats> helperProfile_;
 
   template <typename T, typename... Args>
   T* allocateObject(Args&&... args);
@@ -149,6 +473,7 @@ T* VM::allocateObject(Args&&... args) {
   collectGarbageIfNeeded();
 
   auto* object = new T(std::forward<Args>(args)...);
+    //插入到堆对象链表
   object->next = objects_;
   objects_ = object;
   ++heapObjectCount_;

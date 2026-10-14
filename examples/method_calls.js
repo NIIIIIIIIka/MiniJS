@@ -1,4 +1,4 @@
-class Box {
+class Counter {
   init(value) {
     this.value = value;
   }
@@ -8,13 +8,12 @@ class Box {
   }
 }
 
-let box = Box(7);
-let total = 0;
-let i = 0;
-
-while (i < 3) {
-  total = total + box.get();
-  i = i + 1;
+function read(counter) {
+  return counter.get();
 }
 
-total;
+let counter = Counter(10);
+
+read(counter);
+read(counter);
+read(counter);

@@ -4,15 +4,35 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <utility>
 
+#include "minijs/baseline_jit.h"
+#include "minijs/baseline_code.h"
 #include "minijs/gc_object.h"
 #include "minijs/runtime_error.h"
 
 namespace minijs {
 namespace {
+
+void incrementSaturating(std::uint32_t& value) {
+  if (value != std::numeric_limits<std::uint32_t>::max()) {
+    ++value;
+  }
+}
+
+bool canExecuteNativeBaselineEntry(const BaselineCode& code) {
+#if defined(__aarch64__) || defined(_M_ARM64) || \
+    (defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__)))
+  return code.entry != nullptr;
+#else
+  (void)code;
+  return false;
+#endif
+}
 
 double checkedDivisor(const Value& value, const char* message) {
   const double divisor = value.asNumber();
@@ -67,6 +87,60 @@ ObjClosure* findStaticMethod(const ObjClass* klass, const std::string& name) {
     }
   }
   return nullptr;
+}
+
+const PropertyInlineCacheEntry* findPropertyInlineCacheEntry(const PropertyInlineCache& cache,
+                                                             const ObjObject& object) {
+  for (std::size_t index = 0; index < cache.size; ++index) {
+    const PropertyInlineCacheEntry& entry = cache.entries[index];
+    if (entry.shape == object.shape && entry.slot < object.slots.size()) {
+      return &entry;
+    }
+  }
+  return nullptr;
+}
+
+bool updatePropertyFeedback(FeedbackSlot& feedback, ObjShape* shape, std::size_t slot) {
+  PropertyInlineCache& cache = feedback.property;
+  if (feedback.state == FeedbackState::Megamorphic) {
+    return false;
+  }
+  if (cache.size == PropertyInlineCache::MaxEntries) {
+    feedback.state = FeedbackState::Megamorphic;
+    return false;
+  }
+
+  cache.entries[cache.size++] = PropertyInlineCacheEntry{shape, slot};
+  feedback.state = cache.size == 1 ? FeedbackState::Monomorphic : FeedbackState::Polymorphic;
+  return true;
+}
+
+const MethodInlineCacheEntry* findMethodInlineCacheEntry(const MethodInlineCache& cache,
+                                                         const ObjClass* klass,
+                                                         bool isStatic) {
+  for (std::size_t index = 0; index < cache.size; ++index) {
+    const MethodInlineCacheEntry& entry = cache.entries[index];
+    if (entry.isStatic == isStatic && entry.klass == klass && entry.method != nullptr) {
+      return &entry;
+    }
+  }
+  return nullptr;
+}
+
+bool updateMethodFeedback(FeedbackSlot& feedback, ObjClass* klass, ObjClosure* method,
+                          bool isStatic) {
+  MethodInlineCache& cache = feedback.method;
+  if (feedback.state == FeedbackState::Megamorphic) {
+    return false;
+  }
+  if (cache.size == MethodInlineCache::MaxEntries) {
+    feedback.state = FeedbackState::Megamorphic;
+    return false;
+  }
+
+  cache.entries[cache.size++] = MethodInlineCacheEntry{klass, method, isStatic};
+  feedback.state = cache.size == 1 ? FeedbackState::Monomorphic : FeedbackState::Polymorphic;
+  return true;
 }
 
 bool isGcInstanceValue(const Value& value) {
@@ -380,27 +454,16 @@ Value VM::run(const Chunk& chunk) {
       }
 
       case Opcode::DefineGlobal: {
-        const std::string name = chunk.constant(chunk.readByte(frame.ip++)).asString();
-        globals_[name] = pop();
+        executeDefineGlobal(chunk, chunk.readByte(frame.ip++));
         break;
       }
 
       case Opcode::GetGlobal: {
-        const std::string name = chunk.constant(chunk.readByte(frame.ip++)).asString();
-        auto it = globals_.find(name);
-        if (it == globals_.end()) {
-          throw RuntimeError("undefined variable: " + name);
-        }
-        push(it->second);
+        executeGetGlobal(chunk, chunk.readByte(frame.ip++));
         break;
       }
       case Opcode::SetGlobal: {
-        const std::string name = chunk.constant(chunk.readByte(frame.ip++)).asString();
-        auto it = globals_.find(name);
-        if (it == globals_.end()) {
-          throw RuntimeError("undefined variable: " + name);
-        }
-        it->second = peek();
+        executeSetGlobal(chunk, chunk.readByte(frame.ip++));
         break;
       }
       case Opcode::GetLocal: {
@@ -422,7 +485,7 @@ Value VM::run(const Chunk& chunk) {
         break;
       }
       case Opcode::Pop:
-        pop();
+        discardTop();
         break;
       case Opcode::Not: {
         push(Value(!pop().isTruthy()));
@@ -460,439 +523,94 @@ Value VM::run(const Chunk& chunk) {
       }
       case Opcode::Loop: {
         const std::uint16_t offset = readShort(chunk, frame.ip);
+        recordLoopBackedge(*frame.closure->function);
         frame.ip -= offset;
         break;
       }
       case Opcode::Call: {
         const std::uint8_t argCount = chunk.readByte(frame.ip++);
-        if (stack_.size() < static_cast<std::size_t>(argCount) + 1) {
-          throw RuntimeError("call stack underflow");
-        }
-
-        const std::size_t calleeIndex = stack_.size() - argCount - 1;
-        Value callee = stack_[calleeIndex];
-
-        if (callee.isNativeFunction()) {
-          const std::string& name = callee.isGcNativeFunction()
-                                        ? callee.asGcNativeFunction()->name
-                                        : callee.asNativeFunction()->name;
-          const std::size_t arity = callee.isGcNativeFunction()
-                                        ? callee.asGcNativeFunction()->arity
-                                        : callee.asNativeFunction()->arity;
-          expectArity(argCount, arity, name);
-            
-          std::vector<Value> arguments;
-          arguments.reserve(argCount);
-          for (std::size_t i = 0; i < argCount; ++i) {
-            arguments.push_back(stack_[calleeIndex + 1 + i]);
-          }
-
-          Value result = callee.isGcNativeFunction()
-                             ? callee.asGcNativeFunction()->function(arguments)
-                             : callee.asNativeFunction()->function(arguments);
-          stack_.resize(calleeIndex);
-          push(result);
-          break;
-        }
-
-        if (callee.isGcClass()) {
-          auto klass = callee.asGcClass();
-          auto init = findMethod(klass, "init");
-          if (init == nullptr && argCount != 0) {
-            throw RuntimeError("class " + klass->name + " expects 0 arguments");
-          }
-
-          auto* instance = allocateObject<ObjInstance>(klass);
-          if (init == nullptr) {
-            stack_.resize(calleeIndex);
-            push(Value(instance));
-            break;
-          }
-
-          stack_[calleeIndex] = Value(instance);
-          callBytecodeClosure(init, argCount, calleeIndex, calleeIndex, "method", true);
-          break;
-        }
-
-        if (callee.isGcBoundMethod()) {
-          auto* boundMethod = callee.asGcBoundMethod();
-          stack_[calleeIndex] = boundMethod->receiver;
-          callBytecodeClosure(boundMethod->method, argCount, calleeIndex, calleeIndex, "method");
-          break;
-        }
-
-        if (callee.isGcClosure()) {
-          // callee 位于参数前一个槽位；新函数帧从第一个参数开始。
-          // 因此 OP_GET_LOCAL 0 读取的就是第一个实参，无需复制参数数组。
-          callBytecodeClosure(callee.asGcClosure(), argCount, calleeIndex, calleeIndex + 1,
-                              "function");
-          break;
-        }
-
-        throw RuntimeError("value is not callable");
+        executeCall(argCount);
+        break;
       }
       case Opcode::Class: {
         const std::uint8_t nameIndex = chunk.readByte(frame.ip++);
-        push(Value(allocateObject<ObjClass>(chunk.constant(nameIndex).asString())));
+        executeClass(chunk, nameIndex);
         break;
       }
       case Opcode::Method: {
         const std::uint8_t nameIndex = chunk.readByte(frame.ip++);
-        const std::string& name = chunk.constant(nameIndex).asString();
-        Value method = pop();
-        Value klass = peek();
-        klass.asGcClass()->methods[name] = method.asGcClosure();
+        executeMethod(chunk, nameIndex);
         break;
       }
       case Opcode::StaticMethod: {
         const std::uint8_t nameIndex = chunk.readByte(frame.ip++);
-        const std::string& name = chunk.constant(nameIndex).asString();
-        Value method = pop();
-        Value klass = peek();
-        klass.asGcClass()->staticMethods[name] = method.asGcClosure();
+        executeStaticMethod(chunk, nameIndex);
         break;
       }
       case Opcode::Inherit: {
-        Value superclass = pop();
-        Value subclass = peek();
-        if (!superclass.isGcClass()) {
-          throw RuntimeError("superclass must be a class");
-        }
-        if (!subclass.isGcClass()) {
-          throw RuntimeError("subclass must be a class");
-        }
-
-        subclass.asGcClass()->superclass = superclass.asGcClass();
+        executeInherit();
         break;
       }
       case Opcode::Closure: {
         const std::uint8_t functionIndex = chunk.readByte(frame.ip++);
-        auto function = chunk.constant(functionIndex).asBytecodeFunction();
-        auto* closure = makeGcClosure(*function);
-        push(Value(closure));
-
-        const BytecodeFunction& gcFunction = closure->function->function;
-        closure->upvalues.reserve(gcFunction.upvalues.size());
-
-        for (const UpvalueDescriptor& descriptor : gcFunction.upvalues) {
-          const bool isLocal = chunk.readByte(frame.ip++) != 0;
-          const std::uint8_t index = chunk.readByte(frame.ip++);
-          if (isLocal != descriptor.isLocal || index != descriptor.index) {
-            throw RuntimeError("closure upvalue metadata mismatch");
-          }
-
-          if (isLocal) {
-            closure->upvalues.push_back(captureUpvalue(frame.slotStart + index));
-          } else {
-            closure->upvalues.push_back(frame.closure->upvalues[index]);
-          }
-        }
-
+        const std::size_t metadataOffset = frame.ip;
+        executeClosure(chunk, functionIndex, metadataOffset, frame.closure, frame.slotStart);
+        frame.ip += chunk.constant(functionIndex).asBytecodeFunction()->upvalues.size() * 2;
         break;
       }
       case Opcode::GetUpvalue: {
-        const std::uint8_t slot = chunk.readByte(frame.ip++);
-        const auto& upvalue = frame.closure->upvalues[slot];
-        push(upvalue->isClosed ? upvalue->closed : stack_[upvalue->stackIndex]);
+        executeGetUpvalue(frame, chunk.readByte(frame.ip++));
         break;
       }
       case Opcode::SetUpvalue: {
-        const std::uint8_t slot = chunk.readByte(frame.ip++);
-        const auto& upvalue = frame.closure->upvalues[slot];
-        if (upvalue->isClosed) {
-          upvalue->closed = peek();
-        } else {
-          stack_[upvalue->stackIndex] = peek();
-        }
+        executeSetUpvalue(frame, chunk.readByte(frame.ip++));
         break;
       }
       case Opcode::CloseUpvalue: {
-        closeUpvalues(stack_.size() - 1);
-        pop();
+        executeCloseUpvalue();
         break;
       }
       case Opcode::MethodCall: {
         const std::uint8_t nameIndex = chunk.readByte(frame.ip++);
-        const std::string& name = chunk.constant(nameIndex).asString();
         const std::uint8_t argCount = chunk.readByte(frame.ip++);
-        if (stack_.size() < static_cast<std::size_t>(argCount) + 1) {
-          throw RuntimeError("method call stack underflow");
-        }
-
-        const std::size_t receiverIndex = stack_.size() - argCount - 1;
-        Value receiver = stack_[receiverIndex];
-        if (isGcInstanceValue(receiver)) {
-          auto method = findMethod(gcInstanceClass(receiver), name);
-          if (method == nullptr) {
-            throw RuntimeError("value has no method: " + name);
-          }
-
-          callBytecodeClosure(method, argCount, receiverIndex, receiverIndex, "method");
-          break;
-        }
-
-        if (receiver.isGcClass()) {
-          auto method = findStaticMethod(receiver.asGcClass(), name);
-          if (method == nullptr) {
-            throw RuntimeError("value has no method: " + name);
-          }
-
-          callBytecodeClosure(method, argCount, receiverIndex, receiverIndex + 1, "function");
-          break;
-        }
-
-        if (!receiver.isGcArray()) {
-          throw RuntimeError("method call receiver is not an array");
-        }
-
-        std::vector<Value>& array = receiver.asGcArray()->elements;
-
-        if (name == "push") {
-          if (argCount != 1) {
-            throw RuntimeError("push expects 1 argument");
-          }
-
-          array.push_back(stack_[receiverIndex + 1]);
-          stack_.resize(receiverIndex);
-          push(Value(static_cast<double>(array.size())));
-          break;
-        }
-
-        if (name == "pop") {
-          if (argCount != 0) {
-            throw RuntimeError("pop expects 0 arguments");
-          }
-
-          if (array.empty()) {
-            stack_.resize(receiverIndex);
-            push(Value::undefined());
-            break;
-          }
-
-          Value value = array.back();
-          array.pop_back();
-          stack_.resize(receiverIndex);
-          push(value);
-          break;
-        }
-
-        throw RuntimeError("unknown array method: " + name);
+        const std::uint8_t feedbackSlotIndex = chunk.readByte(frame.ip++);
+        executeMethodCall(chunk, nameIndex, argCount, feedbackSlotIndex);
+        break;
       }
       case Opcode::SuperCall: {
         const std::uint8_t nameIndex = chunk.readByte(frame.ip++);
-        const std::string& name = chunk.constant(nameIndex).asString();
         const std::uint8_t argCount = chunk.readByte(frame.ip++);
-        if (stack_.size() < static_cast<std::size_t>(argCount) + 2) {
-          throw RuntimeError("super call stack underflow");
-        }
-
-        const std::size_t receiverIndex = stack_.size() - argCount - 1;
-        const std::size_t superclassIndex = receiverIndex - 1;
-        Value superclass = stack_[superclassIndex];
-        Value receiver = stack_[receiverIndex];
-        if (!superclass.isGcClass()) {
-          throw RuntimeError("superclass must be a class");
-        }
-        if (!isGcInstanceValue(receiver)) {
-          throw RuntimeError("this must be an instance");
-        }
-
-        auto method = findMethod(superclass.asGcClass(), name);
-        if (method == nullptr) {
-          throw RuntimeError("superclass has no method: " + name);
-        }
-
-        // 重排前栈布局：[..., superclass, receiver, arg0, arg1, ...]
-        // 重排后栈布局：[..., receiver, arg0, arg1, ...]
-        // 方法从 superclass 上查找，但 local 0 / this 仍然是当前 receiver。
-        stack_[superclassIndex] = receiver;
-        for (std::size_t i = 0; i < argCount; ++i) {
-          stack_[superclassIndex + 1 + i] = stack_[receiverIndex + 1 + i];
-        }
-        stack_.resize(superclassIndex + 1 + argCount);
-        callBytecodeClosure(method, argCount, superclassIndex, superclassIndex, "method");
+        executeSuperCall(chunk, nameIndex, argCount);
         break;
       }
       case Opcode::Array: {
-        const std::uint8_t count = chunk.readByte(frame.ip++);
-        collectGarbageIfNeeded();
-
-        std::vector<Value> elements(count);
-        for (std::size_t i = count; i > 0; --i) {
-          elements[i - 1] = pop();
-        }
-        push(Value(allocateObject<ObjArray>(std::move(elements))));
+        executeArrayLiteral(chunk.readByte(frame.ip++));
         break;
       }
       case Opcode::GetIndex: {
-        Value index = pop();
-        Value array = pop();
-        if (!array.isGcArray()) {
-          throw RuntimeError("value is not an array");
-        }
-        const std::vector<Value>& elements = array.asGcArray()->elements;
-        push(elements[arrayIndexFromValue(index, elements.size())]);
+        executeGetIndex();
         break;
       }
       case Opcode::SetIndex: {
-        Value value = pop();
-        Value index = pop();
-        Value array = pop();
-        if (!array.isGcArray()) {
-          throw RuntimeError("value is not an array");
-        }
-        std::vector<Value>& elements = array.asGcArray()->elements;
-        elements[arrayIndexFromValue(index, elements.size())] = value;
-        push(value);
+        executeSetIndex();
         break;
       }
       case Opcode::Object: {
-        const std::uint8_t namesIndex = chunk.readByte(frame.ip++);
-        const std::vector<Value>& names = chunk.constant(namesIndex).asArray();
-
-        if (stack_.size() < names.size()) {
-          throw RuntimeError("bytecode stack underflow");
-        }
-
-        auto* object = allocateObject<ObjObject>(rootObjectShape_);
-        TemporaryRootScope roots(*this);
-        roots.add(object);
-
-        const std::size_t valueStart = stack_.size() - names.size();
-        for (std::size_t i = 0; i < names.size(); ++i) {
-          const std::string& name = names[i].asString();
-          objectSetProperty(*object, name, stack_[valueStart + i]);
-        }
-
-        for (std::size_t i = 0; i < names.size(); ++i) {
-          pop();
-        }
-
-        push(Value(object));
+        executeObjectLiteral(chunk, chunk.readByte(frame.ip++));
         break;
       }
       case Opcode::GetProperty: {
-        const std::size_t opcodeOffset = frame.ip - 1;
         const std::uint8_t nameIndex = chunk.readByte(frame.ip++);
-        const std::string& name = chunk.constant(nameIndex).asString();
-
-        Value object = pop();
-
-        if (object.isGcArray()) {
-          if (name == "length") {
-            push(Value(static_cast<double>(object.asGcArray()->elements.size())));
-            break;
-          }
-
-          push(Value::undefined());
-          break;
-        }
-
-        if (object.isGcString()) {
-          if (name == "length") {
-            push(Value(static_cast<double>(object.asGcString()->value.size())));
-            break;
-          }
-
-          push(Value::undefined());
-          break;
-        }
-
-        if (isGcInstanceValue(object)) {
-          auto& fields = gcInstanceFields(object);
-          auto field = fields.find(name);
-          if (field != fields.end()) {
-            push(field->second);
-            break;
-          }
-
-          auto method = findMethod(gcInstanceClass(object), name);
-          if (method != nullptr) {
-            push(object);
-            auto* boundMethod = allocateObject<ObjBoundMethod>(object, method);
-            pop();
-            push(Value(boundMethod));
-            break;
-          }
-
-          push(Value::undefined());
-          break;
-        }
-
-        if (object.isGcClass()) {
-          auto method = findStaticMethod(object.asGcClass(), name);
-          if (method != nullptr) {
-            push(Value(method));
-            break;
-          }
-
-          push(Value::undefined());
-          break;
-        }
-
-        if (!object.isGcObject()) {
-          throw RuntimeError("value is not an object");
-        }
-
-        ObjObject* objectValue = object.asGcObject();
-        if (objectValue->dictionaryMode) {
-          ++propertyInlineCacheStats_.bypasses;
-          push(objectGetProperty(*objectValue, name));
-          break;
-        }
-
-        PropertyInlineCache& cache = chunk.propertyInlineCache(opcodeOffset);
-        if (cache.initialized && cache.shape == objectValue->shape &&
-            cache.slot < objectValue->slots.size()) {
-          ++propertyInlineCacheStats_.hits;
-          push(objectValue->slots[cache.slot]);
-          break;
-        }
-
-        ++propertyInlineCacheStats_.misses;
-        Value result = objectGetProperty(*objectValue, name);
-        auto slot = objectValue->shape->slots.find(name);
-        if (slot != objectValue->shape->slots.end() && slot->second < objectValue->slots.size()) {
-          cache.initialized = true;
-          cache.shape = objectValue->shape;
-          cache.slot = slot->second;
-          ++propertyInlineCacheStats_.updates;
-        }
-
-        push(result);
+        executeGetProperty(chunk, nameIndex, chunk.readByte(frame.ip++));
         break;
       }
       case Opcode::SetProperty: {
         const std::uint8_t nameIndex = chunk.readByte(frame.ip++);
-        const std::string& name = chunk.constant(nameIndex).asString();
-
-        if (stack_.size() < 2) {
-          throw RuntimeError("bytecode stack underflow");
-        }
-
-        Value value = peek();
-        Value object = stack_[stack_.size() - 2];
-        if (isGcInstanceValue(object)) {
-          gcInstanceFields(object)[name] = value;
-          pop();
-          pop();
-          push(value);
-          break;
-        }
-
-        if (!object.isGcObject()) {
-          throw RuntimeError("value is not an object");
-        }
-
-        objectSetProperty(*object.asGcObject(), name, value);
-        pop();
-        pop();
-        push(value);
+        executeSetProperty(chunk, nameIndex, chunk.readByte(frame.ip++));
         break;
       }
       case Opcode::GetCurrentClosure:
-        // 局部函数递归使用：把当前调用帧的 closure 压栈作为 callee。
-        push(Value(frame.closure));
+        executeGetCurrentClosure(frame);
         break;
     }
   }
@@ -900,6 +618,98 @@ Value VM::run(const Chunk& chunk) {
 
 std::size_t VM::objectCount() const {
   return heapObjectCount_ - internalObjectCount_;
+}
+
+PropertyInlineCacheStats VM::propertyInlineCacheStats() const {
+  return propertyInlineCacheStats_;
+}
+
+void VM::resetPropertyInlineCacheStats() {
+  propertyInlineCacheStats_ = PropertyInlineCacheStats{};
+}
+
+bool VM::inlineCachesEnabled() const {
+  return inlineCachesEnabled_;
+}
+
+void VM::setInlineCachesEnabled(bool enabled) {
+  inlineCachesEnabled_ = enabled;
+}
+
+bool VM::jitEnabled() const {
+  return jitOptions_.enabled;
+}
+
+void VM::setJitEnabled(bool enabled) {
+  jitOptions_.enabled = enabled;
+}
+
+void VM::setJitCallThreshold(std::uint32_t threshold) {
+  jitOptions_.callThreshold = threshold;
+}
+
+void VM::setJitBackedgeThreshold(std::uint32_t threshold) {
+  jitOptions_.backedgeThreshold = threshold;
+}
+
+void VM::recordBaselineHelperProfile(const char* name, std::uint64_t nanoseconds) noexcept {
+  try {
+    auto& stats = helperProfile_[name];
+    stats.name = name;
+    ++stats.calls;
+    stats.nanoseconds += nanoseconds;
+  } catch (...) {
+    // 统计分配失败时丢弃该次诊断数据，不干扰语言异常或返回值。
+  }
+}
+
+JitRuntimeStats VM::jitRuntimeStats() const {
+  JitRuntimeStats stats;
+  stats.helperProfilingEnabled = helperProfilingEnabled_;
+  for (const auto& entry : helperProfile_) {
+    stats.helpers.push_back(entry.second);
+  }
+  std::sort(stats.helpers.begin(), stats.helpers.end(),
+            [](const BaselineHelperStats& left, const BaselineHelperStats& right) {
+              return left.name < right.name;
+            });
+
+  for (const Obj* object = objects_; object != nullptr; object = object->next) {
+    if (object->type != ObjType::Function) {
+      continue;
+    }
+
+    const auto* function = static_cast<const ObjFunction*>(object);
+    const JitFeedback& jit = function->function.jit;
+    ++stats.functions;
+    stats.calls += jit.callCount;
+    stats.backedges += jit.backedgeCount;
+    stats.baselineEntries += jit.baselineEntryCount;
+
+    switch (jit.state) {
+      case JitState::Cold:
+        ++stats.cold;
+        break;
+      case JitState::Scheduled:
+        ++stats.scheduled;
+        break;
+      case JitState::Compiled:
+        ++stats.compiled;
+        if (jit.baselineCode != nullptr) {
+          if (jit.baselineCode->entry != nullptr) {
+            ++stats.nativeEntries;
+          } else {
+            ++stats.decodedEntries;
+          }
+        }
+        break;
+      case JitState::Failed:
+        ++stats.failed;
+        break;
+    }
+  }
+
+  return stats;
 }
 
 #ifdef MINIJS_TESTING
@@ -919,12 +729,149 @@ bool VM::debugGlobalObjectUsesDictionary(const std::string& name) const {
   return global->second.asGcObject()->dictionaryMode;
 }
 
+const JitFeedback* VM::debugGlobalFunctionJitFeedback(const std::string& name) const {
+  auto global = globals_.find(name);
+  if (global == globals_.end() || !global->second.isGcClosure()) {
+    return nullptr;
+  }
+  return &global->second.asGcClosure()->function->function.jit;
+}
+
+const JitFeedback* VM::debugGlobalClassMethodJitFeedback(const std::string& className,
+                                                         const std::string& methodName,
+                                                         bool isStatic) const {
+  auto global = globals_.find(className);
+  if (global == globals_.end() || !global->second.isGcClass()) {
+    return nullptr;
+  }
+
+  ObjClass* klass = global->second.asGcClass();
+  const auto& methods = isStatic ? klass->staticMethods : klass->methods;
+  auto method = methods.find(methodName);
+  if (method == methods.end() || method->second == nullptr) {
+    return nullptr;
+  }
+  return &method->second->function->function.jit;
+}
+
+const BaselineCode* VM::debugGlobalFunctionBaselineCode(const std::string& name) const {
+  const JitFeedback* feedback = debugGlobalFunctionJitFeedback(name);
+  if (feedback == nullptr) {
+    return nullptr;
+  }
+  return feedback->baselineCode.get();
+}
+
+std::string VM::debugGlobalFunctionJitCompileError(const std::string& name) const {
+  const JitFeedback* feedback = debugGlobalFunctionJitFeedback(name);
+  if (feedback == nullptr) {
+    return "";
+  }
+  return feedback->compileError;
+}
+
+Value VM::debugExecuteGlobalFunctionBaseline(const std::string& name,
+                                             const std::vector<Value>& arguments) {
+  auto global = globals_.find(name);
+  if (global == globals_.end() || !global->second.isGcClosure()) {
+    throw RuntimeError("global function not found: " + name);
+  }
+
+  ObjClosure* closure = global->second.asGcClosure();
+  BytecodeFunction& function = closure->function->function;
+  if (arguments.size() != function.params.size()) {
+    throw RuntimeError("function " + function.name + " expects " +
+                       std::to_string(function.params.size()) + " arguments");
+  }
+  if (function.jit.baselineCode == nullptr) {
+    throw RuntimeError("global function has no baseline code: " + name);
+  }
+
+  stack_.clear();
+  frames_.clear();
+  openUpvalues_.clear();
+  temporaryRoots_.clear();
+
+  push(Value(closure));
+  for (const Value& argument : arguments) {
+    push(argument);
+  }
+
+  frames_.push_back(CallFrame{closure, 0, 0, 1});
+  Value result;
+  try {
+    result = executeBaselineCode(*function.jit.baselineCode, frames_.back());
+  } catch (...) {
+    stack_.clear();
+    frames_.clear();
+    openUpvalues_.clear();
+    temporaryRoots_.clear();
+    throw;
+  }
+  frames_.pop_back();
+
+  stack_.resize(0);
+  push(result);
+  Value copied = copyOutValue(stack_.back());
+  stack_.clear();
+  temporaryRoots_.clear();
+  return copied;
+}
+
+Value VM::debugExecuteGlobalFunctionBaselineEntry(const std::string& name,
+                                                  const std::vector<Value>& arguments,
+                                                  BaselineEntry entry) {
+  if (entry == nullptr) {
+    throw RuntimeError("baseline entry is null");
+  }
+
+  auto global = globals_.find(name);
+  if (global == globals_.end() || !global->second.isGcClosure()) {
+    throw RuntimeError("global function not found: " + name);
+  }
+
+  ObjClosure* closure = global->second.asGcClosure();
+  BytecodeFunction& function = closure->function->function;
+  if (arguments.size() != function.params.size()) {
+    throw RuntimeError("function " + function.name + " expects " +
+                       std::to_string(function.params.size()) + " arguments");
+  }
+
+  stack_.clear();
+  frames_.clear();
+  openUpvalues_.clear();
+  temporaryRoots_.clear();
+
+  push(Value(closure));
+  for (const Value& argument : arguments) {
+    push(argument);
+  }
+
+  frames_.push_back(CallFrame{closure, 0, 0, 1});
+  Value result;
+  try {
+    result = executeBaselineEntry(entry, frames_.back());
+  } catch (...) {
+    stack_.clear();
+    frames_.clear();
+    openUpvalues_.clear();
+    temporaryRoots_.clear();
+    throw;
+  }
+  frames_.pop_back();
+
+  Value copied = copyOutValue(result);
+  stack_.clear();
+  temporaryRoots_.clear();
+  return copied;
+}
+
 PropertyInlineCacheStats VM::debugPropertyInlineCacheStats() const {
-  return propertyInlineCacheStats_;
+  return propertyInlineCacheStats();
 }
 
 void VM::debugResetPropertyInlineCacheStats() {
-  propertyInlineCacheStats_ = PropertyInlineCacheStats{};
+  resetPropertyInlineCacheStats();
 }
 #endif
 
@@ -1155,6 +1102,13 @@ Value VM::pop() {
   return value;
 }
 
+void VM::discardTop() {
+  if (stack_.empty()) {
+    throw RuntimeError("bytecode stack underflow");
+  }
+  stack_.pop_back();
+}
+
 const Value& VM::peek() const {
   if (stack_.empty()) {
     throw RuntimeError("bytecode stack underflow");
@@ -1162,13 +1116,1122 @@ const Value& VM::peek() const {
   return stack_.back();
 }
 
+void VM::refreshBaselineFrameStack(BaselineFrame& frame) {
+  frame.stackData = stack_.empty() ? nullptr : stack_.data();
+  frame.stackSize = stack_.size();
+}
+
+void VM::validateBaselineRuntimeFrame(const BaselineFrame& frame) const {
+  if (frame.vm != this || frame.closure == nullptr) {
+    throw RuntimeError("invalid baseline frame");
+  }
+  if (frame.failed) {
+    throw RuntimeError("baseline frame already failed");
+  }
+  if (frame.completed) {
+    throw RuntimeError("baseline frame already completed");
+  }
+}
+
+bool VM::baselineRuntimePush(BaselineFrame& frame, const Value& value) {
+  validateBaselineRuntimeFrame(frame);
+  push(value);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimePushConstant(BaselineFrame& frame, std::uint32_t constantIndex) {
+  validateBaselineRuntimeFrame(frame);
+  const Chunk& chunk = frame.closure->function->function.chunk;
+  const Value& constant = chunk.constant(constantIndex);
+  if (constant.isString()) {
+    push(makeGcString(constant.asString()));
+  } else {
+    push(constant);
+  }
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeGetLocal(BaselineFrame& frame, std::uint32_t slot) {
+  validateBaselineRuntimeFrame(frame);
+  const std::size_t absoluteSlot = frame.slotStart + slot;
+  if (absoluteSlot >= stack_.size()) {
+    throw RuntimeError("local slot out of bounds");
+  }
+  push(stack_[absoluteSlot]);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimePushNumberSlot(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  // 直接在 vector 的新栈槽构造完整 Number，省去临时 Value 及其移动。
+  // 扩容和成员初始化仍由 C++ 管理；机器码再写数字，或将无资源占位槽转为 Boolean 比较结果。
+  stack_.emplace_back(0.0);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeGetLocalAndPushNumberSlot(BaselineFrame& frame, std::uint32_t slot) {
+  validateBaselineRuntimeFrame(frame);
+  // 先检查再做编号加法，避免溢出；错误保持 GetLocal 的原有文本。
+  if (frame.slotStart >= stack_.size() || slot >= stack_.size() - frame.slotStart) {
+    throw RuntimeError("local slot out of bounds");
+  }
+  const std::size_t absoluteSlot = frame.slotStart + slot;
+  if (stack_[absoluteSlot].isNumber()) {
+    // 先取出载荷，再构造新槽，不能跨 vector 扩容保存局部槽地址。
+    const double number = stack_[absoluteSlot].asNumber();
+    stack_.emplace_back(number);
+  } else {
+    // 非数字保留完整 Value；临时副本保证扩容时源对象仍然有效。
+    Value local = stack_[absoluteSlot];
+    stack_.push_back(std::move(local));
+  }
+  stack_.emplace_back(0.0);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeSetLocal(BaselineFrame& frame, std::uint32_t slot) {
+  validateBaselineRuntimeFrame(frame);
+  const std::size_t absoluteSlot = frame.slotStart + slot;
+  if (absoluteSlot >= stack_.size()) {
+    throw RuntimeError("local slot out of bounds");
+  }
+  stack_[absoluteSlot] = peek();
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeAssignConstant(BaselineFrame& frame, std::uint32_t constantIndex,
+                                       std::uint32_t targetSlot) {
+  validateBaselineRuntimeFrame(frame);
+  // 先读取常量，再检查目标，保持原始 Constant 的错误优先级。
+  const Value& constant = frame.closure->function->function.chunk.constant(constantIndex);
+  if ((constant.isNumber() || constant.isBoolean()) && frame.slotStart <= stack_.size() &&
+      targetSlot < stack_.size() - frame.slotStart) {
+    stack_[frame.slotStart + targetSlot] = constant;
+    refreshBaselineFrameStack(frame);
+    return true;
+  }
+  // 临时目标、越界目标和其它常量保留原始顺序，也保留字符串的 GC 根保护。
+  baselineRuntimePushConstant(frame, constantIndex);
+  baselineRuntimeSetLocal(frame, targetSlot);
+  return baselineRuntimePop(frame);
+}
+
+bool VM::baselineRuntimeCopyLocal(BaselineFrame& frame, std::uint32_t sourceSlot,
+                                  std::uint32_t targetSlot) {
+  validateBaselineRuntimeFrame(frame);
+  if (frame.slotStart > stack_.size() || sourceSlot >= stack_.size() - frame.slotStart) {
+    throw RuntimeError("local slot out of bounds");
+  }
+  if (targetSlot >= stack_.size() - frame.slotStart) {
+    // 手写字节码可能把 GetLocal 新增的临时槽作为目标；保留原顺序和错误时的栈。
+    baselineRuntimeGetLocal(frame, sourceSlot);
+    baselineRuntimeSetLocal(frame, targetSlot);
+    return baselineRuntimePop(frame);
+  }
+  // 先复制再覆盖，兼容同槽赋值和拥有资源的 Value；不触发 VM 堆分配。
+  Value copy = stack_[frame.slotStart + sourceSlot];
+  stack_[frame.slotStart + targetSlot] = std::move(copy);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimePop(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  discardTop();
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeDefineGlobal(BaselineFrame& frame, std::uint32_t nameIndex) {
+  validateBaselineRuntimeFrame(frame);
+  executeDefineGlobal(frame.closure->function->function.chunk, nameIndex);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeGetGlobal(BaselineFrame& frame, std::uint32_t nameIndex) {
+  validateBaselineRuntimeFrame(frame);
+  executeGetGlobal(frame.closure->function->function.chunk, nameIndex);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeSetGlobal(BaselineFrame& frame, std::uint32_t nameIndex) {
+  validateBaselineRuntimeFrame(frame);
+  executeSetGlobal(frame.closure->function->function.chunk, nameIndex);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeArray(BaselineFrame& frame, std::uint32_t count) {
+  validateBaselineRuntimeFrame(frame);
+  executeArrayLiteral(count);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeGetIndex(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  executeGetIndex();
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeSetIndex(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  executeSetIndex();
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeObject(BaselineFrame& frame, std::uint32_t namesIndex) {
+  validateBaselineRuntimeFrame(frame);
+  executeObjectLiteral(frame.closure->function->function.chunk, namesIndex);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeGetProperty(BaselineFrame& frame, std::uint32_t nameIndex,
+                                    std::uint32_t feedbackSlotIndex) {
+  validateBaselineRuntimeFrame(frame);
+  executeGetProperty(frame.closure->function->function.chunk, nameIndex, feedbackSlotIndex);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeSetProperty(BaselineFrame& frame, std::uint32_t nameIndex,
+                                    std::uint32_t feedbackSlotIndex) {
+  validateBaselineRuntimeFrame(frame);
+  executeSetProperty(frame.closure->function->function.chunk, nameIndex, feedbackSlotIndex);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeClass(BaselineFrame& frame, std::uint32_t nameIndex) {
+  validateBaselineRuntimeFrame(frame);
+  executeClass(frame.closure->function->function.chunk, nameIndex);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeMethod(BaselineFrame& frame, std::uint32_t nameIndex) {
+  validateBaselineRuntimeFrame(frame);
+  executeMethod(frame.closure->function->function.chunk, nameIndex);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeStaticMethod(BaselineFrame& frame, std::uint32_t nameIndex) {
+  validateBaselineRuntimeFrame(frame);
+  executeStaticMethod(frame.closure->function->function.chunk, nameIndex);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeInherit(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  executeInherit();
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeGetUpvalue(BaselineFrame& frame, std::uint32_t slot) {
+  validateBaselineRuntimeFrame(frame);
+  const auto& upvalue = frame.closure->upvalues[slot];
+  push(upvalue->isClosed ? upvalue->closed : stack_[upvalue->stackIndex]);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeSetUpvalue(BaselineFrame& frame, std::uint32_t slot) {
+  validateBaselineRuntimeFrame(frame);
+  const auto& upvalue = frame.closure->upvalues[slot];
+  if (upvalue->isClosed) {
+    upvalue->closed = peek();
+  } else {
+    stack_[upvalue->stackIndex] = peek();
+  }
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeCloseUpvalue(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  executeCloseUpvalue();
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeGetCurrentClosure(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  push(Value(frame.closure));
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeClosure(BaselineFrame& frame, std::uint32_t functionIndex,
+                                std::uint32_t bytecodeOffset) {
+  validateBaselineRuntimeFrame(frame);
+  executeClosure(frame.closure->function->function.chunk, functionIndex, bytecodeOffset,
+                 frame.closure, frame.slotStart);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeCall(BaselineFrame& frame, std::uint32_t argCount) {
+  validateBaselineRuntimeFrame(frame);
+  executeCall(argCount, true);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeMethodCall(BaselineFrame& frame, std::uint32_t nameIndex,
+                                   std::uint32_t argCount,
+                                   std::uint32_t feedbackSlotIndex) {
+  validateBaselineRuntimeFrame(frame);
+  executeMethodCall(frame.closure->function->function.chunk, nameIndex, argCount,
+                    feedbackSlotIndex, true);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeSuperCall(BaselineFrame& frame, std::uint32_t nameIndex,
+                                  std::uint32_t argCount) {
+  validateBaselineRuntimeFrame(frame);
+  executeSuperCall(frame.closure->function->function.chunk, nameIndex, argCount, true);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeAdd(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  Value right = pop();
+  Value left = pop();
+  if (left.isGcString() || right.isGcString()) {
+    push(makeGcString(left.toString() + right.toString()));
+  } else {
+    push(Value(left.asNumber() + right.asNumber()));
+  }
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeSub(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  Value right = pop();
+  Value left = pop();
+  push(Value(left.asNumber() - right.asNumber()));
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeMul(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  Value right = pop();
+  Value left = pop();
+  push(Value(left.asNumber() * right.asNumber()));
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeDiv(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  Value right = pop();
+  Value left = pop();
+  const double divisor = checkedDivisor(right, "division by zero");
+  push(Value(left.asNumber() / divisor));
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeMod(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  Value right = pop();
+  Value left = pop();
+  const double divisor = checkedDivisor(right, "modulo by zero");
+  push(Value(std::fmod(left.asNumber(), divisor)));
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeModNumber(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  Value right = pop();
+  Value left = pop();
+  push(Value(std::fmod(left.asNumber(), right.asNumber())));
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeNegate(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  push(Value(-pop().asNumber()));
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeEqual(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  Value right = pop();
+  Value left = pop();
+  push(Value(left.equals(right)));
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeGreater(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  Value right = pop();
+  Value left = pop();
+  push(Value(left.asNumber() > right.asNumber()));
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeLess(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  Value right = pop();
+  Value left = pop();
+  push(Value(left.asNumber() < right.asNumber()));
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeNot(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  push(Value(!pop().isTruthy()));
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+std::uint8_t VM::baselineRuntimePeekTruthy(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  return peek().isTruthy() ? 1 : 0;
+}
+
+std::uint8_t VM::baselineRuntimeLocalTruthy(BaselineFrame& frame, std::uint32_t slot) {
+  validateBaselineRuntimeFrame(frame);
+  if (frame.slotStart > stack_.size() || slot >= stack_.size() - frame.slotStart) {
+    throw RuntimeError("local slot out of bounds");
+  }
+  // 局部值仍由 VM 栈持有；真假判断不分配 GC 对象，无需临时操作数或临时根。
+  return stack_[frame.slotStart + slot].isTruthy() ? 1 : 0;
+}
+
+std::uint8_t VM::baselineRuntimeCompareOperandsTruthy(BaselineFrame& frame, std::uint32_t leftSlot,
+    std::uint32_t rightOperand, std::uint32_t operation, bool constantRight) {
+  validateBaselineRuntimeFrame(frame);
+  if (operation != static_cast<std::uint32_t>(Opcode::Less) &&
+      operation != static_cast<std::uint32_t>(Opcode::Greater) &&
+      operation != static_cast<std::uint32_t>(Opcode::Equal)) {
+    throw RuntimeError("unsupported local comparison opcode");
+  }
+  // 先读左局部值，再读右局部值或常量；索引/类型错误保留原始顺序和失败栈。
+  baselineRuntimeGetLocal(frame, leftSlot);
+  if (constantRight) baselineRuntimePushConstant(frame, rightOperand);
+  else baselineRuntimeGetLocal(frame, rightOperand);
+  switch (static_cast<Opcode>(operation)) {
+    case Opcode::Less: baselineRuntimeLess(frame); break;
+    case Opcode::Greater: baselineRuntimeGreater(frame); break;
+    default: baselineRuntimeEqual(frame); break;
+  }
+  const auto result = baselineRuntimePeekTruthy(frame);
+  baselineRuntimePop(frame);
+  return result;
+}
+
+bool VM::baselineRuntimeRecordLoopBackedge(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  recordLoopBackedge(*frame.closure->function);
+  return true;
+}
+
+bool VM::baselineRuntimeSyncStackSize(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  if (frame.stackSize > stack_.size()) {
+    throw RuntimeError("baseline stack size out of bounds");
+  }
+  stack_.resize(frame.stackSize);
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+bool VM::baselineRuntimeReturn(BaselineFrame& frame) {
+  validateBaselineRuntimeFrame(frame);
+  return finishBaselineReturn(frame, pop());
+}
+
+bool VM::baselineRuntimeReturnLocal(BaselineFrame& frame, std::uint32_t slot) {
+  validateBaselineRuntimeFrame(frame);
+  if (frame.slotStart >= stack_.size() || slot >= stack_.size() - frame.slotStart) {
+    throw RuntimeError("local slot out of bounds");
+  }
+  // 按值保存局部值，再关闭 upvalue 和缩栈；不能把即将失效的栈引用传给收尾。
+  return finishBaselineReturn(frame, stack_[frame.slotStart + slot]);
+}
+
+bool VM::baselineRuntimeReturnNumberBits(BaselineFrame& frame, std::uint64_t bits) {
+  validateBaselineRuntimeFrame(frame);
+  double number = 0.0;
+  static_assert(sizeof(number) == sizeof(bits), "double must have 64 bits");
+  // 还原原始位编码，保留负零、无穷大和 NaN payload；不是整数到浮点转换。
+  std::memcpy(&number, &bits, sizeof(number));
+  return finishBaselineReturn(frame, Value(number));
+}
+
+bool VM::baselineRuntimeReturnConstant(BaselineFrame& frame, std::uint32_t constantIndex) {
+  validateBaselineRuntimeFrame(frame);
+  const Value& constant = frame.closure->function->function.chunk.constant(constantIndex);
+  if (constant.isString()) {
+    // 与 PushConstant 相同：字符串进入 VM 时创建 ObjString；未入返回槽前由临时根保护。
+    TemporaryRootScope roots(*this);
+    Value result = makeGcString(constant.asString());
+    roots.add(result.asGcString());
+    return finishBaselineReturn(frame, std::move(result));
+  }
+  return finishBaselineReturn(frame, constant);
+}
+
+bool VM::finishBaselineReturn(BaselineFrame& frame, Value result) {
+  if (frame.returnsReceiver) {
+    result = stack_[frame.slotStart];
+  }
+  if (frame.returnSlot > stack_.size()) {
+    throw RuntimeError("baseline return slot out of bounds");
+  }
+  closeUpvalues(frame.slotStart);
+  stack_.resize(frame.returnSlot);
+  push(result);
+  frame.completed = true;
+  refreshBaselineFrameStack(frame);
+  return true;
+}
+
+void VM::executeDefineGlobal(const Chunk& chunk, std::size_t nameIndex) {
+  const std::string name = chunk.constant(nameIndex).asString();
+  globals_[name] = pop();
+}
+
+void VM::executeGetGlobal(const Chunk& chunk, std::size_t nameIndex) {
+  const std::string name = chunk.constant(nameIndex).asString();
+  auto it = globals_.find(name);
+  if (it == globals_.end()) {
+    throw RuntimeError("undefined variable: " + name);
+  }
+  push(it->second);
+}
+
+void VM::executeSetGlobal(const Chunk& chunk, std::size_t nameIndex) {
+  const std::string name = chunk.constant(nameIndex).asString();
+  auto it = globals_.find(name);
+  if (it == globals_.end()) {
+    throw RuntimeError("undefined variable: " + name);
+  }
+  it->second = peek();
+}
+
+void VM::executeArrayLiteral(std::size_t count) {
+  collectGarbageIfNeeded();
+
+  std::vector<Value> elements(count);
+  for (std::size_t i = count; i > 0; --i) {
+    elements[i - 1] = pop();
+  }
+  push(Value(allocateObject<ObjArray>(std::move(elements))));
+}
+
+void VM::executeGetIndex() {
+  Value index = pop();
+  Value array = pop();
+  if (!array.isGcArray()) {
+    throw RuntimeError("value is not an array");
+  }
+  const std::vector<Value>& elements = array.asGcArray()->elements;
+  push(elements[arrayIndexFromValue(index, elements.size())]);
+}
+
+void VM::executeSetIndex() {
+  Value value = pop();
+  Value index = pop();
+  Value array = pop();
+  if (!array.isGcArray()) {
+    throw RuntimeError("value is not an array");
+  }
+  std::vector<Value>& elements = array.asGcArray()->elements;
+  elements[arrayIndexFromValue(index, elements.size())] = value;
+  push(value);
+}
+
+void VM::executeObjectLiteral(const Chunk& chunk, std::size_t namesIndex) {
+  const std::vector<Value>& names = chunk.constant(namesIndex).asArray();
+
+  if (stack_.size() < names.size()) {
+    throw RuntimeError("bytecode stack underflow");
+  }
+
+  auto* object = allocateObject<ObjObject>(rootObjectShape_);
+  TemporaryRootScope roots(*this);
+  roots.add(object);
+
+  const std::size_t valueStart = stack_.size() - names.size();
+  for (std::size_t i = 0; i < names.size(); ++i) {
+    const std::string& name = names[i].asString();
+    objectSetProperty(*object, name, stack_[valueStart + i]);
+  }
+
+  for (std::size_t i = 0; i < names.size(); ++i) {
+    pop();
+  }
+
+  push(Value(object));
+}
+
+void VM::executeGetProperty(const Chunk& chunk, std::size_t nameIndex,
+                            std::size_t feedbackSlotIndex) {
+  const std::string& name = chunk.constant(nameIndex).asString();
+
+  Value object = pop();
+
+  if (object.isGcArray()) {
+    if (name == "length") {
+      push(Value(static_cast<double>(object.asGcArray()->elements.size())));
+      return;
+    }
+
+    push(Value::undefined());
+    return;
+  }
+
+  if (object.isGcString()) {
+    if (name == "length") {
+      push(Value(static_cast<double>(object.asGcString()->value.size())));
+      return;
+    }
+
+    push(Value::undefined());
+    return;
+  }
+
+  if (isGcInstanceValue(object)) {
+    auto& fields = gcInstanceFields(object);
+    auto field = fields.find(name);
+    if (field != fields.end()) {
+      push(field->second);
+      return;
+    }
+
+    auto method = findMethod(gcInstanceClass(object), name);
+    if (method != nullptr) {
+      push(object);
+      auto* boundMethod = allocateObject<ObjBoundMethod>(object, method);
+      pop();
+      push(Value(boundMethod));
+      return;
+    }
+
+    push(Value::undefined());
+    return;
+  }
+
+  if (object.isGcClass()) {
+    auto method = findStaticMethod(object.asGcClass(), name);
+    if (method != nullptr) {
+      push(Value(method));
+      return;
+    }
+
+    push(Value::undefined());
+    return;
+  }
+
+  if (!object.isGcObject()) {
+    throw RuntimeError("value is not an object");
+  }
+
+  ObjObject* objectValue = object.asGcObject();
+  if (objectValue->dictionaryMode) {
+    ++propertyInlineCacheStats_.bypasses;
+    push(objectGetProperty(*objectValue, name));
+    return;
+  }
+
+  FeedbackSlot* feedback =
+      inlineCachesEnabled_ ? &chunk.feedbackSlot(feedbackSlotIndex) : nullptr;
+  if (feedback != nullptr && feedback->state != FeedbackState::Megamorphic) {
+    if (const auto* entry = findPropertyInlineCacheEntry(feedback->property, *objectValue)) {
+      ++propertyInlineCacheStats_.hits;
+      push(objectValue->slots[entry->slot]);
+      return;
+    }
+  }
+
+  if (feedback != nullptr && feedback->state == FeedbackState::Megamorphic) {
+    ++propertyInlineCacheStats_.bypasses;
+  } else {
+    ++propertyInlineCacheStats_.misses;
+  }
+  Value result = objectGetProperty(*objectValue, name);
+  auto slot = objectValue->shape->slots.find(name);
+  if (feedback != nullptr && slot != objectValue->shape->slots.end() &&
+      slot->second < objectValue->slots.size()) {
+    if (updatePropertyFeedback(*feedback, objectValue->shape, slot->second)) {
+      ++propertyInlineCacheStats_.updates;
+    }
+  }
+
+  push(result);
+}
+
+void VM::executeSetProperty(const Chunk& chunk, std::size_t nameIndex,
+                            std::size_t feedbackSlotIndex) {
+  const std::string& name = chunk.constant(nameIndex).asString();
+
+  if (stack_.size() < 2) {
+    throw RuntimeError("bytecode stack underflow");
+  }
+
+  Value value = peek();
+  Value object = stack_[stack_.size() - 2];
+
+  auto finishAssignment = [&]() {
+    pop();
+    pop();
+    push(value);
+  };
+
+  if (isGcInstanceValue(object)) {
+    gcInstanceFields(object)[name] = value;
+    finishAssignment();
+    return;
+  }
+
+  if (!object.isGcObject()) {
+    throw RuntimeError("value is not an object");
+  }
+
+  ObjObject* objectValue = object.asGcObject();
+  if (objectValue->dictionaryMode) {
+    ++propertyInlineCacheStats_.setBypasses;
+    objectSetProperty(*objectValue, name, value);
+    finishAssignment();
+    return;
+  }
+
+  FeedbackSlot* feedback =
+      inlineCachesEnabled_ ? &chunk.feedbackSlot(feedbackSlotIndex) : nullptr;
+  if (feedback != nullptr && feedback->state != FeedbackState::Megamorphic) {
+    if (const auto* entry = findPropertyInlineCacheEntry(feedback->property, *objectValue)) {
+      ++propertyInlineCacheStats_.setHits;
+      objectValue->slots[entry->slot] = value;
+      finishAssignment();
+      return;
+    }
+  }
+
+  if (feedback != nullptr && feedback->state == FeedbackState::Megamorphic) {
+    ++propertyInlineCacheStats_.setBypasses;
+  } else {
+    ++propertyInlineCacheStats_.setMisses;
+  }
+
+  auto slot = objectValue->shape->slots.find(name);
+  if (slot != objectValue->shape->slots.end() && slot->second < objectValue->slots.size()) {
+    objectValue->slots[slot->second] = value;
+    if (feedback != nullptr &&
+        updatePropertyFeedback(*feedback, objectValue->shape, slot->second)) {
+      ++propertyInlineCacheStats_.setUpdates;
+    }
+    finishAssignment();
+    return;
+  }
+
+  objectSetProperty(*objectValue, name, value);
+
+  slot = objectValue->shape->slots.find(name);
+  if (feedback != nullptr && slot != objectValue->shape->slots.end() &&
+      slot->second < objectValue->slots.size()) {
+    if (updatePropertyFeedback(*feedback, objectValue->shape, slot->second)) {
+      ++propertyInlineCacheStats_.setUpdates;
+    }
+  }
+
+  finishAssignment();
+}
+
+void VM::executeClass(const Chunk& chunk, std::size_t nameIndex) {
+  push(Value(allocateObject<ObjClass>(chunk.constant(nameIndex).asString())));
+}
+
+void VM::executeMethod(const Chunk& chunk, std::size_t nameIndex) {
+  const std::string& name = chunk.constant(nameIndex).asString();
+  Value method = pop();
+  Value klass = peek();
+  klass.asGcClass()->methods[name] = method.asGcClosure();
+}
+
+void VM::executeStaticMethod(const Chunk& chunk, std::size_t nameIndex) {
+  const std::string& name = chunk.constant(nameIndex).asString();
+  Value method = pop();
+  Value klass = peek();
+  klass.asGcClass()->staticMethods[name] = method.asGcClosure();
+}
+
+void VM::executeInherit() {
+  Value superclass = pop();
+  Value subclass = peek();
+  if (!superclass.isGcClass()) {
+    throw RuntimeError("superclass must be a class");
+  }
+  if (!subclass.isGcClass()) {
+    throw RuntimeError("subclass must be a class");
+  }
+
+  subclass.asGcClass()->superclass = superclass.asGcClass();
+}
+
+void VM::executeGetUpvalue(const CallFrame& frame, std::size_t slot) {
+  const auto& upvalue = frame.closure->upvalues[slot];
+  push(upvalue->isClosed ? upvalue->closed : stack_[upvalue->stackIndex]);
+}
+
+void VM::executeSetUpvalue(const CallFrame& frame, std::size_t slot) {
+  const auto& upvalue = frame.closure->upvalues[slot];
+  if (upvalue->isClosed) {
+    upvalue->closed = peek();
+  } else {
+    stack_[upvalue->stackIndex] = peek();
+  }
+}
+
+void VM::executeCloseUpvalue() {
+  closeUpvalues(stack_.size() - 1);
+  pop();
+}
+
+void VM::executeGetCurrentClosure(const CallFrame& frame) {
+  push(Value(frame.closure));
+}
+
+void VM::executeClosure(const Chunk& chunk, std::size_t functionIndex, std::size_t bytecodeOffset,
+                        ObjClosure* currentClosure, std::size_t slotStart) {
+  auto function = chunk.constant(functionIndex).asBytecodeFunction();
+  auto* closure = makeGcClosure(*function);
+  push(Value(closure));
+
+  const BytecodeFunction& gcFunction = closure->function->function;
+  closure->upvalues.reserve(gcFunction.upvalues.size());
+
+  std::size_t metadataOffset = bytecodeOffset;
+  for (const UpvalueDescriptor& descriptor : gcFunction.upvalues) {
+    const bool isLocal = chunk.readByte(metadataOffset++) != 0;
+    const std::uint8_t index = chunk.readByte(metadataOffset++);
+    if (isLocal != descriptor.isLocal || index != descriptor.index) {
+      throw RuntimeError("closure upvalue metadata mismatch");
+    }
+
+    if (isLocal) {
+      closure->upvalues.push_back(captureUpvalue(slotStart + index));
+    } else {
+      closure->upvalues.push_back(currentClosure->upvalues[index]);
+    }
+  }
+}
+
+void VM::executeCall(std::size_t argCount, bool requireSynchronousCallee) {
+  if (stack_.size() < argCount + 1) {
+    throw RuntimeError("call stack underflow");
+  }
+
+  const std::size_t calleeIndex = stack_.size() - argCount - 1;
+  Value callee = stack_[calleeIndex];
+
+  if (callee.isNativeFunction()) {
+    const std::string& name = callee.isGcNativeFunction()
+                                  ? callee.asGcNativeFunction()->name
+                                  : callee.asNativeFunction()->name;
+    const std::size_t arity = callee.isGcNativeFunction()
+                                  ? callee.asGcNativeFunction()->arity
+                                  : callee.asNativeFunction()->arity;
+    expectArity(argCount, arity, name);
+
+    std::vector<Value> arguments;
+    arguments.reserve(argCount);
+    for (std::size_t i = 0; i < argCount; ++i) {
+      arguments.push_back(stack_[calleeIndex + 1 + i]);
+    }
+
+    Value result = callee.isGcNativeFunction() ? callee.asGcNativeFunction()->function(arguments)
+                                               : callee.asNativeFunction()->function(arguments);
+    stack_.resize(calleeIndex);
+    push(result);
+    return;
+  }
+
+  if (callee.isGcClass()) {
+    auto* klass = callee.asGcClass();
+    auto* init = findMethod(klass, "init");
+    if (init == nullptr && argCount != 0) {
+      throw RuntimeError("class " + klass->name + " expects 0 arguments");
+    }
+
+    auto* instance = allocateObject<ObjInstance>(klass);
+    if (init == nullptr) {
+      stack_.resize(calleeIndex);
+      push(Value(instance));
+      return;
+    }
+
+    stack_[calleeIndex] = Value(instance);
+    if (requireSynchronousCallee) {
+      callBytecodeClosureSynchronously(init, argCount, calleeIndex, calleeIndex, "method", true);
+    } else {
+      callBytecodeClosure(init, argCount, calleeIndex, calleeIndex, "method", true);
+    }
+    return;
+  }
+
+  if (callee.isGcBoundMethod()) {
+    auto* boundMethod = callee.asGcBoundMethod();
+    stack_[calleeIndex] = boundMethod->receiver;
+    if (requireSynchronousCallee) {
+      callBytecodeClosureSynchronously(boundMethod->method, argCount, calleeIndex, calleeIndex,
+                                       "method");
+    } else {
+      callBytecodeClosure(boundMethod->method, argCount, calleeIndex, calleeIndex, "method");
+    }
+    return;
+  }
+
+  if (callee.isGcClosure()) {
+    // callee 位于参数前一个槽位；新函数帧从第一个参数开始。
+    // 因此 OP_GET_LOCAL 0 读取的就是第一个实参，无需复制参数数组。
+    if (requireSynchronousCallee) {
+      callBytecodeClosureSynchronously(callee.asGcClosure(), argCount, calleeIndex,
+                                       calleeIndex + 1, "function");
+    } else {
+      callBytecodeClosure(callee.asGcClosure(), argCount, calleeIndex, calleeIndex + 1,
+                          "function");
+    }
+    return;
+  }
+
+  throw RuntimeError("value is not callable");
+}
+
+void VM::executeMethodCall(const Chunk& chunk, std::size_t nameIndex, std::size_t argCount,
+                           std::size_t feedbackSlotIndex, bool requireSynchronousCallee) {
+  const std::string& name = chunk.constant(nameIndex).asString();
+  if (stack_.size() < argCount + 1) {
+    ++propertyInlineCacheStats_.methodCallDispatchErrors;
+    throw RuntimeError("method call stack underflow");
+  }
+
+  const std::size_t receiverIndex = stack_.size() - argCount - 1;
+  Value receiver = stack_[receiverIndex];
+  auto callMethod = [&](ObjClosure* method, std::size_t slotStart, const std::string& label) {
+    try {
+      if (requireSynchronousCallee) {
+        callBytecodeClosureSynchronously(method, argCount, receiverIndex, slotStart, label);
+      } else {
+        callBytecodeClosure(method, argCount, receiverIndex, slotStart, label);
+      }
+    } catch (const RuntimeError&) {
+      ++propertyInlineCacheStats_.methodCallDispatchErrors;
+      throw;
+    }
+  };
+
+  if (isGcInstanceValue(receiver)) {
+    ObjClass* klass = gcInstanceClass(receiver);
+    FeedbackSlot* feedback = inlineCachesEnabled_ ? &chunk.feedbackSlot(feedbackSlotIndex) : nullptr;
+    if (feedback != nullptr && feedback->state != FeedbackState::Megamorphic) {
+      if (const auto* entry = findMethodInlineCacheEntry(feedback->method, klass, false)) {
+        ++propertyInlineCacheStats_.methodCallHits;
+        callMethod(entry->method, receiverIndex, "method");
+        ++propertyInlineCacheStats_.methodCallInstanceDispatches;
+        return;
+      }
+    }
+
+    if (feedback != nullptr && feedback->state == FeedbackState::Megamorphic) {
+      ++propertyInlineCacheStats_.methodCallBypasses;
+    } else {
+      ++propertyInlineCacheStats_.methodCallMisses;
+    }
+    auto* method = findMethod(klass, name);
+    if (method == nullptr) {
+      ++propertyInlineCacheStats_.methodCallDispatchErrors;
+      throw RuntimeError("value has no method: " + name);
+    }
+
+    if (feedback != nullptr && updateMethodFeedback(*feedback, klass, method, false)) {
+      ++propertyInlineCacheStats_.methodCallUpdates;
+    }
+    callMethod(method, receiverIndex, "method");
+    ++propertyInlineCacheStats_.methodCallInstanceDispatches;
+    return;
+  }
+
+  if (receiver.isGcClass()) {
+    ObjClass* klass = receiver.asGcClass();
+    FeedbackSlot* feedback = inlineCachesEnabled_ ? &chunk.feedbackSlot(feedbackSlotIndex) : nullptr;
+    if (feedback != nullptr && feedback->state != FeedbackState::Megamorphic) {
+      if (const auto* entry = findMethodInlineCacheEntry(feedback->method, klass, true)) {
+        ++propertyInlineCacheStats_.methodCallHits;
+        callMethod(entry->method, receiverIndex + 1, "function");
+        ++propertyInlineCacheStats_.methodCallStaticDispatches;
+        return;
+      }
+    }
+
+    if (feedback != nullptr && feedback->state == FeedbackState::Megamorphic) {
+      ++propertyInlineCacheStats_.methodCallBypasses;
+    } else {
+      ++propertyInlineCacheStats_.methodCallMisses;
+    }
+    auto* method = findStaticMethod(klass, name);
+    if (method == nullptr) {
+      ++propertyInlineCacheStats_.methodCallDispatchErrors;
+      throw RuntimeError("value has no method: " + name);
+    }
+
+    if (feedback != nullptr && updateMethodFeedback(*feedback, klass, method, true)) {
+      ++propertyInlineCacheStats_.methodCallUpdates;
+    }
+    callMethod(method, receiverIndex + 1, "function");
+    ++propertyInlineCacheStats_.methodCallStaticDispatches;
+    return;
+  }
+
+  if (!receiver.isGcArray()) {
+    ++propertyInlineCacheStats_.methodCallDispatchErrors;
+    throw RuntimeError("method call receiver is not an array");
+  }
+
+  std::vector<Value>& array = receiver.asGcArray()->elements;
+  ++propertyInlineCacheStats_.methodCallBypasses;
+
+  if (name == "push") {
+    if (argCount != 1) {
+      ++propertyInlineCacheStats_.methodCallDispatchErrors;
+      throw RuntimeError("push expects 1 argument");
+    }
+
+    ++propertyInlineCacheStats_.methodCallArrayPushes;
+    array.push_back(stack_[receiverIndex + 1]);
+    stack_.resize(receiverIndex);
+    push(Value(static_cast<double>(array.size())));
+    return;
+  }
+
+  if (name == "pop") {
+    if (argCount != 0) {
+      ++propertyInlineCacheStats_.methodCallDispatchErrors;
+      throw RuntimeError("pop expects 0 arguments");
+    }
+
+    ++propertyInlineCacheStats_.methodCallArrayPops;
+    if (array.empty()) {
+      stack_.resize(receiverIndex);
+      push(Value::undefined());
+      return;
+    }
+
+    Value value = array.back();
+    array.pop_back();
+    stack_.resize(receiverIndex);
+    push(value);
+    return;
+  }
+
+  ++propertyInlineCacheStats_.methodCallDispatchErrors;
+  throw RuntimeError("unknown array method: " + name);
+}
+
+void VM::executeSuperCall(const Chunk& chunk, std::size_t nameIndex, std::size_t argCount,
+                          bool requireSynchronousCallee) {
+  const std::string& name = chunk.constant(nameIndex).asString();
+  if (stack_.size() < argCount + 2) {
+    throw RuntimeError("super call stack underflow");
+  }
+
+  const std::size_t receiverIndex = stack_.size() - argCount - 1;
+  const std::size_t superclassIndex = receiverIndex - 1;
+  Value superclass = stack_[superclassIndex];
+  Value receiver = stack_[receiverIndex];
+  if (!superclass.isGcClass()) {
+    throw RuntimeError("superclass must be a class");
+  }
+  if (!isGcInstanceValue(receiver)) {
+    throw RuntimeError("this must be an instance");
+  }
+
+  auto* method = findMethod(superclass.asGcClass(), name);
+  if (method == nullptr) {
+    throw RuntimeError("superclass has no method: " + name);
+  }
+
+  // 重排前栈布局：[..., superclass, receiver, arg0, arg1, ...]
+  // 重排后栈布局：[..., receiver, arg0, arg1, ...]
+  // 方法从 superclass 上查找，但 local 0 / this 仍然是当前 receiver。
+  stack_[superclassIndex] = receiver;
+  for (std::size_t i = 0; i < argCount; ++i) {
+    stack_[superclassIndex + 1 + i] = stack_[receiverIndex + 1 + i];
+  }
+  stack_.resize(superclassIndex + 1 + argCount);
+  if (requireSynchronousCallee) {
+    callBytecodeClosureSynchronously(method, argCount, superclassIndex, superclassIndex, "method");
+  } else {
+    callBytecodeClosure(method, argCount, superclassIndex, superclassIndex, "method");
+  }
+}
+
 void VM::callBytecodeClosure(ObjClosure* closure, std::size_t argCount, std::size_t returnSlot,
                              std::size_t slotStart, const std::string& label,
                              bool returnsReceiver) {
-  const BytecodeFunction& function = closure->function->function;
+  BytecodeFunction& function = closure->function->function;
   if (argCount != function.params.size()) {
     throw RuntimeError(label + " " + function.name + " expects " +
                        std::to_string(function.params.size()) + " arguments");
+  }
+
+  const bool shouldEnterBaseline =
+      jitOptions_.enabled && function.jit.state == JitState::Compiled &&
+      function.jit.baselineCode != nullptr;
+
+  recordFunctionCall(*closure->function);
+
+  if (shouldEnterBaseline) {
+    frames_.push_back(CallFrame{
+        closure,
+        0,
+        returnSlot,
+        slotStart,
+        returnsReceiver,
+    });
+
+    try {
+      incrementSaturating(function.jit.baselineEntryCount);
+      if (canExecuteNativeBaselineEntry(*function.jit.baselineCode)) {
+        executeBaselineEntry(function.jit.baselineCode->entry, frames_.back());
+      } else {
+        Value result = executeBaselineCode(*function.jit.baselineCode, frames_.back());
+        stack_.resize(returnSlot);
+        push(result);
+      }
+    } catch (...) {
+      frames_.pop_back();
+      throw;
+    }
+
+    frames_.pop_back();
+    return;
   }
 
   frames_.push_back(CallFrame{
@@ -1178,6 +2241,365 @@ void VM::callBytecodeClosure(ObjClosure* closure, std::size_t argCount, std::siz
       slotStart,
       returnsReceiver,
   });
+}
+
+void VM::callBytecodeClosureSynchronously(ObjClosure* closure, std::size_t argCount,
+                                          std::size_t returnSlot, std::size_t slotStart,
+                                          const std::string& label, bool returnsReceiver) {
+  BytecodeFunction& function = closure->function->function;
+  if (argCount != function.params.size()) {
+    throw RuntimeError(label + " " + function.name + " expects " +
+                       std::to_string(function.params.size()) + " arguments");
+  }
+
+  recordFunctionCall(*closure->function);
+  if (jitOptions_.enabled && function.jit.state == JitState::Cold) {
+    function.jit.state = JitState::Scheduled;
+    compileScheduledJit(function);
+  }
+
+  if (!jitOptions_.enabled || function.jit.state != JitState::Compiled ||
+      function.jit.baselineCode == nullptr) {
+    throw RuntimeError("baseline call target is not compiled: " + function.name);
+  }
+
+  frames_.push_back(CallFrame{
+      closure,
+      0,
+      returnSlot,
+      slotStart,
+      returnsReceiver,
+  });
+
+  try {
+    incrementSaturating(function.jit.baselineEntryCount);
+    if (canExecuteNativeBaselineEntry(*function.jit.baselineCode)) {
+      executeBaselineEntry(function.jit.baselineCode->entry, frames_.back());
+    } else {
+      Value result = executeBaselineCode(*function.jit.baselineCode, frames_.back());
+      stack_.resize(returnSlot);
+      push(result);
+    }
+  } catch (...) {
+    frames_.pop_back();
+    throw;
+  }
+
+  frames_.pop_back();
+}
+
+void VM::recordFunctionCall(ObjFunction& function) {
+  if (!jitOptions_.enabled) {
+    return;
+  }
+
+  incrementSaturating(function.function.jit.callCount);
+  maybeScheduleJit(function.function);
+}
+
+void VM::recordLoopBackedge(ObjFunction& function) {
+  if (!jitOptions_.enabled) {
+    return;
+  }
+
+  incrementSaturating(function.function.jit.backedgeCount);
+  maybeScheduleJit(function.function);
+}
+
+void VM::maybeScheduleJit(BytecodeFunction& function) {
+  JitFeedback& jit = function.jit;
+  if (jit.state != JitState::Cold) {
+    return;
+  }
+
+  if (jit.callCount >= jitOptions_.callThreshold ||
+      jit.backedgeCount >= jitOptions_.backedgeThreshold) {
+    jit.state = JitState::Scheduled;
+    compileScheduledJit(function);
+  }
+}
+
+void VM::compileScheduledJit(BytecodeFunction& function) {
+  JitFeedback& jit = function.jit;
+  if (jit.state != JitState::Scheduled) {
+    return;
+  }
+
+  BaselineCompileResult result = compileBaseline(function);
+  if (result.succeeded()) {
+    jit.baselineCode = std::move(result.code);
+    jit.compileError.clear();
+    jit.state = JitState::Compiled;
+    return;
+  }
+
+  jit.baselineCode.reset();
+  jit.compileError = std::move(result.error);
+  jit.state = JitState::Failed;
+}
+
+Value VM::executeBaselineEntry(BaselineEntry entry, CallFrame& callFrame) {
+  if (entry == nullptr) {
+    throw RuntimeError("baseline entry is null");
+  }
+
+  BaselineFrame frame;
+  frame.vm = this;
+  frame.closure = callFrame.closure;
+  frame.returnSlot = callFrame.returnSlot;
+  frame.slotStart = callFrame.slotStart;
+  frame.returnsReceiver = callFrame.returnsReceiver;
+  refreshBaselineFrameStack(frame);
+
+  entry(&frame);
+
+  if (frame.failed) {
+    if (!frame.errorMessage.empty()) {
+      throw RuntimeError(frame.errorMessage);
+    }
+    throw RuntimeError("baseline runtime helper failed");
+  }
+  if (!frame.completed) {
+    throw RuntimeError("baseline entry did not complete");
+  }
+  if (stack_.empty()) {
+    throw RuntimeError("baseline entry produced no result");
+  }
+
+  return stack_.back();
+}
+
+Value VM::executeBaselineCode(const BaselineCode& code, CallFrame& frame) {
+  const Chunk& chunk = frame.closure->function->function.chunk;
+  std::size_t ip = 0;
+  auto instructionIndexForTarget = [&](std::size_t bytecodeOffset) -> std::size_t {
+    if (bytecodeOffset >= code.bytecodeOffsetToInstructionIndex.size()) {
+      throw RuntimeError("baseline jump target is out of bounds");
+    }
+    const std::size_t target = code.bytecodeOffsetToInstructionIndex[bytecodeOffset];
+    if (target == kInvalidInstructionIndex || target >= code.instructions.size()) {
+      throw RuntimeError("baseline jump target is not an instruction");
+    }
+    return target;
+  };
+
+  while (ip < code.instructions.size()) {
+    const DecodedInstruction& instruction = code.instructions[ip];
+
+    switch (instruction.opcode) {
+      case Opcode::Constant: {
+        const Value& constant = chunk.constant(instruction.operands[0]);
+        if (constant.isString()) {
+          push(makeGcString(constant.asString()));
+        } else {
+          push(constant);
+        }
+        ++ip;
+        break;
+      }
+      case Opcode::Add: {
+        Value right = pop();
+        Value left = pop();
+        if (left.isGcString() || right.isGcString()) {
+          push(makeGcString(left.toString() + right.toString()));
+        } else {
+          push(Value(left.asNumber() + right.asNumber()));
+        }
+        ++ip;
+        break;
+      }
+      case Opcode::Sub: {
+        Value right = pop();
+        Value left = pop();
+        push(Value(left.asNumber() - right.asNumber()));
+        ++ip;
+        break;
+      }
+      case Opcode::Mul: {
+        Value right = pop();
+        Value left = pop();
+        push(Value(left.asNumber() * right.asNumber()));
+        ++ip;
+        break;
+      }
+      case Opcode::Div: {
+        Value right = pop();
+        Value left = pop();
+        const double divisor = checkedDivisor(right, "division by zero");
+        push(Value(left.asNumber() / divisor));
+        ++ip;
+        break;
+      }
+      case Opcode::Mod: {
+        Value right = pop();
+        Value left = pop();
+        const double divisor = checkedDivisor(right, "modulo by zero");
+        push(Value(std::fmod(left.asNumber(), divisor)));
+        ++ip;
+        break;
+      }
+      case Opcode::Negate:
+        push(Value(-pop().asNumber()));
+        ++ip;
+        break;
+      case Opcode::Return: {
+        Value result = pop();
+        if (frame.returnsReceiver) {
+          result = stack_[frame.slotStart];
+        }
+        closeUpvalues(frame.slotStart);
+        return result;
+      }
+      case Opcode::GetLocal: {
+        const std::size_t absoluteSlot = frame.slotStart + instruction.operands[0];
+        if (absoluteSlot >= stack_.size()) {
+          throw RuntimeError("local slot out of bounds");
+        }
+        push(stack_[absoluteSlot]);
+        ++ip;
+        break;
+      }
+      case Opcode::SetLocal: {
+        const std::size_t absoluteSlot = frame.slotStart + instruction.operands[0];
+        if (absoluteSlot >= stack_.size()) {
+          throw RuntimeError("local slot out of bounds");
+        }
+        stack_[absoluteSlot] = peek();
+        ++ip;
+        break;
+      }
+      case Opcode::Pop:
+        discardTop();
+        ++ip;
+        break;
+      case Opcode::Equal: {
+        Value right = pop();
+        Value left = pop();
+        push(Value(left.equals(right)));
+        ++ip;
+        break;
+      }
+      case Opcode::Greater: {
+        Value right = pop();
+        Value left = pop();
+        push(Value(left.asNumber() > right.asNumber()));
+        ++ip;
+        break;
+      }
+      case Opcode::Less: {
+        Value right = pop();
+        Value left = pop();
+        push(Value(left.asNumber() < right.asNumber()));
+        ++ip;
+        break;
+      }
+      case Opcode::Not:
+        push(Value(!pop().isTruthy()));
+        ++ip;
+        break;
+      case Opcode::JumpIfFalse:
+        ip = peek().isTruthy() ? ip + 1 : instructionIndexForTarget(instruction.jumpTarget);
+        break;
+      case Opcode::Jump:
+        ip = instructionIndexForTarget(instruction.jumpTarget);
+        break;
+      case Opcode::Loop:
+        recordLoopBackedge(*frame.closure->function);
+        ip = instructionIndexForTarget(instruction.jumpTarget);
+        break;
+
+      case Opcode::DefineGlobal:
+        executeDefineGlobal(chunk, instruction.operands[0]);
+        ++ip;
+        break;
+      case Opcode::GetGlobal:
+        executeGetGlobal(chunk, instruction.operands[0]);
+        ++ip;
+        break;
+      case Opcode::SetGlobal:
+        executeSetGlobal(chunk, instruction.operands[0]);
+        ++ip;
+        break;
+      case Opcode::Array:
+        executeArrayLiteral(instruction.operands[0]);
+        ++ip;
+        break;
+      case Opcode::GetIndex:
+        executeGetIndex();
+        ++ip;
+        break;
+      case Opcode::SetIndex:
+        executeSetIndex();
+        ++ip;
+        break;
+      case Opcode::Object:
+        executeObjectLiteral(chunk, instruction.operands[0]);
+        ++ip;
+        break;
+      case Opcode::GetProperty:
+        executeGetProperty(chunk, instruction.operands[0], instruction.operands[1]);
+        ++ip;
+        break;
+      case Opcode::SetProperty:
+        executeSetProperty(chunk, instruction.operands[0], instruction.operands[1]);
+        ++ip;
+        break;
+      case Opcode::Class:
+        executeClass(chunk, instruction.operands[0]);
+        ++ip;
+        break;
+      case Opcode::Method:
+        executeMethod(chunk, instruction.operands[0]);
+        ++ip;
+        break;
+      case Opcode::StaticMethod:
+        executeStaticMethod(chunk, instruction.operands[0]);
+        ++ip;
+        break;
+      case Opcode::Inherit:
+        executeInherit();
+        ++ip;
+        break;
+      case Opcode::GetUpvalue:
+        executeGetUpvalue(frame, instruction.operands[0]);
+        ++ip;
+        break;
+      case Opcode::SetUpvalue:
+        executeSetUpvalue(frame, instruction.operands[0]);
+        ++ip;
+        break;
+      case Opcode::CloseUpvalue:
+        executeCloseUpvalue();
+        ++ip;
+        break;
+      case Opcode::GetCurrentClosure:
+        executeGetCurrentClosure(frame);
+        ++ip;
+        break;
+      case Opcode::Closure:
+        executeClosure(chunk, instruction.operands[0], instruction.offset + 2, frame.closure,
+                       frame.slotStart);
+        ++ip;
+        break;
+      case Opcode::Call:
+        executeCall(instruction.operands[0], true);
+        ++ip;
+        break;
+      case Opcode::MethodCall:
+        executeMethodCall(chunk, instruction.operands[0], instruction.operands[1],
+                          instruction.operands[2], true);
+        ++ip;
+        break;
+      case Opcode::SuperCall:
+        executeSuperCall(chunk, instruction.operands[0], instruction.operands[1], true);
+        ++ip;
+        break;
+
+        throw RuntimeError(std::string("baseline cannot execute ") + opcodeName(instruction.opcode));
+    }
+  }
+
+  throw RuntimeError("baseline code reached end without return");
 }
 
 // 捕获仍在 VM 栈上的局部变量。
@@ -1352,6 +2774,20 @@ void VM::markObjectChildren(Obj* object) {
 
       for (const Value& constant : function->function.chunk.constants()) {
         markValue(constant);
+      }
+
+      for (const FeedbackSlot& feedbackSlot : function->function.chunk.feedbackSlots()) {
+        const PropertyInlineCache& propertyCache = feedbackSlot.property;
+        for (std::size_t index = 0; index < propertyCache.size; ++index) {
+          markObject(propertyCache.entries[index].shape);
+        }
+
+        const MethodInlineCache& methodCache = feedbackSlot.method;
+        for (std::size_t index = 0; index < methodCache.size; ++index) {
+          const MethodInlineCacheEntry& entry = methodCache.entries[index];
+          markObject(entry.klass);
+          markClosure(entry.method);
+        }
       }
 
       break;

@@ -88,8 +88,11 @@ void Compiler::emitExpression(const Expr& expression) {
     emitExpression(get->object());
 
     const std::uint8_t nameIndex = addConstant(Value(get->name()));
+    const std::uint8_t feedbackSlot =
+        static_cast<std::uint8_t>(chunk_.addFeedbackSlot(FeedbackKind::GetProperty));
     emitOpcode(Opcode::GetProperty);
     emitByte(nameIndex);
+    emitByte(feedbackSlot);
     return;
   }
 
@@ -98,8 +101,11 @@ void Compiler::emitExpression(const Expr& expression) {
     emitExpression(set->value());
 
     const std::uint8_t nameIndex = addConstant(Value(set->name()));
+    const std::uint8_t feedbackSlot =
+        static_cast<std::uint8_t>(chunk_.addFeedbackSlot(FeedbackKind::SetProperty));
     emitOpcode(Opcode::SetProperty);
     emitByte(nameIndex);
+    emitByte(feedbackSlot);
     return;
   }
 
@@ -113,9 +119,12 @@ void Compiler::emitExpression(const Expr& expression) {
     }
 
     const std::uint8_t nameIndex = addConstant(Value(methodCall->name()));
+    const std::uint8_t feedbackSlot =
+        static_cast<std::uint8_t>(chunk_.addFeedbackSlot(FeedbackKind::MethodCall));
     emitOpcode(Opcode::MethodCall);
     emitByte(nameIndex);
     emitByte(static_cast<std::uint8_t>(methodCall->arguments().size()));
+    emitByte(feedbackSlot);
     return;
   }
 

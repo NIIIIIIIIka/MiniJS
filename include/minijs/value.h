@@ -1,5 +1,7 @@
 ﻿#pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -313,6 +315,16 @@ class Value {
 
   // 比较两个运行时值是否相等；对象、数组和函数按引用身份比较。
   bool equals(const Value& other) const;
+
+  // native baseline fast path 需要读取 Value 的稳定字段偏移。
+  // 普通 VM 语义仍应通过 is*/as* 接口访问 Value。
+  static std::size_t typeOffset();
+  static std::size_t numberOffset();
+  static std::size_t booleanOffset();
+  static std::uint32_t numberTypeTag();
+  static std::uint32_t booleanTypeTag();
+  static std::uint32_t nullTypeTag();
+  static std::uint32_t undefinedTypeTag();
 
  private:
   explicit Value(ValueType type);

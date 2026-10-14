@@ -1,13 +1,14 @@
 class Parent {
-  value() {
-    return 10;
+  get() {
+    return 1;
   }
 }
 
 class Child < Parent {
-  value() {
-    return super.value() + 1;
+  get() {
+    return super.get();
   }
 }
 
-Child().value();
+let child = Child();
+child.get();
