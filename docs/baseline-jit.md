@@ -234,7 +234,46 @@ extern "C" bool minijsBaselineAdd(BaselineFrame* frame);
 extern "C" bool minijsBaselineReturn(BaselineFrame* frame);
 ```
 
-这些 helper 直接操作 VM 栈，但只暴露布尔状态给机器码。C++ 异常不会穿过 ABI 边界；helper 捕获异常后设置 `frame->failed = true` 并返回 `false`。`Value` 不作为 C ABI 返回值传递，需要通过 VM 栈或指针参数传入 helper。
+这些 helper 直接操作 VM 栈，通过 `bool` 或 `std::uint8_t` 状态返回给机器码；具体成功、失败及三态协议以 Runtime ABI 声明为准。C++ 异常不会穿过 ABI 边界；helper 捕获异常后设置 `frame->failed = true` 并返回失败状态。`Value` 不作为 C ABI 返回值传递，需要通过 VM 栈或指针参数传入 helper。
+
+## VM、decoded baseline 与 native baseline 的栈关系
+
+三条执行路径共享同一个 JavaScript 值栈，唯一拥有栈内容的对象是 `VM::stack_`：
+
+```text
+普通 bytecode VM ───────────────┐
+decoded baseline executor ──────┼──> VM::stack_（唯一真实值栈）
+native baseline fast path ──────┤       参数、局部变量、临时值、返回值
+native stub -> runtime helper ──┘
+```
+
+- 普通 VM 使用 `push()`、`pop()` 和 `peek()` 直接操作 `VM::stack_`。
+- decoded baseline executor 仍调用相同的栈操作，并通过 `frame.slotStart + slot` 定位局部变量。
+- native stub 没有第二套 JavaScript 栈。大部分 opcode 通过 runtime helper 操作 `VM::stack_`；Windows x64 的数字快路径通过 `BaselineFrame::stackData` 和 `stackSize` 访问同一栈的当前快照。
+- 函数参数、局部变量和临时计算结果位于同一条值栈上。`slotStart` 是当前调用帧局部槽的起点，`returnSlot` 是返回时调用方期望结果写回的位置。
+
+`BaselineFrame` 中的两个字段不拥有内存，也不是独立栈：
+
+```cpp
+Value* stackData;       // 非空栈时为 VM::stack_.data() 的快照，空栈为 nullptr
+std::size_t stackSize;  // VM::stack_.size() 的当前快照
+```
+
+它们存在的原因是 native 机器码不能依赖 `std::vector<Value>` 对象本身的内部布局。进入 native entry 前，`executeBaselineEntry()` 调用 `refreshBaselineFrameStack()` 建立快照。之后栈状态按两个方向同步：
+
+1. runtime helper 修改真实的 `VM::stack_` 后，调用 `refreshBaselineFrameStack()`，把可能变化的 `data()` 地址和 `size()` 重新写入 frame。
+2. native 数字快路径原地写入栈槽并改变 `frame.stackSize` 后，调用 `minijsBaselineSyncStackSize()`，由 VM 对真实的 `stack_` 执行 `resize()`，再刷新 frame。
+
+任何可能 `push()`、嵌套调用或触发 vector 扩容的 helper，都可能让旧的 `stackData` 和栈元素地址失效。因此 native 代码跨 helper 调用后不能继续使用之前缓存的 `Value*`，必须重新从 `BaselineFrame` 读取快照。对于 JavaScript 值栈，GC 扫描的是真实的 `VM::stack_`；`stackData` 本身不会形成第二组根。这不排除 globals、调用帧和临时根等其它 GC 根。
+
+这里还要区分 CPU 的原生调用栈。native stub 的 prologue、返回地址、callee-saved 寄存器和 Windows x64 shadow space 位于 CPU stack 上；它只服务机器调用约定，不承担 JavaScript 参数、局部变量或操作数栈的职责。
+
+相关代码：
+
+- [include/minijs/vm.h](../include/minijs/vm.h)：`VM::stack_`、`CallFrame::slotStart`、`CallFrame::returnSlot`
+- [include/minijs/baseline_frame.h](../include/minijs/baseline_frame.h)：`BaselineFrame::stackData`、`stackSize`、`slotStart`、`returnSlot`
+- [src/vm.cpp](../src/vm.cpp)：`refreshBaselineFrameStack()`、`executeBaselineEntry()`、`executeBaselineCode()`、`baselineRuntimeSyncStackSize()` 和各类 `baselineRuntime*()` helper
+- [src/baseline_compiler.cpp](../src/baseline_compiler.cpp)：native fast path 对栈快照的读取，以及 prologue/epilogue 的 CPU stack 管理
 
 ## 触发流程
 
