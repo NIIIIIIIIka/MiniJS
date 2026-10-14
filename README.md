@@ -19,17 +19,16 @@ VM 的运行时对象由 Mark-Sweep GC 管理。
 
 ## 项目目标
 
-
-
 使用 C++ 从零实现一个小型 JavaScript 引擎，通过完整实现 Lexer、Parser、AST Interpreter、Bytecode Compiler、Stack-based VM、对象系统和垃圾回收，理解解释器与虚拟机的核心原理。
 
 当前支持的主要 JavaScript-like 子集：
 
 - 变量与块级作用域
 - 函数定义与调用
-- `if` 和 `while`
+- `if`、`while`、`for`、`break` 和 `continue`
 - 算术、比较与逻辑运算符
 - 对象与数组
+- 类、实例方法、静态方法、继承与 `super`
 - 字节码编译与执行
 - Mark-Sweep 垃圾回收（外部兼容值仍使用 shared_ptr）
 
@@ -73,11 +72,23 @@ VM 的运行时对象由 Mark-Sweep GC 管理。
 当前内置函数：
 
 - `print(value)`
+- `clock()`
 - `has(value, "key")`
 - `keys(value)`
 - `del(value, "key")`
 - `typeOf(value)`
 - `len(value)`
+
+## 代码导览
+
+- CLI 入口与运行模式：[src/main.cpp](src/main.cpp)
+- Lexer / Token：[include/minijs/lexer.h](include/minijs/lexer.h)、[src/lexer.cpp](src/lexer.cpp)、[include/minijs/token.h](include/minijs/token.h)
+- Parser / AST：[include/minijs/parser.h](include/minijs/parser.h)、[src/parser.cpp](src/parser.cpp)、[include/minijs/ast.h](include/minijs/ast.h)、[src/ast.cpp](src/ast.cpp)
+- AST Interpreter：[include/minijs/interpreter.h](include/minijs/interpreter.h)、[src/interpreter.cpp](src/interpreter.cpp)、[include/minijs/environment.h](include/minijs/environment.h)
+- Bytecode 编译与反汇编：[include/minijs/compiler.h](include/minijs/compiler.h)、[src/compiler.cpp](src/compiler.cpp)、[include/minijs/chunk.h](include/minijs/chunk.h)、[src/chunk.cpp](src/chunk.cpp)、[src/disassembler.cpp](src/disassembler.cpp)
+- VM / Runtime / GC：[include/minijs/vm.h](include/minijs/vm.h)、[src/vm.cpp](src/vm.cpp)、[include/minijs/value.h](include/minijs/value.h)、[include/minijs/gc_object.h](include/minijs/gc_object.h)、[src/gc_object.cpp](src/gc_object.cpp)
+- JIT 准备：[include/minijs/bytecode_function.h](include/minijs/bytecode_function.h)、[include/minijs/bytecode_decoder.h](include/minijs/bytecode_decoder.h)、[include/minijs/baseline_code.h](include/minijs/baseline_code.h)、[include/minijs/baseline_compiler.h](include/minijs/baseline_compiler.h)、[include/minijs/baseline_jit.h](include/minijs/baseline_jit.h)、[include/minijs/executable_memory.h](include/minijs/executable_memory.h)、[src/bytecode_decoder.cpp](src/bytecode_decoder.cpp)、[src/baseline_compiler.cpp](src/baseline_compiler.cpp)、[src/baseline_jit.cpp](src/baseline_jit.cpp)、[src/executable_memory.cpp](src/executable_memory.cpp)、[docs/baseline-jit.md](docs/baseline-jit.md)、[docs/optimizing-jit.md](docs/optimizing-jit.md)
+- 示例与测试：[examples/](examples/)、[tests/test_interpreter.cpp](tests/test_interpreter.cpp)、[tests/test_bytecode.cpp](tests/test_bytecode.cpp)
 
 ## 构建
 
