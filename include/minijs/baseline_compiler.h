@@ -17,8 +17,8 @@ struct BaselineCompileResult {
 
 class BaselineCompiler {
  public:
-  // 生成第一版 native baseline code。当前 backend 只覆盖一小组 Opcode；
-  // 不支持的指令通过 error 返回，让外层 compileBaseline() 决定是否回退。
+  // 对外保持稳定的编译入口；bytecode 校验、平台 codegen 和 ABI 发射细节
+  // 均由 src 内部模块负责。不支持的平台或指令通过 error 返回。
   BaselineCompileResult compile(const BytecodeFunction& function) const;
 };
 
