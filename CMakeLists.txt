@@ -59,6 +59,10 @@ file(GLOB_RECURSE MINIJS_CORE_HEADERS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/include/*.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/*.hpp"
 )
+file(GLOB_RECURSE MINIJS_CORE_PRIVATE_HEADERS CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.hpp"
+)
 list(REMOVE_ITEM MINIJS_CORE_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp"
 )
@@ -67,6 +71,7 @@ if(MINIJS_CORE_SOURCES)
     add_library(minijs_core STATIC
         ${MINIJS_CORE_SOURCES}
         ${MINIJS_CORE_HEADERS}
+        ${MINIJS_CORE_PRIVATE_HEADERS}
     )
     target_include_directories(minijs_core
         PUBLIC
