@@ -13,6 +13,7 @@
 #include "minijs/baseline_frame.h"
 #include "minijs/baseline_runtime.h"
 #include "minijs/value.h"
+#include "x64_assembler.h"
 
 namespace minijs::detail {
 
@@ -20,19 +21,21 @@ namespace minijs::detail {
 // 第一个整数参数在 rcx，第二个在 rdx，调用者必须预留 32 字节 shadow space。
 class WindowsX64Emitter {
  public:
+  WindowsX64Emitter() : assembler_(code_) {}
+
   std::size_t offset() const { return code_.size(); }
   const std::vector<std::uint8_t>& bytes() const { return code_; }
 
   void emitPrologue() {
-    emit8(0x53);                    // push rbx
+    emit8(0x53);                     // push rbx
     emit({0x48, 0x83, 0xEC, 0x20});  // sub rsp, 32
     emit({0x48, 0x89, 0xCB});        // mov rbx, rcx
   }
 
   void emitEpilogue() {
     emit({0x48, 0x83, 0xC4, 0x20});  // add rsp, 32
-    emit8(0x5B);                    // pop rbx
-    emit8(0xC3);                    // ret
+    emit8(0x5B);                     // pop rbx
+    emit8(0xC3);                     // ret
   }
 
   void emitMoveFrameToFirstArg() {
@@ -219,8 +222,8 @@ class WindowsX64Emitter {
 
   // 合并 Constant + 二元运算：常量只进入寄存器，不构造临时栈槽。
   bool emitNumberConstantBinaryOrRuntimeCall(std::uint64_t bits, Opcode operation,
-                                             std::uintptr_t helperAddress,
-                                             std::string& error, bool branchResult = false) {
+                                             std::uintptr_t helperAddress, std::string& error,
+                                             bool branchResult = false) {
     if (!validateInlineValueSize("constant binary", error)) return false;
     emit({0x48, 0x8B, 0x83});  // mov rax, [rbx + stackSize]
     emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackSize)));
@@ -253,9 +256,7 @@ class WindowsX64Emitter {
       emit32(static_cast<std::uint32_t>(Value::typeOffset()));
       emit32(Value::booleanTypeTag());
     } else {
-      const std::uint8_t opcode = operation == Opcode::Add ? 0x58 : operation == Opcode::Sub ? 0x5C
-                                 : operation == Opcode::Mul ? 0x59 : 0x5E;
-      emit({0xF2, 0x0F, opcode, 0xC1});  // addsd/subsd/mulsd/divsd xmm0, xmm1
+      emitBinaryDouble(toBinaryOperation(operation), X64XmmRegister::Xmm0, X64XmmRegister::Xmm1);
       emit({0xF2, 0x0F, 0x11, 0x81});  // movsd [rcx + numberOffset], xmm0
       emit32(static_cast<std::uint32_t>(Value::numberOffset()));
     }
@@ -268,17 +269,19 @@ class WindowsX64Emitter {
     const std::size_t done = emitJumpPlaceholder();
     const std::size_t fallback = offset();
     if (!patchBranchTo(empty, fallback, true, error) ||
-        !patchBranchTo(nonNumber, fallback, true, error)) return false;
+        !patchBranchTo(nonNumber, fallback, true, error))
+      return false;
     // guard 失败前未改栈，先正常压入常量，再执行完整运算 helper。
     if (!emitNumberConstant(bits, reinterpret_cast<std::uintptr_t>(&minijsBaselinePushNumberSlot),
-                            error)) return false;
+                            error))
+      return false;
     const std::size_t pushFailed = emitJumpIfFalsePlaceholder();
     emitMoveFrameToFirstArg();
     emitLoadHelper(helperAddress);
     emitCallHelper();
     if (branchResult) {
       const std::size_t operationFailed = emitJumpIfFalsePlaceholder();
-      emitLoadBooleanTopResult(); // helper 已刷新栈；不能复用调用前的 rcx。
+      emitLoadBooleanTopResult();  // helper 已刷新栈；不能复用调用前的 rcx。
       const std::size_t fallbackDone = emitJumpPlaceholder();
       const std::size_t failed = offset();
       emit({0xB8});  // mov eax, 2：失败不是条件 false，交给统一 epilogue。
@@ -337,8 +340,8 @@ class WindowsX64Emitter {
 
   // GetLocal + 数字 Constant + 算术 + SetLocal + Pop：直接写入存活的数字目标槽。
   bool emitNumberLocalUpdateOrRuntimeCall(std::uint32_t slot, std::uint64_t bits,
-                                         std::uint32_t targetSlot, Opcode operation, std::uintptr_t helperAddress,
-                                         std::string& error) {
+                                          std::uint32_t targetSlot, Opcode operation,
+                                          std::uintptr_t helperAddress, std::string& error) {
     if (!validateInlineValueSize("local number update", error)) return false;
     std::vector<std::size_t> fallbacks;
     if (targetSlot != slot) {
@@ -346,8 +349,8 @@ class WindowsX64Emitter {
       emit({0x49, 0x89, 0xD2});  // mov r10, rdx：保留独立目标地址，后续 guard 不改 r10。
     }
     emitLoadLocalAddress(slot);
-    fallbacks.push_back(emitJbPlaceholder()); // 槽编号加法溢出时交给完整读取 helper。
-    emit({0x48, 0x3B, 0x83});  // cmp rax, [rbx + stackSize]
+    fallbacks.push_back(emitJbPlaceholder());  // 槽编号加法溢出时交给完整读取 helper。
+    emit({0x48, 0x3B, 0x83});                  // cmp rax, [rbx + stackSize]
     emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackSize)));
     fallbacks.push_back(emitJaePlaceholder());
     emitLocalPointerFromIndex();
@@ -356,18 +359,18 @@ class WindowsX64Emitter {
     emit32(Value::numberTypeTag());
     fallbacks.push_back(emitJnePlaceholder());
     // guard 前不改栈；成功后无需临时 Value，也不需要同步真实栈深度。
-    emit({0x48, 0x89, 0xD1});  // mov rcx, rdx：rcx 指向源局部槽。
+    emit({0x48, 0x89, 0xD1});        // mov rcx, rdx：rcx 指向源局部槽。
     emit({0xF2, 0x0F, 0x10, 0x81});  // movsd xmm0, [rcx + numberOffset]
     emit32(static_cast<std::uint32_t>(Value::numberOffset()));
     emit({0x48, 0xBA});  // mov rdx, bits
     emit64(bits);
     emit({0x66, 0x48, 0x0F, 0x6E, 0xCA});  // movq xmm1, rdx：装入常量的 double 位。
-    const std::uint8_t opcode = operation == Opcode::Add ? 0x58 : operation == Opcode::Sub ? 0x5C
-                               : operation == Opcode::Mul ? 0x59 : 0x5E;
-    emit({0xF2, 0x0F, opcode, 0xC1});  // addsd/subsd/mulsd/divsd xmm0, xmm1
+    emitBinaryDouble(toBinaryOperation(operation), X64XmmRegister::Xmm0, X64XmmRegister::Xmm1);
     // 源与目标同槽时写 rcx；独立目标写 r10，算完之前不覆盖任何源值。
-    if (targetSlot == slot) emit({0xF2, 0x0F, 0x11, 0x81});
-    else emit({0xF2, 0x41, 0x0F, 0x11, 0x82});  // movsd [r10 + numberOffset], xmm0
+    if (targetSlot == slot)
+      emit({0xF2, 0x0F, 0x11, 0x81});
+    else
+      emit({0xF2, 0x41, 0x0F, 0x11, 0x82});  // movsd [r10 + numberOffset], xmm0
     emit32(static_cast<std::uint32_t>(Value::numberOffset()));
     emit({0xB8});  // mov eax, 1：五条指令的组合执行成功。
     emit32(1);
@@ -400,8 +403,8 @@ class WindowsX64Emitter {
 
   // 两槽类型相同且存在时输出 rdx=左槽、rcx=右槽；guard 完成前不写入。
   bool emitLoadTypedLocalPair(std::uint32_t leftSlot, std::uint32_t rightSlot,
-                               std::uint32_t typeTag,
-                               std::vector<std::size_t>& fallbacks, std::string& error) {
+                              std::uint32_t typeTag, std::vector<std::size_t>& fallbacks,
+                              std::string& error) {
     if (!validateInlineValueSize("typed local pair operands", error)) return false;
     for (int side = 0; side < 2; ++side) {
       const std::uint32_t slot = side == 0 ? leftSlot : rightSlot;
@@ -416,7 +419,7 @@ class WindowsX64Emitter {
       emit32(typeTag);
       fallbacks.push_back(emitJnePlaceholder());
       // 同槽时也保存左地址；直到两个值均读取完成才更新。
-      if (side == 0) emit({0x49, 0x89, 0xD0}); // mov r8, rdx
+      if (side == 0) emit({0x49, 0x89, 0xD0});  // mov r8, rdx
     }
     emit({0x48, 0x89, 0xD1});  // mov rcx, rdx：右局部槽。
     emit({0x4C, 0x89, 0xC2});  // mov rdx, r8：恢复左局部槽。
@@ -431,7 +434,8 @@ class WindowsX64Emitter {
   // 清理两条分支上的条件临时值时，直接读局部 Boolean；返回 0/1/2，不改栈。
   bool emitLocalTruthyOrRuntimeCall(std::uint32_t slot, std::string& error) {
     std::vector<std::size_t> fallbacks;
-    if (!emitLoadTypedLocalPair(slot, slot, Value::booleanTypeTag(), fallbacks, error)) return false;
+    if (!emitLoadTypedLocalPair(slot, slot, Value::booleanTypeTag(), fallbacks, error))
+      return false;
     emit({0x0F, 0xB6, 0x82});  // movzx eax, byte ptr [rdx + booleanOffset]：条件 0/1。
     emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
     const auto done = emitJumpPlaceholder();
@@ -448,11 +452,13 @@ class WindowsX64Emitter {
 
   // GetLocal + Negate/Not + SetLocal + Pop：目标可与源不同，但必须同为 Number/Boolean。
   bool emitLocalUnaryUpdateOrRuntimeCall(std::uint32_t sourceSlot, std::uint32_t targetSlot,
-                                        Opcode operation, std::string& error) {
+                                         Opcode operation, std::string& error) {
     std::vector<std::size_t> fallbacks;
     const bool negate = operation == Opcode::Negate;
     if (!emitLoadTypedLocalPair(sourceSlot, targetSlot,
-            negate ? Value::numberTypeTag() : Value::booleanTypeTag(), fallbacks, error)) return false;
+                                negate ? Value::numberTypeTag() : Value::booleanTypeTag(),
+                                fallbacks, error))
+      return false;
     if (negate) {
       emit({0x48, 0x8B, 0x82});  // mov rax, [rdx + numberOffset]：读取源 double 位编码。
       emit32(static_cast<std::uint32_t>(Value::numberOffset()));
@@ -503,7 +509,7 @@ class WindowsX64Emitter {
 
   // 等价于 target = source；同类型 Number/Boolean 直接复制载荷，不创建临时槽。
   bool emitLocalCopyOrRuntimeCall(std::uint32_t sourceSlot, std::uint32_t targetSlot,
-                                 std::string& error) {
+                                  std::string& error) {
     std::vector<std::size_t> fallbacks;
     if (!emitLoadNumberLocalPair(sourceSlot, targetSlot, fallbacks, error)) return false;
     emit({0xF2, 0x0F, 0x10, 0x82});  // movsd xmm0, [rdx + numberOffset]：读取源数字。
@@ -519,7 +525,8 @@ class WindowsX64Emitter {
     }
     // Number guard 失败前未改栈；重新检查槽边界和 Boolean 类型，不能复用未就绪的地址。
     fallbacks.clear();
-    if (!emitLoadTypedLocalPair(sourceSlot, targetSlot, Value::booleanTypeTag(), fallbacks, error)) {
+    if (!emitLoadTypedLocalPair(sourceSlot, targetSlot, Value::booleanTypeTag(), fallbacks,
+                                error)) {
       return false;
     }
     emit({0x0F, 0xB6, 0x82});  // movzx eax, byte ptr [rdx + booleanOffset]：读源 0/1。
@@ -544,8 +551,8 @@ class WindowsX64Emitter {
 
   // 右操作数也是局部值；所有槽通过 guard，运算完成后才写入目标。
   bool emitNumberLocalPairUpdateOrRuntimeCall(std::uint32_t leftSlot, std::uint32_t rightSlot,
-                                             std::uint32_t targetSlot, Opcode operation, std::uintptr_t helperAddress,
-                                             std::string& error) {
+                                              std::uint32_t targetSlot, Opcode operation,
+                                              std::uintptr_t helperAddress, std::string& error) {
     std::vector<std::size_t> fallbacks;
     if (targetSlot != leftSlot) {
       if (!emitLoadNumberLocalPair(targetSlot, targetSlot, fallbacks, error)) return false;
@@ -556,12 +563,12 @@ class WindowsX64Emitter {
     if (operation == Opcode::Div && !emitRightZeroGuard(zero, error)) return false;
     emit({0xF2, 0x0F, 0x10, 0x82});  // movsd xmm0, [rdx + numberOffset]
     emit32(static_cast<std::uint32_t>(Value::numberOffset()));
-    const std::uint8_t opcode = operation == Opcode::Add ? 0x58 : operation == Opcode::Sub ? 0x5C
-                               : operation == Opcode::Mul ? 0x59 : 0x5E;
-    emit({0xF2, 0x0F, opcode, 0x81});  // 算术 xmm0, [rcx + numberOffset]
-    emit32(static_cast<std::uint32_t>(Value::numberOffset()));
-    if (targetSlot == leftSlot) emit({0xF2, 0x0F, 0x11, 0x82});
-    else emit({0xF2, 0x41, 0x0F, 0x11, 0x82});  // movsd [r10 + numberOffset], xmm0
+    emitBinaryDouble(toBinaryOperation(operation), X64XmmRegister::Xmm0,
+                     {X64Register::Rcx, static_cast<std::uint32_t>(Value::numberOffset())});
+    if (targetSlot == leftSlot)
+      emit({0xF2, 0x0F, 0x11, 0x82});
+    else
+      emit({0xF2, 0x41, 0x0F, 0x11, 0x82});  // movsd [r10 + numberOffset], xmm0
     emit32(static_cast<std::uint32_t>(Value::numberOffset()));
     emit({0xB8});  // mov eax, 1：无临时槽，无需同步栈深度。
     emit32(1);
@@ -598,17 +605,19 @@ class WindowsX64Emitter {
   }
 
   // 直接比较并返回三态分支值，不构造操作数或 Boolean 结果槽。
-  bool emitComparisonBranch(std::uint32_t leftSlot, std::uint32_t rightOperand,
-                            Opcode operation, bool constantRight, std::uint64_t bits, std::string& error) {
+  bool emitComparisonBranch(std::uint32_t leftSlot, std::uint32_t rightOperand, Opcode operation,
+                            bool constantRight, std::uint64_t bits, std::string& error) {
     std::vector<std::size_t> fallbacks;
-    if (!emitLoadNumberLocalPair(leftSlot, constantRight ? leftSlot : rightOperand, fallbacks, error)) return false;
+    if (!emitLoadNumberLocalPair(leftSlot, constantRight ? leftSlot : rightOperand, fallbacks,
+                                 error))
+      return false;
     emit({0xF2, 0x0F, 0x10, 0x82});  // movsd xmm0, [rdx + numberOffset]
     emit32(static_cast<std::uint32_t>(Value::numberOffset()));
     if (constantRight) {
       emit({0x48, 0xB8});  // mov rax, bits：常量的原始 double 位编码。
       emit64(bits);
       emit({0x66, 0x48, 0x0F, 0x6E, 0xC8});  // movq xmm1, rax：复制位，不转换整数。
-      emit({0x66, 0x0F, 0x2E, 0xC1});  // ucomisd xmm0, xmm1
+      emit({0x66, 0x0F, 0x2E, 0xC1});        // ucomisd xmm0, xmm1
     } else {
       emit({0x66, 0x0F, 0x2E, 0x81});  // ucomisd xmm0, [rcx + numberOffset]
       emit32(static_cast<std::uint32_t>(Value::numberOffset()));
@@ -631,7 +640,8 @@ class WindowsX64Emitter {
       }
       // 数字 guard 未命中前没有副作用；重新验证两槽均为 Boolean。
       fallbacks.clear();
-      if (!emitLoadTypedLocalPair(leftSlot, rightOperand, Value::booleanTypeTag(), fallbacks, error)) {
+      if (!emitLoadTypedLocalPair(leftSlot, rightOperand, Value::booleanTypeTag(), fallbacks,
+                                  error)) {
         return false;
       }
       emit({0x0F, 0xB6, 0x82});  // movzx eax, byte ptr [rdx + booleanOffset]：读左 0/1。
@@ -650,8 +660,9 @@ class WindowsX64Emitter {
     emitMoveU32ToSecondArg(leftSlot);
     emitMoveU32ToThirdArg(rightOperand);
     emitMoveU32ToFourthArg(static_cast<std::uint32_t>(operation));
-    emitLoadHelper(constantRight ? reinterpret_cast<std::uintptr_t>(&minijsBaselineCompareLocalConstantTruthy)
-                                : reinterpret_cast<std::uintptr_t>(&minijsBaselineCompareLocalsTruthy));
+    emitLoadHelper(constantRight
+                       ? reinterpret_cast<std::uintptr_t>(&minijsBaselineCompareLocalConstantTruthy)
+                       : reinterpret_cast<std::uintptr_t>(&minijsBaselineCompareLocalsTruthy));
     emitCallHelper();
     return patchBranchTo(done, offset(), false, error) &&
            (!booleanEquality || patchBranchTo(booleanDone, offset(), false, error));
@@ -661,11 +672,12 @@ class WindowsX64Emitter {
   bool emitBooleanConstantComparisonBranch(std::uint32_t leftSlot, std::uint32_t constantIndex,
                                            bool constant, std::string& error) {
     std::vector<std::size_t> fallbacks;
-    if (!emitLoadTypedLocalPair(leftSlot, leftSlot, Value::booleanTypeTag(), fallbacks, error)) return false;
+    if (!emitLoadTypedLocalPair(leftSlot, leftSlot, Value::booleanTypeTag(), fallbacks, error))
+      return false;
     emit({0x0F, 0xB6, 0x82});  // movzx eax, byte ptr [rdx + booleanOffset]：读取左 0/1。
     emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
     emit({0x3C, static_cast<std::uint8_t>(constant ? 1 : 0)});  // cmp al, imm8：比较布尔常量。
-    emit({0x0F, 0x94, 0xC0});  // sete al：相等为 1，不等为 0。
+    emit({0x0F, 0x94, 0xC0});                                   // sete al：相等为 1，不等为 0。
     emit({0x0F, 0xB6, 0xC0});  // movzx eax, al：0/1 是条件结果，不是成功状态。
     const auto done = emitJumpPlaceholder();
     const auto fallback = offset();
@@ -700,7 +712,8 @@ class WindowsX64Emitter {
     const auto done = emitJumpPlaceholder();
     const auto fallback = offset();
     if (!patchBranchTo(overflow, fallback, true, error) ||
-        !patchBranchTo(outOfBounds, fallback, true, error)) return false;
+        !patchBranchTo(outOfBounds, fallback, true, error))
+      return false;
     // 非法槽按原顺序执行完整 helper，保留错误和失败栈状态；类型不匹配不来这里。
     emitMoveFrameToFirstArg();
     emitMoveU32ToSecondArg(sourceSlot);
@@ -712,10 +725,12 @@ class WindowsX64Emitter {
   }
 
   // 保留 Boolean 常量相等结果：构造一个结果槽，不压源副本或常量。
-  bool emitBooleanConstantComparisonExpression(std::uint32_t sourceSlot, std::uint32_t constantIndex,
-                                               bool constant, std::string& error) {
+  bool emitBooleanConstantComparisonExpression(std::uint32_t sourceSlot,
+                                               std::uint32_t constantIndex, bool constant,
+                                               std::string& error) {
     std::vector<std::size_t> fallbacks;
-    if (!emitLoadTypedLocalPair(sourceSlot, sourceSlot, Value::booleanTypeTag(), fallbacks, error)) return false;
+    if (!emitLoadTypedLocalPair(sourceSlot, sourceSlot, Value::booleanTypeTag(), fallbacks, error))
+      return false;
     emitMoveFrameToFirstArg();
     emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselinePushNumberSlot));
     emitCallHelper();  // 完整无资源占位 Value；构造失败不能再回退重做。
@@ -725,9 +740,9 @@ class WindowsX64Emitter {
     emit({0x0F, 0xB6, 0x82});  // movzx eax, byte ptr [rdx + booleanOffset]：读源 0/1。
     emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
     emit({0x3C, static_cast<std::uint8_t>(constant ? 1 : 0)});  // cmp al, imm8
-    emit({0x0F, 0x94, 0xC0});  // sete al：相等为 1，不等为 0。
+    emit({0x0F, 0x94, 0xC0});                                   // sete al：相等为 1，不等为 0。
     emitLoadTopPointer();  // 只改变 rcx，保留 al 中的比较结果。
-    emit({0x88, 0x81});  // mov byte ptr [rcx + booleanOffset], al
+    emit({0x88, 0x81});    // mov byte ptr [rcx + booleanOffset], al
     emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
     emit({0xC7, 0x81});  // mov dword ptr [rcx + typeOffset], Boolean
     emit32(static_cast<std::uint32_t>(Value::typeOffset()));
@@ -780,8 +795,8 @@ class WindowsX64Emitter {
     emit32(static_cast<std::uint32_t>(Value::typeOffset()));
     emit32(typeTag);
     emit({0x0F, 0x94, 0xC0});  // sete al
-    emitLoadTopPointer();  // 保留 al，重新定位 rcx=完整占位结果槽。
-    emit({0x88, 0x81});  // mov byte ptr [rcx + booleanOffset], al
+    emitLoadTopPointer();      // 保留 al，重新定位 rcx=完整占位结果槽。
+    emit({0x88, 0x81});        // mov byte ptr [rcx + booleanOffset], al
     emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
     emit({0xC7, 0x81});  // mov dword ptr [rcx + typeOffset], Boolean
     emit32(static_cast<std::uint32_t>(Value::typeOffset()));
@@ -791,7 +806,8 @@ class WindowsX64Emitter {
     const auto done = emitJumpPlaceholder();
     const auto fallback = offset();
     if (!patchBranchTo(overflow, fallback, true, error) ||
-        !patchBranchTo(outOfBounds, fallback, true, error)) return false;
+        !patchBranchTo(outOfBounds, fallback, true, error))
+      return false;
     std::vector<std::size_t> failures;
     emitMoveFrameToFirstArg();
     emitMoveU32ToSecondArg(sourceSlot);
@@ -809,17 +825,22 @@ class WindowsX64Emitter {
     for (const auto patch : failures) {
       if (!patchBranchTo(patch, offset(), true, error)) return false;
     }
-    return patchBranchTo(pushFailed, offset(), true, error) && patchBranchTo(done, offset(), false, error);
+    return patchBranchTo(pushFailed, offset(), true, error) &&
+           patchBranchTo(done, offset(), false, error);
   }
 
   // Boolean/Null/Undefined 常量相等赋值：只更新已验证的 Boolean 目标。
   bool emitScalarConstantComparisonAssignment(std::uint32_t sourceSlot, std::uint32_t constantIndex,
-                                              const Value& constant, std::uint32_t targetSlot, std::string& error) {
+                                              const Value& constant, std::uint32_t targetSlot,
+                                              std::string& error) {
     std::vector<std::size_t> fallbacks;
-    if (!emitLoadTypedLocalPair(targetSlot, targetSlot, Value::booleanTypeTag(), fallbacks, error)) return false;
+    if (!emitLoadTypedLocalPair(targetSlot, targetSlot, Value::booleanTypeTag(), fallbacks, error))
+      return false;
     emit({0x49, 0x89, 0xD2});  // mov r10, rdx：保存已验证的目标地址。
     if (constant.isBoolean()) {
-      if (!emitLoadTypedLocalPair(sourceSlot, sourceSlot, Value::booleanTypeTag(), fallbacks, error)) return false;
+      if (!emitLoadTypedLocalPair(sourceSlot, sourceSlot, Value::booleanTypeTag(), fallbacks,
+                                  error))
+        return false;
       emit({0x0F, 0xB6, 0x82});  // movzx eax, byte ptr [rdx + booleanOffset]：读源 0/1。
       emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
       emit({0x3C, static_cast<std::uint8_t>(constant.isTruthy() ? 1 : 0)});  // cmp al, imm8
@@ -876,20 +897,22 @@ class WindowsX64Emitter {
   }
 
   // 比较赋值：仅更新已存在的 Boolean 目标；读取完成后再写，支持源目标别名。
-  bool emitComparisonAssignment(std::uint32_t leftSlot, std::uint32_t rightSlot,
-                                 bool constantRight, std::uint64_t bits, std::uint32_t targetSlot,
-                                 Opcode operation, std::uintptr_t helperAddress, std::string& error) {
+  bool emitComparisonAssignment(std::uint32_t leftSlot, std::uint32_t rightSlot, bool constantRight,
+                                std::uint64_t bits, std::uint32_t targetSlot, Opcode operation,
+                                std::uintptr_t helperAddress, std::string& error) {
     std::vector<std::size_t> fallbacks;
-    if (!emitLoadTypedLocalPair(targetSlot, targetSlot, Value::booleanTypeTag(), fallbacks, error)) return false;
+    if (!emitLoadTypedLocalPair(targetSlot, targetSlot, Value::booleanTypeTag(), fallbacks, error))
+      return false;
     emit({0x49, 0x89, 0xD2});  // mov r10, rdx：保存 Boolean 目标地址，不跨 helper 使用。
-    if (!emitLoadNumberLocalPair(leftSlot, constantRight ? leftSlot : rightSlot, fallbacks, error)) return false;
+    if (!emitLoadNumberLocalPair(leftSlot, constantRight ? leftSlot : rightSlot, fallbacks, error))
+      return false;
     emit({0xF2, 0x0F, 0x10, 0x82});  // movsd xmm0, [rdx + numberOffset]：左数字。
     emit32(static_cast<std::uint32_t>(Value::numberOffset()));
     if (constantRight) {
       emit({0x48, 0xB8});  // mov rax, bits：右常量的 double 原始位编码。
       emit64(bits);
       emit({0x66, 0x48, 0x0F, 0x6E, 0xC8});  // movq xmm1, rax：复制位，不转换整数。
-      emit({0x66, 0x0F, 0x2E, 0xC1});  // ucomisd xmm0, xmm1
+      emit({0x66, 0x0F, 0x2E, 0xC1});        // ucomisd xmm0, xmm1
     } else {
       emit({0x66, 0x0F, 0x2E, 0x81});  // ucomisd xmm0, [rcx + numberOffset]
       emit32(static_cast<std::uint32_t>(Value::numberOffset()));
@@ -915,9 +938,12 @@ class WindowsX64Emitter {
       }
       // 数字路径可能在目标 guard 就失败；重新验证目标并保存地址，不能沿用 r10。
       fallbacks.clear();
-      if (!emitLoadTypedLocalPair(targetSlot, targetSlot, Value::booleanTypeTag(), fallbacks, error)) return false;
+      if (!emitLoadTypedLocalPair(targetSlot, targetSlot, Value::booleanTypeTag(), fallbacks,
+                                  error))
+        return false;
       emit({0x49, 0x89, 0xD2});  // mov r10, rdx：Boolean 目标，不跨 helper 持有。
-      if (!emitLoadTypedLocalPair(leftSlot, rightSlot, Value::booleanTypeTag(), fallbacks, error)) return false;
+      if (!emitLoadTypedLocalPair(leftSlot, rightSlot, Value::booleanTypeTag(), fallbacks, error))
+        return false;
       emit({0x0F, 0xB6, 0x82});  // movzx eax, byte ptr [rdx + booleanOffset]：读左 0/1。
       emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
       emit({0x3A, 0x81});  // cmp al, byte ptr [rcx + booleanOffset]：比较右 0/1。
@@ -941,7 +967,8 @@ class WindowsX64Emitter {
     failures.push_back(emitJumpIfFalsePlaceholder());
     if (constantRight) {
       // 复用已有常量二元路径，保持完整 Value 比较和数字常量位编码。
-      if (!emitNumberConstantBinaryOrRuntimeCall(bits, operation, helperAddress, error)) return false;
+      if (!emitNumberConstantBinaryOrRuntimeCall(bits, operation, helperAddress, error))
+        return false;
     } else {
       emitMoveFrameToFirstArg();
       emitMoveU32ToSecondArg(rightSlot);
@@ -970,8 +997,8 @@ class WindowsX64Emitter {
 
   // GetLocal + GetLocal + 二元运算：Number 运算/Boolean 相等只构造一个结果槽。
   bool emitLocalPairExpressionOrRuntimeCall(std::uint32_t leftSlot, std::uint32_t rightSlot,
-                                                 Opcode operation, std::uintptr_t helperAddress,
-                                                 std::string& error) {
+                                            Opcode operation, std::uintptr_t helperAddress,
+                                            std::string& error) {
     std::vector<std::size_t> fallbacks;
     if (!emitLoadNumberLocalPair(leftSlot, rightSlot, fallbacks, error)) return false;
     BinaryNumberGuardPatches zero;
@@ -986,11 +1013,12 @@ class WindowsX64Emitter {
     emit({0x49, 0x89, 0xD0});  // mov r8, rdx
     emitLoadLocalAddress(rightSlot);
     emitLocalPointerFromIndex();
-    emit({0x48, 0x89, 0xD1});  // mov rcx, rdx：右槽
-    emit({0x4C, 0x89, 0xC2});  // mov rdx, r8：左槽
+    emit({0x48, 0x89, 0xD1});        // mov rcx, rdx：右槽
+    emit({0x4C, 0x89, 0xC2});        // mov rdx, r8：左槽
     emit({0xF2, 0x0F, 0x10, 0x82});  // movsd xmm0, [rdx + numberOffset]
     emit32(static_cast<std::uint32_t>(Value::numberOffset()));
-    const bool comparison = operation == Opcode::Equal || operation == Opcode::Greater || operation == Opcode::Less;
+    const bool comparison =
+        operation == Opcode::Equal || operation == Opcode::Greater || operation == Opcode::Less;
     if (comparison) {
       emit({0x66, 0x0F, 0x2E, 0x81});  // ucomisd xmm0, [rcx + numberOffset]
       emit32(static_cast<std::uint32_t>(Value::numberOffset()));
@@ -1001,17 +1029,15 @@ class WindowsX64Emitter {
         emit({0x0F, 0x9B, 0xC2});  // setnp dl：排除 NaN，源地址已不再使用。
         emit({0x20, 0xD0});        // and al, dl
       }
-      emitLoadTopPointer(); // 只改变 rcx，al 中的比较结果仍然有效。
-      emit({0x88, 0x81});  // mov byte ptr [rcx + booleanOffset], al
+      emitLoadTopPointer();  // 只改变 rcx，al 中的比较结果仍然有效。
+      emit({0x88, 0x81});    // mov byte ptr [rcx + booleanOffset], al
       emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
       emit({0xC7, 0x81});  // mov dword ptr [rcx + typeOffset], Boolean
       emit32(static_cast<std::uint32_t>(Value::typeOffset()));
       emit32(Value::booleanTypeTag());
     } else {
-      const std::uint8_t opcode = operation == Opcode::Add ? 0x58 : operation == Opcode::Sub ? 0x5C
-                                 : operation == Opcode::Mul ? 0x59 : 0x5E;
-      emit({0xF2, 0x0F, opcode, 0x81});  // 算术 xmm0, [rcx + numberOffset]
-      emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+      emitBinaryDouble(toBinaryOperation(operation), X64XmmRegister::Xmm0,
+                       {X64Register::Rcx, static_cast<std::uint32_t>(Value::numberOffset())});
       emitLoadTopPointer();
       emit({0xF2, 0x0F, 0x11, 0x81});  // movsd [rcx + numberOffset], xmm0
       emit32(static_cast<std::uint32_t>(Value::numberOffset()));
@@ -1027,7 +1053,8 @@ class WindowsX64Emitter {
         if (!patchBranchTo(patch, booleanPath, true, error)) return false;
       }
       fallbacks.clear();
-      if (!emitLoadTypedLocalPair(leftSlot, rightSlot, Value::booleanTypeTag(), fallbacks, error)) return false;
+      if (!emitLoadTypedLocalPair(leftSlot, rightSlot, Value::booleanTypeTag(), fallbacks, error))
+        return false;
       // 必须构造完整 Value；复用无资源的 Number 占位槽，随后改成 Boolean 结果。
       emitMoveFrameToFirstArg();
       emitLoadHelper(reinterpret_cast<std::uintptr_t>(&minijsBaselinePushNumberSlot));
@@ -1046,8 +1073,8 @@ class WindowsX64Emitter {
       emit({0x3A, 0x81});  // cmp al, byte ptr [rcx + booleanOffset]
       emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
       emit({0x0F, 0x94, 0xC0});  // sete al：读取完成后才写新结果槽。
-      emitLoadTopPointer();  // 只改变 rcx，al 中的结果仍有效。
-      emit({0x88, 0x81});  // mov byte ptr [rcx + booleanOffset], al
+      emitLoadTopPointer();      // 只改变 rcx，al 中的结果仍有效。
+      emit({0x88, 0x81});        // mov byte ptr [rcx + booleanOffset], al
       emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
       emit({0xC7, 0x81});  // mov dword ptr [rcx + typeOffset], Boolean：完整结果类型。
       emit32(static_cast<std::uint32_t>(Value::typeOffset()));
@@ -1089,17 +1116,15 @@ class WindowsX64Emitter {
     emit32(static_cast<std::uint32_t>(Value::booleanOffset()));
   }
 
-  bool emitNumberLocalOrRuntimeCall(std::uint32_t slot, bool read,
-                                   std::uintptr_t helperAddress,
-                                   std::uintptr_t pushNumberSlotAddress,
-                                   std::string& error) {
+  bool emitNumberLocalOrRuntimeCall(std::uint32_t slot, bool read, std::uintptr_t helperAddress,
+                                    std::uintptr_t pushNumberSlotAddress, std::string& error) {
     if (!validateInlineValueSize("local access", error)) {
       return false;
     }
     std::vector<std::size_t> fallbacks;
     emitLoadLocalAddress(slot);
     fallbacks.push_back(emitJbPlaceholder());  // add 的进位表示绝对槽编号溢出。
-    emit({0x48, 0x3B, 0x83});  // cmp rax, [rbx + stackSize]
+    emit({0x48, 0x3B, 0x83});                  // cmp rax, [rbx + stackSize]
     emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackSize)));
     fallbacks.push_back(emitJaePlaceholder());
     emitLocalPointerFromIndex();
@@ -1130,7 +1155,7 @@ class WindowsX64Emitter {
     emit32(static_cast<std::uint32_t>(Value::numberOffset()));  // movsd xmm0, [源 + numberOffset]
     emit({0xF2, 0x0F, 0x11, static_cast<std::uint8_t>(read ? 0x81 : 0x82)});
     emit32(static_cast<std::uint32_t>(Value::numberOffset()));  // movsd [目标 + numberOffset], xmm0
-    emit({0xB8, 0x01, 0x00, 0x00, 0x00});  // mov eax, 1
+    emit({0xB8, 0x01, 0x00, 0x00, 0x00});                       // mov eax, 1
     const std::size_t done = emitJumpPlaceholder();
 
     const std::size_t fallback = offset();
@@ -1160,18 +1185,25 @@ class WindowsX64Emitter {
       return false;
     }
 
-    emit({0x48, 0x8B, 0x83});  // mov rax, [rbx + BaselineFrame::stackSize]：rax = rbx(当前 BaselineFrame)->stackSize;
+    emit(
+        {0x48, 0x8B,
+         0x83});  // mov rax, [rbx + BaselineFrame::stackSize]：rax = rbx(当前 BaselineFrame)->stackSize;
     emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackSize)));
     emit({0x48, 0x85, 0xC0});  // test rax, rax
-    const std::size_t emptyStackFallback = emitJzPlaceholder();  // test rax, rax + jz：if (rax == 0)（栈空），跳到回退。
+    const std::size_t emptyStackFallback =
+        emitJzPlaceholder();   // test rax, rax + jz：if (rax == 0)（栈空），跳到回退。
     emit({0x48, 0xFF, 0xC8});  // dec rax：rax = rax - 1;
     emit({0x48, 0x69, 0xC0});  // imul rax, rax, sizeof(Value)
-    emit32(static_cast<std::uint32_t>(sizeof(Value)));  // 计算栈顶元素的字节偏移：rax = rax * sizeof(Value);
-    emit({0x48, 0x8B, 0x8B});  // mov rcx, [rbx + BaselineFrame::stackData]：Value* rcx = rbx->stackData;
+    emit32(static_cast<std::uint32_t>(
+        sizeof(Value)));  // 计算栈顶元素的字节偏移：rax = rax * sizeof(Value);
+    emit({0x48, 0x8B,
+          0x8B});  // mov rcx, [rbx + BaselineFrame::stackData]：Value* rcx = rbx->stackData;
     emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackData)));
 
     emit({0x48, 0x8D, 0x0C, 0x01});  // lea rcx, [rcx + rax]：rcx = rcx + rax，即栈顶指针
-    emit({0x81, 0xB9});              // cmp dword ptr [rcx + Value::typeOffset], Number：if (rcx->type != Number) goto 回退;
+    emit(
+        {0x81,
+         0xB9});  // cmp dword ptr [rcx + Value::typeOffset], Number：if (rcx->type != Number) goto 回退;
     emit32(static_cast<std::uint32_t>(Value::typeOffset()));
     emit32(Value::numberTypeTag());
     const std::size_t nonNumberFallback = emitJnePlaceholder();
@@ -1212,8 +1244,7 @@ class WindowsX64Emitter {
   }
 
   // 生成二元 number guard。成功后 rdx 指向 left，rcx 指向 right。
-  bool emitLoadBinaryNumberOperands(BinaryNumberGuardPatches& patches,
-                                    std::string_view context,
+  bool emitLoadBinaryNumberOperands(BinaryNumberGuardPatches& patches, std::string_view context,
                                     std::string& error) {
     if (!validateInlineValueSize(context, error)) {
       return false;
@@ -1226,9 +1257,9 @@ class WindowsX64Emitter {
     emit({0x48, 0x8B, 0x8B});  // mov rcx, [rbx + BaselineFrame::stackData]
     emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackData)));
 
-    emit({0x48, 0x89, 0xC2});  // mov rdx, rax
+    emit({0x48, 0x89, 0xC2});        // mov rdx, rax
     emit({0x48, 0x83, 0xEA, 0x02});  // sub rdx, 2
-    emit({0x48, 0x69, 0xD2});  // imul rdx, rdx, sizeof(Value)
+    emit({0x48, 0x69, 0xD2});        // imul rdx, rdx, sizeof(Value)
     emit32(static_cast<std::uint32_t>(sizeof(Value)));
     emit({0x48, 0x8D, 0x14, 0x11});  // lea rdx, [rcx + rdx]
 
@@ -1263,8 +1294,7 @@ class WindowsX64Emitter {
     return error.empty();
   }
 
-  bool patchBinaryNumberFallbacks(const BinaryNumberGuardPatches& patches,
-                                  std::size_t fallback,
+  bool patchBinaryNumberFallbacks(const BinaryNumberGuardPatches& patches, std::size_t fallback,
                                   std::string& error) {
     patchBranchTo(patches.notEnoughValues, fallback, true, error);
     if (!error.empty()) {
@@ -1288,15 +1318,13 @@ class WindowsX64Emitter {
   }
 
   // 如果栈顶两个值都是数字，就直接做二元 double 运算；否则回退到 runtime helper。
-  bool emitInlineNumberBinaryOrRuntimeCall(std::uintptr_t functionAddress,
+  bool emitInlineNumberBinaryOrRuntimeCall(BinaryOperation operation,
+                                           std::uintptr_t functionAddress,
                                            std::uintptr_t syncStackSizeAddress,
-                                           std::uint8_t sseOpcode,
-                                           std::string_view operationName,
-                                           bool fallbackOnRightZero,
+                                           std::string_view operationName, bool fallbackOnRightZero,
                                            std::string& error) {
     BinaryNumberGuardPatches patches;
-    if (!emitLoadBinaryNumberOperands(patches,
-                                      std::string("inline ") + std::string(operationName),
+    if (!emitLoadBinaryNumberOperands(patches, std::string("inline ") + std::string(operationName),
                                       error)) {
       return false;
     }
@@ -1304,12 +1332,10 @@ class WindowsX64Emitter {
       return false;
     }
 
-    emit({0xF2, 0x0F, 0x10, 0x82});  // movsd xmm0, [rdx + Value::numberOffset]
-    emit32(static_cast<std::uint32_t>(Value::numberOffset()));
-    emit({0xF2, 0x0F, sseOpcode, 0x81});  // <op>sd xmm0, [rcx + Value::numberOffset]
-    emit32(static_cast<std::uint32_t>(Value::numberOffset()));
-    emit({0xF2, 0x0F, 0x11, 0x82});  // movsd [rdx + Value::numberOffset], xmm0
-    emit32(static_cast<std::uint32_t>(Value::numberOffset()));
+    const auto numberOffset = static_cast<std::uint32_t>(Value::numberOffset());
+    assembler_.movsd(X64XmmRegister::Xmm0, {X64Register::Rdx, numberOffset});
+    emitBinaryDouble(operation, X64XmmRegister::Xmm0, {X64Register::Rcx, numberOffset});
+    assembler_.movsd({X64Register::Rdx, numberOffset}, X64XmmRegister::Xmm0);
 
     emit({0x48, 0xFF, 0x8B});  // dec qword ptr [rbx + BaselineFrame::stackSize]
     emit32(static_cast<std::uint32_t>(offsetof(BaselineFrame, stackSize)));
@@ -1334,8 +1360,7 @@ class WindowsX64Emitter {
   // 数字比较将左操作数槽改为 Boolean，再同步二元运算的弹栈效果。
   bool emitInlineNumberComparisonOrRuntimeCall(std::uintptr_t functionAddress,
                                                std::uintptr_t syncStackSizeAddress,
-                                               Opcode comparison,
-                                               std::string& error) {
+                                               Opcode comparison, std::string& error) {
     BinaryNumberGuardPatches patches;
     if (!emitLoadBinaryNumberOperands(patches, "inline comparison", error)) {
       return false;
@@ -1385,12 +1410,10 @@ class WindowsX64Emitter {
   // 否则回退到完整 runtime helper，保留类型错误和除零错误语义。
   bool emitGuardedNumberBinaryRuntimeCall(std::uintptr_t guardedFunctionAddress,
                                           std::uintptr_t fallbackFunctionAddress,
-                                          std::string_view operationName,
-                                          bool fallbackOnRightZero,
+                                          std::string_view operationName, bool fallbackOnRightZero,
                                           std::string& error) {
     BinaryNumberGuardPatches patches;
-    if (!emitLoadBinaryNumberOperands(patches,
-                                      std::string("guarded ") + std::string(operationName),
+    if (!emitLoadBinaryNumberOperands(patches, std::string("guarded ") + std::string(operationName),
                                       error)) {
       return false;
     }
@@ -1418,15 +1441,13 @@ class WindowsX64Emitter {
 
   bool patchBranchTo(std::size_t branchOffset, std::size_t targetOffset, bool conditional,
                      std::string& error) {
-    return patchBranchTo(branchOffset,
-                         targetOffset,
-                         conditional ? NativeBranchKind::Zero
-                                     : NativeBranchKind::Unconditional,
+    return patchBranchTo(branchOffset, targetOffset,
+                         conditional ? NativeBranchKind::Zero : NativeBranchKind::Unconditional,
                          error);
   }
 
-  bool patchBranchTo(std::size_t branchOffset, std::size_t targetOffset,
-                     NativeBranchKind kind, std::string& error) {
+  bool patchBranchTo(std::size_t branchOffset, std::size_t targetOffset, NativeBranchKind kind,
+                     std::string& error) {
     const bool conditional = kind != NativeBranchKind::Unconditional;
     const std::size_t immediateOffset = branchOffset + (conditional ? 2 : 1);
     const std::size_t nextInstruction = immediateOffset + sizeof(std::int32_t);
@@ -1443,12 +1464,61 @@ class WindowsX64Emitter {
       return false;
     }
 
-    write32(immediateOffset, static_cast<std::uint32_t>(
-                                 static_cast<std::int32_t>(displacement)));
+    write32(immediateOffset, static_cast<std::uint32_t>(static_cast<std::int32_t>(displacement)));
     return true;
   }
 
  private:
+  void emitBinaryDouble(BinaryOperation operation, X64XmmRegister destination, X64Operand source) {
+    switch (operation) {
+      case BinaryOperation::Add:
+        assembler_.addsd(destination, source);
+        break;
+      case BinaryOperation::Subtract:
+        assembler_.subsd(destination, source);
+        break;
+      case BinaryOperation::Multiply:
+        assembler_.mulsd(destination, source);
+        break;
+      case BinaryOperation::Divide:
+        assembler_.divsd(destination, source);
+        break;
+    }
+  }
+
+  void emitBinaryDouble(BinaryOperation operation, X64XmmRegister destination,
+                        X64XmmRegister source) {
+    switch (operation) {
+      case BinaryOperation::Add:
+        assembler_.addsd(destination, source);
+        break;
+      case BinaryOperation::Subtract:
+        assembler_.subsd(destination, source);
+        break;
+      case BinaryOperation::Multiply:
+        assembler_.mulsd(destination, source);
+        break;
+      case BinaryOperation::Divide:
+        assembler_.divsd(destination, source);
+        break;
+    }
+  }
+
+  static BinaryOperation toBinaryOperation(Opcode operation) {
+    switch (operation) {
+      case Opcode::Add:
+        return BinaryOperation::Add;
+      case Opcode::Sub:
+        return BinaryOperation::Subtract;
+      case Opcode::Mul:
+        return BinaryOperation::Multiply;
+      case Opcode::Div:
+        return BinaryOperation::Divide;
+      default:
+        return BinaryOperation::Add;
+    }
+  }
+
   void emit8(std::uint8_t byte) { code_.push_back(byte); }
 
   void emit(std::initializer_list<std::uint8_t> bytes) {
@@ -1515,6 +1585,7 @@ class WindowsX64Emitter {
   }
 
   std::vector<std::uint8_t> code_;
+  X64Assembler assembler_;
 };
 
 }  // namespace minijs::detail

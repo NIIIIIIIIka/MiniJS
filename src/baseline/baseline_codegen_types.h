@@ -4,6 +4,13 @@
 
 namespace minijs::detail {
 
+enum class BinaryOperation {
+  Add,
+  Subtract,
+  Multiply,
+  Divide,
+};
+
 enum class NativeBranchKind {
   Unconditional,
   Zero,

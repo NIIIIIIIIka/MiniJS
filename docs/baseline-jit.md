@@ -21,8 +21,6 @@
 - [x] `BaselineCompiler` 已能为局部变量、栈清理、算术/比较/逻辑 opcode、基础控制流和 `Return` 生成 ARM64 和 Windows x64 stub，并写入 executable memory；Windows x64 的 `Negate`、`Add`、`Sub`、`Mul`、`Div` 和 `Mod` 已有 number fast path / guarded number helper。
 - [x] VM baseline dispatch 已能在支持 native backend 且存在 native `BaselineEntry` 时优先进入机器码；没有 native entry 时继续使用 decoded executor。
 
-后续扩展与边界状态：
-
 - [x] `Call` 已支持在 baseline 中同步进入被调 bytecode closure 或 native function。
 - [x] `MethodCall` 已支持在 baseline 中复用 method inline cache，并同步进入目标方法 closure。
 - [x] `SuperCall` 已支持在 baseline 中重排 superclass/receiver 栈槽，并同步进入父类方法 closure。
@@ -105,7 +103,7 @@ bytecodeOffsetToNativeOffset
 bytecode offset → 当前机器码 offset
 ```
 
-7. 根据 opcode 发射机器码。
+7. 把 opcode 分派到 `BaselineBytecodeVisitor::VisitXXX()`；visitor 选择 VM 级 codegen 操作、runtime fallback 和控制流效果。
 8. 所有机器码发射完成后回填分支。
 9. 调用`ExecutableMemory::allocate(emitter.bytes(), ...)`分配可执行内存并复制机器码。
 10. 设置机器码入口：
@@ -129,7 +127,9 @@ code->entry =
 相关代码：
 
 - [include/minijs/baseline_jit.h](../include/minijs/baseline_jit.h)、[src/baseline_jit.cpp](../src/baseline_jit.cpp)：`compileBaseline()` 和 native 到 decoded 的回退顺序
-- [include/minijs/baseline_compiler.h](../include/minijs/baseline_compiler.h)、[src/baseline_compiler.cpp](../src/baseline_compiler.cpp)：`BaselineCompiler::compile()`、ARM64 和 Windows x64 emitter
+- [include/minijs/baseline_compiler.h](../include/minijs/baseline_compiler.h)、[src/baseline/baseline_compiler.cpp](../src/baseline/baseline_compiler.cpp)：`BaselineCompiler::compile()` 公开入口
+- [src/baseline/baseline_codegen.cpp](../src/baseline/baseline_codegen.cpp)：bytecode 遍历、融合、`VisitXXX()` 和 native offset 映射
+- [src/baseline/x64/windows_x64_emitter.h](../src/baseline/x64/windows_x64_emitter.h)、[src/baseline/x64/x64_assembler.h](../src/baseline/x64/x64_assembler.h)、[src/baseline/arm64/arm64_emitter.h](../src/baseline/arm64/arm64_emitter.h)：平台 codegen 和机器指令编码
 - [include/minijs/executable_memory.h](../include/minijs/executable_memory.h)、[src/executable_memory.cpp](../src/executable_memory.cpp)：`ExecutableMemory::allocate()` 和平台内存管理
 - [include/minijs/baseline_code.h](../include/minijs/baseline_code.h)：decoded 指令、offset 映射、可执行内存和 `BaselineEntry`
 
@@ -179,6 +179,17 @@ Baseline code object 的职责是缓存已经验证过的 bytecode 视图，减�
 ## BaselineCode 表示
 
 `BaselineCode` 挂在 `JitFeedback` 上，而不是塞进 `Chunk`。`Chunk` 仍然是字节码、常量池和 feedback slot 的所有者。
+
+```cpp
+struct JitFeedback {
+  std::uint32_t callCount = 0;
+  std::uint32_t backedgeCount = 0;
+  std::uint32_t baselineEntryCount = 0;
+  JitState state = JitState::Cold;
+  std::shared_ptr<BaselineCode> baselineCode;
+  std::string compileError;
+};
+```
 
 ```cpp
 struct BaselineCode {
@@ -273,7 +284,7 @@ std::size_t stackSize;  // VM::stack_.size() 的当前快照
 - [include/minijs/vm.h](../include/minijs/vm.h)：`VM::stack_`、`CallFrame::slotStart`、`CallFrame::returnSlot`
 - [include/minijs/baseline_frame.h](../include/minijs/baseline_frame.h)：`BaselineFrame::stackData`、`stackSize`、`slotStart`、`returnSlot`
 - [src/vm.cpp](../src/vm.cpp)：`refreshBaselineFrameStack()`、`executeBaselineEntry()`、`executeBaselineCode()`、`baselineRuntimeSyncStackSize()` 和各类 `baselineRuntime*()` helper
-- [src/baseline_compiler.cpp](../src/baseline_compiler.cpp)：native fast path 对栈快照的读取，以及 prologue/epilogue 的 CPU stack 管理
+- [src/baseline/x64/windows_x64_emitter.h](../src/baseline/x64/windows_x64_emitter.h)、[src/baseline/arm64/arm64_emitter.h](../src/baseline/arm64/arm64_emitter.h)：native fast path 对栈快照的读取，以及 prologue/epilogue 的 CPU stack 管理
 
 ## 触发流程
 
@@ -302,7 +313,13 @@ Opcode::Loop
 
 `BaselineCompiler::compile()` 是 native baseline 的唯一公开入口。它不抛出“unsupported opcode”异常，而是通过 `BaselineCompileResult::error` 返回失败原因；外层 `compileBaseline()` 可以据此回退到 decoded baseline executor。
 
-`Arm64Emitter` 和 `WindowsX64Emitter` 目前只是 `BaselineCompiler` 私有的极小指令写入器。它们负责各自平台的 prologue/epilogue、helper 调用、branch placeholder 和 branch patch，不承担通用 assembler 的职责。
+`BaselineBytecodeVisitor` 属于 BaselineCompiler 层。`VisitConstant()`、`VisitAdd()`、`VisitJumpIfFalse()` 和 `VisitReturn()` 等入口理解 MiniJS opcode、VM 栈效果、runtime fallback 和 bytecode 控制流，但不应该包含具体机器指令编码。相同操作族通过 `BinaryOperation` 等平台无关枚举复用公共编译策略。
+
+`WindowsX64Emitter` 当前承担 x64 BaselineAssembler 的职责：它理解 `BaselineFrame`、`Value` 布局、number guard、栈同步和 helper fallback，并把这些 VM 级操作展开为 x64 指令。这个类名仍沿用早期实现；从职责看它不是纯指令编码器。
+
+`X64Assembler` 是更低一层的平台 Assembler。目前先覆盖 scalar double 路径需要的 `movsd`、`addsd`、`subsd`、`mulsd` 和 `divsd`，只理解 x64 寄存器、内存操作数和指令编码，不理解 `Opcode`、`Value`、`BaselineFrame` 或 runtime helper。其余 x64 指令还在 `WindowsX64Emitter` 中直接编码，后续可以沿相同边界逐步下沉，不需要一次性重写整个后端。
+
+`Arm64Emitter` 仍是第一版合并实现，尚未像 x64 算术路径一样拆出独立的低层 Assembler。
 
 `emitRuntimeCall()` 固定使用 Runtime ABI，但具体寄存器由后端决定。ARM64 会把 `BaselineFrame*` 放回 `x0`，把 helper 地址装入 `x16`，通过 `blr x16` 调用；Windows x64 会把 `BaselineFrame*` 放回 `rcx`，把 helper 地址装入 `rax`，通过 `call rax` 调用。helper 的 `bool` 返回值随后由平台对应的条件跳转检查，失败时进入 epilogue。
 
@@ -314,9 +331,158 @@ Opcode::Loop
 
 ```text
 Bytecode / DecodedInstruction
-  -> BaselineCompiler
-  -> 平台相关 codegen backend
+  -> BaselineCompiler / VisitXXX
+  -> 平台 BaselineAssembler（当前为 WindowsX64Emitter 或 Arm64Emitter）
+  -> 平台 Assembler（x64 已开始拆分为 X64Assembler）
+  -> 机器码
   -> BaselineEntry
+```
+
+三层分别回答不同问题：
+
+| 层 | 负责的问题 | 不应该知道 |
+| --- | --- | --- |
+| BaselineCompiler / `VisitXXX` | 当前 bytecode 做什么、栈效果、控制流和 fallback 策略 | x64 opcode 字节、参数寄存器、ModRM |
+| 平台 BaselineAssembler | 如何对 `BaselineFrame` 和 `Value` 实现 guard、快路径、栈同步与 helper 调用 | bytecode 遍历和 verifier 流程 |
+| 平台 Assembler | 如何编码 `addsd`、`call`、`jcc` 等 CPU 指令 | MiniJS opcode、Value 类型和 VM 栈语义 |
+
+以 Windows x64 的 `OP_ADD` 为例，当前调用链为：
+
+```text
+BaselineBytecodeVisitor::VisitAdd()
+  -> VisitNumberBinary(BinaryOperation::Add, ...)
+  -> WindowsX64Emitter::emitInlineNumberBinaryOrRuntimeCall(...)
+  -> WindowsX64Emitter::emitBinaryDouble(BinaryOperation::Add, ...)
+  -> X64Assembler::addsd(...)
+  -> emit 机器码 F2 0F 58 ...
+```
+
+`VisitAdd()` 不再传入 `0x58`。`BinaryOperation::Add` 到 `addsd()` 的选择发生在 x64 BaselineAssembler 层；只有 `X64Assembler::addsd()` 持有 `0x58` 等具体编码。ARM64 后端将来可以把同一个 `BinaryOperation::Add` 映射为 `fadd`，而不修改 `VisitAdd()`。
+
+### 一个完整的 Baseline JIT 例子
+
+以下例子只聚焦 `OP_ADD`，先忽略编译器可能应用的多字节码融合。融合命中时会把相邻指令作为一个单元生成机器码，但 number guard、快速路径和 helper fallback 的基本契约不变。
+
+假设函数体等价于：
+
+```js
+function add(a, b) {
+  return a + b;
+}
+```
+
+用于说明的核心 bytecode 为：
+
+```text
+OP_GET_LOCAL  aSlot
+OP_GET_LOCAL  bSlot
+OP_ADD
+OP_RETURN
+```
+
+#### 1. 触发编译
+
+函数达到 JIT 阈值后，VM 调用 `compileBaseline()`。native compiler 先执行 `verifyBytecode()` 和 `decodeInstruction()`，建立 decoded 指令数组以及：
+
+```text
+bytecode offset -> instruction index
+bytecode offset -> native offset
+```
+
+随后为机器码函数发射 prologue，并依次处理 bytecode。处理到 `OP_ADD` 时进入：
+
+```text
+BaselineBytecodeVisitor::VisitAdd()
+  -> VisitNumberBinary(BinaryOperation::Add, minijsBaselineAdd, ...)
+```
+
+这一层只表达“执行 MiniJS 加法”。它不选择 `xmm0`，也不知道 `addsd` 的机器码是 `0x58`。
+
+#### 2. 生成 number 快速路径
+
+Windows x64 后端收到 `BinaryOperation::Add` 后，由 `WindowsX64Emitter::emitInlineNumberBinaryOrRuntimeCall()` 组织 VM 级流程：
+
+```text
+检查 stackSize >= 2
+定位 left = stack[stackSize - 2]
+定位 right = stack[stackSize - 1]
+检查 left.type == Number
+检查 right.type == Number
+命中：直接执行 double 加法
+未命中：跳到 minijsBaselineAdd(frame)
+```
+
+快速路径中的运算选择发生在 x64 BaselineAssembler 层：
+
+```cpp
+emitBinaryDouble(BinaryOperation::Add,
+                 X64XmmRegister::Xmm0,
+                 {X64Register::Rcx, numberOffset});
+```
+
+它把 `BinaryOperation::Add` 映射为：
+
+```cpp
+assembler_.addsd(X64XmmRegister::Xmm0,
+                 {X64Register::Rcx, numberOffset});
+```
+
+最后由 `X64Assembler::addsd()` 编码真正的 CPU 指令。核心汇编大致为：
+
+```text
+movsd xmm0, [rdx + numberOffset]
+addsd xmm0, [rcx + numberOffset]
+movsd [rdx + numberOffset], xmm0
+```
+
+其中 `rdx` 指向左操作数槽，`rcx` 指向右操作数槽。对应的 `addsd` 编码以 `F2 0F 58` 开头；ModRM 和 `numberOffset` 位移由 `X64Assembler` 根据寄存器和 `X64Operand` 生成。
+
+#### 3. 执行数字快速路径
+
+调用 `add(10, 20)` 时，执行 `OP_ADD` 生成的机器码前，VM 栈局部区域可简化为：
+
+```text
+stackSize = N
+
+stack[N - 2] = Number(10)   <- rdx
+stack[N - 1] = Number(20)   <- rcx
+```
+
+两个类型 guard 都成功，因此机器码计算 `10.0 + 20.0`，把结果写回左槽，并把逻辑栈深度减少一：
+
+```text
+stackSize = N - 1
+
+stack[N - 2] = Number(30)
+```
+
+随后调用 `minijsBaselineSyncStackSize()`，让真实的 `VM::stack_` 与 `BaselineFrame::stackSize` 一致。接下来的 `OP_RETURN` 通过 `VisitReturn()` 生成返回 helper 调用和跳向统一 epilogue 的分支，最终把 `Number(30)` 返回给调用者。
+
+#### 4. 非数字时回退
+
+同一段 `OP_ADD` 也可能执行字符串拼接。例如调用时两个槽为：
+
+```text
+stack[N - 2] = String("Mini")
+stack[N - 1] = String("JS")
+```
+
+Number guard 在修改栈之前失败，机器码跳到 fallback：
+
+```text
+mov rcx, rbx              ; 第一个参数是 BaselineFrame*
+mov rax, minijsBaselineAdd
+call rax
+```
+
+`minijsBaselineAdd(frame)` 执行完整 MiniJS 加法语义，因此可以完成字符串拼接、错误检查和必要的 GC 分配。成功后栈变为一个 `String("MiniJS")`；失败时 helper 设置 `frame.failed` 并返回 `false`，机器码跳到统一 epilogue，再由 `executeBaselineEntry()` 把错误恢复成 VM 的运行时异常。
+
+这个例子体现了三层的边界：
+
+```text
+VisitAdd                 决定编译哪一种 MiniJS 语义
+WindowsX64Emitter        组织 Value guard、VM 栈变化和 fallback
+X64Assembler::addsd      只负责编码一条 x64 CPU 指令
 ```
 
 不同平台可以生成不同机器码，但都应该遵守同一套 Runtime ABI 和 `BaselineFrame` 入口协议：
@@ -350,6 +516,8 @@ using BaselineEntry = void (*)(BaselineFrame*);
 - helper 返回值检查
 - 分支 patch 和 native offset 映射
 - executable memory 的平台细节
+
+其中 executable memory 由共享的 `ExecutableMemory` 接口封装，但申请、权限切换和 instruction cache 刷新仍由各操作系统实现。
 
 也就是说，文档里的某个平台指令只是“这个后端怎么做”的具体例子，不代表 MiniJS 只能生成一种机器码。许多 opcode 仍然在 ARM64 和 Windows x64 后端都映射到 runtime helper，只是机器码分别使用 ARM64 的 `mov`/`blr`/`cbz` 和 Windows x64 的 `mov`/`call`/`test`/`jz`。
 
@@ -834,7 +1002,7 @@ minijs --benchmark-compare-jit examples/baseline_numeric_benchmark.js --benchmar
 4. `refreshBaselineFrameStack()` 从真实 `stack_` 更新 `stackData` 和 `stackSize`。可能改变栈或重入 VM 的 helper 成功返回后，要确保快照已刷新；不改变栈的 truthiness 和回边计数 helper 不需要刷新。
 5. helper 调用后不得继续使用调用前缓存的栈元素地址。压栈或嵌套调用可能使 `std::vector` 扩容，旧 `Value*` 随之失效；下一条快路径重新读取 frame 的快照。
 
-相关实现：`WindowsX64Emitter::emitInlineNumberNegateOrRuntimeCall()`、`emitInlineNumberBinaryOrRuntimeCall()`、`emitGuardedNumberBinaryRuntimeCall()` 位于 [src/baseline_compiler.cpp](../src/baseline_compiler.cpp)；栈同步位于 [src/vm.cpp](../src/vm.cpp)。
+相关实现：`WindowsX64Emitter::emitInlineNumberNegateOrRuntimeCall()`、`emitInlineNumberBinaryOrRuntimeCall()`、`emitGuardedNumberBinaryRuntimeCall()` 位于 [src/baseline/x64/windows_x64_emitter.h](../src/baseline/x64/windows_x64_emitter.h)；`addsd` 等纯指令编码位于 [src/baseline/x64/x64_assembler.h](../src/baseline/x64/x64_assembler.h)；栈同步位于 [src/vm.cpp](../src/vm.cpp)。
 
 ### Helper 返回值与错误传播
 
