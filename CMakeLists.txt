@@ -241,6 +241,28 @@ if(MINIJS_BUILD_TESTS)
         set_tests_properties(minijs_cli_benchmark_compare_reports_jit_on_and_off PROPERTIES
             PASS_REGULAR_EXPRESSION "baseline_entries=[1-9][0-9]*"
         )
+        foreach(MINIJS_OPTIMIZE_BENCHMARK numeric_call property method)
+            add_test(
+                NAME minijs_cli_optimize_${MINIJS_OPTIMIZE_BENCHMARK}_benchmark_enters_optimize
+                COMMAND minijs --benchmark-compare-optimize
+                    "${CMAKE_CURRENT_SOURCE_DIR}/examples/optimize_${MINIJS_OPTIMIZE_BENCHMARK}_benchmark.js"
+                    --benchmark-samples 1 --benchmark-warmup 0
+            )
+            set_tests_properties(
+                minijs_cli_optimize_${MINIJS_OPTIMIZE_BENCHMARK}_benchmark_enters_optimize
+                PROPERTIES PASS_REGULAR_EXPRESSION
+                    "optimize counters: attempts=[1-9][0-9]* entries=[1-9][0-9]*"
+            )
+        endforeach()
+        add_test(
+            NAME minijs_cli_optimize_osr_candidate_reports_no_entry
+            COMMAND minijs --benchmark-compare-optimize
+                "${CMAKE_CURRENT_SOURCE_DIR}/examples/optimize_osr_candidate_benchmark.js"
+                --benchmark-samples 1 --benchmark-warmup 0
+        )
+        set_tests_properties(minijs_cli_optimize_osr_candidate_reports_no_entry PROPERTIES
+            PASS_REGULAR_EXPRESSION "optimize counters: attempts=0 entries=0"
+        )
         add_test(
             NAME minijs_cli_numeric_benchmark_enters_baseline
             COMMAND minijs --benchmark-compare-jit "${CMAKE_CURRENT_SOURCE_DIR}/examples/baseline_numeric_benchmark.js" --benchmark-samples 1 --benchmark-warmup 0
