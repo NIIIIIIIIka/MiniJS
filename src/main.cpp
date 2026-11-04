@@ -49,6 +49,7 @@ void printUsage(std::ostream& output) {
          << "       minijs --benchmark <file> [--benchmark-samples <n>] [--benchmark-warmup <n>] [--benchmark-format text|json]\n"
          << "       minijs --benchmark-compare <file> [--benchmark-samples <n>] [--benchmark-warmup <n>] [--benchmark-format text|json]\n"
          << "       minijs --benchmark-compare-jit <file> [--benchmark-samples <n>] [--benchmark-warmup <n>] [--benchmark-format text|json]\n"
+         << "       minijs --benchmark-compare-optimize <file> [--benchmark-samples <n>] [--benchmark-warmup <n>] [--benchmark-format text|json]\n"
          << "       minijs --help\n"
          << "       JIT benchmark option: --benchmark-helper-profile on|off (default: off)\n"
          << "       minijs --version\n";
@@ -56,7 +57,8 @@ void printUsage(std::ostream& output) {
 
 bool isBenchmarkCommand(const std::string& argument) {
   return argument == "--benchmark" || argument == "--benchmark-compare" ||
-         argument == "--benchmark-compare-jit";
+         argument == "--benchmark-compare-jit" ||
+         argument == "--benchmark-compare-optimize";
 }
 
 int parseIntegerOption(const std::string& option, const std::string& value, int minimum) {
@@ -112,8 +114,10 @@ BenchmarkConfig parseBenchmarkConfig(int argc, char* argv[], int firstOption) {
 
     throw std::runtime_error("unknown benchmark option: " + option);
   }
-  if (config.helperProfile && std::string_view(argv[1]) != "--benchmark-compare-jit") {
-    throw std::runtime_error("--benchmark-helper-profile on requires --benchmark-compare-jit");
+  if (config.helperProfile && std::string_view(argv[1]) != "--benchmark-compare-jit" &&
+      std::string_view(argv[1]) != "--benchmark-compare-optimize") {
+    throw std::runtime_error(
+        "--benchmark-helper-profile on requires a JIT or Optimize comparison");
   }
   return config;
 }
@@ -235,7 +239,15 @@ void printJitRuntimeStats(const minijs::JitRuntimeStats& stats) {
             << "jit counters: calls=" << stats.calls << " backedges=" << stats.backedges
             << " baseline_entries=" << stats.baselineEntries << '\n'
             << "jit code: native_entries=" << stats.nativeEntries
-            << " decoded_entries=" << stats.decodedEntries << '\n';
+            << " decoded_entries=" << stats.decodedEntries << '\n'
+            << "optimize functions: cold=" << stats.optimizeCold
+            << " scheduled=" << stats.optimizeScheduled
+            << " compiled=" << stats.optimizeCompiled
+            << " disabled=" << stats.optimizeDisabled
+            << " failed=" << stats.optimizeFailed << '\n'
+            << "optimize counters: attempts=" << stats.optimizeAttempts
+            << " entries=" << stats.optimizedEntries
+            << " guard_failures=" << stats.optimizeGuardFailures << '\n';
   if (stats.helperProfilingEnabled) {
     std::cout << "jit helper profile (inclusive):\n";
     for (const auto& helper : stats.helpers) {
@@ -308,7 +320,15 @@ void printJsonJitRuntimeStats(std::ostream& output, const minijs::JitRuntimeStat
          << ", \"backedges\": " << stats.backedges
          << ", \"baseline_entries\": " << stats.baselineEntries << "},\n"
          << pad << "  \"code\": {\"native_entries\": " << stats.nativeEntries
-         << ", \"decoded_entries\": " << stats.decodedEntries << "}";
+         << ", \"decoded_entries\": " << stats.decodedEntries << "},\n"
+         << pad << "  \"optimize\": {\"cold\": " << stats.optimizeCold
+         << ", \"scheduled\": " << stats.optimizeScheduled
+         << ", \"compiled\": " << stats.optimizeCompiled
+         << ", \"disabled\": " << stats.optimizeDisabled
+         << ", \"failed\": " << stats.optimizeFailed
+         << ", \"attempts\": " << stats.optimizeAttempts
+         << ", \"entries\": " << stats.optimizedEntries
+         << ", \"guard_failures\": " << stats.optimizeGuardFailures << "}";
   if (stats.helperProfilingEnabled) {
     output << ",\n" << pad << "  \"helper_profile\": {\"inclusive\": true, \"helpers\": [";
     for (std::size_t index = 0; index < stats.helpers.size(); ++index) {
@@ -338,7 +358,8 @@ long long medianMicros(std::vector<long long> values) {
 }
 
 BenchmarkResult runBenchmarkSample(const minijs::Program& program, bool inlineCachesEnabled,
-                                   bool jitEnabled, bool helperProfile) {
+                                   bool jitEnabled, bool optimizeEnabled,
+                                   bool helperProfile) {
   const auto compileStart = std::chrono::steady_clock::now();
   minijs::Compiler compiler;
   const minijs::Chunk chunk = compiler.compileProgram(program);
@@ -347,6 +368,7 @@ BenchmarkResult runBenchmarkSample(const minijs::Program& program, bool inlineCa
   minijs::VM vm;
   vm.setInlineCachesEnabled(inlineCachesEnabled);
   vm.setJitEnabled(jitEnabled);
+  vm.setOptimizeEnabled(optimizeEnabled);
   vm.setBaselineHelperProfilingEnabled(helperProfile);
   vm.setJitCallThreshold(1);
   vm.setJitBackedgeThreshold(1'000'000);
@@ -366,7 +388,8 @@ BenchmarkResult runBenchmarkSample(const minijs::Program& program, bool inlineCa
 }
 
 BenchmarkResult runBenchmark(const minijs::Program& program, bool inlineCachesEnabled,
-                             bool jitEnabled, const BenchmarkConfig& config) {
+                             bool jitEnabled, bool optimizeEnabled,
+                             const BenchmarkConfig& config) {
   std::vector<BenchmarkResult> samples;
   samples.reserve(config.samples);
   std::vector<long long> compileMicros;
@@ -375,12 +398,13 @@ BenchmarkResult runBenchmark(const minijs::Program& program, bool inlineCachesEn
   runMicros.reserve(config.samples);
 
   for (int sample = 0; sample < config.warmupSamples; ++sample) {
-    (void)runBenchmarkSample(program, inlineCachesEnabled, jitEnabled, config.helperProfile);
+    (void)runBenchmarkSample(program, inlineCachesEnabled, jitEnabled, optimizeEnabled,
+                             config.helperProfile);
   }
 
   for (int sample = 0; sample < config.samples; ++sample) {
     BenchmarkResult result = runBenchmarkSample(program, inlineCachesEnabled, jitEnabled,
-                                               config.helperProfile);
+                                                optimizeEnabled, config.helperProfile);
     if (!samples.empty() && !result.result.equals(samples.front().result)) {
       throw std::runtime_error("benchmark result changed between samples");
     }
@@ -493,7 +517,7 @@ bool benchmarkVmProgram(std::string_view source, const BenchmarkConfig& config) 
     return false;
   }
 
-  const BenchmarkResult benchmark = runBenchmark(program, true, false, config);
+  const BenchmarkResult benchmark = runBenchmark(program, true, false, false, config);
 
   if (config.format == BenchmarkFormat::Json) {
     printJsonSingleBenchmark(benchmark);
@@ -524,8 +548,8 @@ bool benchmarkCompareVmProgram(std::string_view source, const BenchmarkConfig& c
     return false;
   }
 
-  const BenchmarkResult withIc = runBenchmark(program, true, false, config);
-  const BenchmarkResult withoutIc = runBenchmark(program, false, false, config);
+  const BenchmarkResult withIc = runBenchmark(program, true, false, false, config);
+  const BenchmarkResult withoutIc = runBenchmark(program, false, false, false, config);
 
   if (!withIc.result.equals(withoutIc.result)) {
     std::cerr << "error: benchmark result changed when inline caches were disabled\n";
@@ -577,8 +601,8 @@ bool benchmarkCompareJitProgram(std::string_view source, const BenchmarkConfig& 
     return false;
   }
 
-  const BenchmarkResult withoutJit = runBenchmark(program, true, false, config);
-  const BenchmarkResult withJit = runBenchmark(program, true, true, config);
+  const BenchmarkResult withoutJit = runBenchmark(program, true, false, false, config);
+  const BenchmarkResult withJit = runBenchmark(program, true, true, true, config);
 
   if (!withJit.result.equals(withoutJit.result)) {
     std::cerr << "error: benchmark result changed when JIT was enabled\n";
@@ -616,6 +640,61 @@ bool benchmarkCompareJitProgram(std::string_view source, const BenchmarkConfig& 
   std::cout << "with_jit:\n";
   printInlineCacheStats(withJit.stats);
   printJitRuntimeStats(withJit.jitStats);
+  return true;
+}
+
+bool benchmarkCompareOptimizeProgram(std::string_view source,
+                                     const BenchmarkConfig& config) {
+  minijs::Parser parser(source);
+  minijs::Program program = parser.parseProgram();
+
+  for (const minijs::Diagnostic& diagnostic : parser.diagnostics()) {
+    std::cerr << diagnostic.location.line << ':' << diagnostic.location.column
+              << ": error: " << diagnostic.message << '\n';
+  }
+  if (!parser.diagnostics().empty()) return false;
+
+  const BenchmarkResult baselineOnly = runBenchmark(program, true, true, false, config);
+  const BenchmarkResult withOptimize = runBenchmark(program, true, true, true, config);
+  if (!withOptimize.result.equals(baselineOnly.result)) {
+    std::cerr << "error: benchmark result changed when Optimize JIT was enabled\n";
+    return false;
+  }
+
+  const double speedup = withOptimize.runMicros > 0 && baselineOnly.runMicros > 0
+                             ? static_cast<double>(baselineOnly.runMicros) /
+                                   static_cast<double>(withOptimize.runMicros)
+                             : 0.0;
+  if (config.format == BenchmarkFormat::Json) {
+    std::cout << "{\n"
+              << "  \"result\": \"" << jsonEscape(withOptimize.result.toString())
+              << "\",\n";
+    printJsonBenchmarkResult(std::cout, "baseline_only", baselineOnly, 2, true);
+    std::cout << ",\n";
+    printJsonBenchmarkResult(std::cout, "with_optimize", withOptimize, 2, true);
+    if (speedup > 0.0) {
+      std::cout << ",\n  \"speedup\": " << speedup;
+    } else {
+      std::cout << ",\n  \"speedup\": null";
+    }
+    std::cout << "\n}\n";
+    return true;
+  }
+
+  if (!withOptimize.result.isNull()) {
+    std::cout << "result: " << withOptimize.result.toString() << '\n';
+  }
+  std::cout << "baseline_only_run_us: " << baselineOnly.runMicros << '\n'
+            << "with_optimize_run_us: " << withOptimize.runMicros << '\n';
+  if (speedup > 0.0) {
+    std::cout << "optimize_speedup: " << speedup << "x\n";
+  } else {
+    std::cout << "optimize_speedup: n/a\n";
+  }
+  std::cout << "baseline_only:\n";
+  printJitRuntimeStats(baselineOnly.jitStats);
+  std::cout << "with_optimize:\n";
+  printJitRuntimeStats(withOptimize.jitStats);
   return true;
 }
 
@@ -807,6 +886,23 @@ int main(int argc, char* argv[]) {
     try {
       const BenchmarkConfig config = parseBenchmarkConfig(argc, argv, 3);
       return benchmarkCompareJitProgram(readFile(argv[2]), config) ? 0 : ExitInputError;
+    } catch (const std::exception& error) {
+      std::cerr << "error: " << error.what() << '\n';
+      return ExitInputError;
+    }
+  }
+
+  if (argument == "--benchmark-compare-optimize") {
+    if (argc < 3) {
+      std::cerr << "error: --benchmark-compare-optimize expects a file\n";
+      printUsage(std::cerr);
+      return ExitUsageError;
+    }
+
+    try {
+      const BenchmarkConfig config = parseBenchmarkConfig(argc, argv, 3);
+      return benchmarkCompareOptimizeProgram(readFile(argv[2]), config) ? 0
+                                                                        : ExitInputError;
     } catch (const std::exception& error) {
       std::cerr << "error: " << error.what() << '\n';
       return ExitInputError;
