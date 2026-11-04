@@ -98,8 +98,6 @@ struct ObjShape;
 struct ObjUpvalue;
 struct ObjFunction;
 struct BaselineCode;
-struct OptimizedCode;
-struct OptimizedFrame;
 
 // 一次字节码函数调用的执行状态。
 struct CallFrame {
@@ -139,11 +137,8 @@ struct PropertyInlineCacheStats {
 
 struct JitOptions {
   bool enabled = false;
-  bool optimizeEnabled = true;
   std::uint32_t callThreshold = 100;
   std::uint32_t backedgeThreshold = 1000;
-  std::uint32_t optimizeThreshold = 1000;
-  std::uint32_t optimizeGuardFailureThreshold = 3;
 };
 
 // 可选的 native C ABI helper 采样；耗时包含嵌套调用，不能相加当作总耗时。
@@ -162,14 +157,6 @@ struct JitRuntimeStats {
   std::uint64_t calls = 0;
   std::uint64_t backedges = 0;
   std::uint64_t baselineEntries = 0;
-  std::size_t optimizeCold = 0;
-  std::size_t optimizeScheduled = 0;
-  std::size_t optimizeCompiled = 0;
-  std::size_t optimizeDisabled = 0;
-  std::size_t optimizeFailed = 0;
-  std::uint64_t optimizeAttempts = 0;
-  std::uint64_t optimizedEntries = 0;
-  std::uint64_t optimizeGuardFailures = 0;
   std::size_t nativeEntries = 0;
   std::size_t decodedEntries = 0;
   bool helperProfilingEnabled = false;
@@ -190,11 +177,8 @@ class VM {
   void setInlineCachesEnabled(bool enabled);
   bool jitEnabled() const;
   void setJitEnabled(bool enabled);
-  void setOptimizeEnabled(bool enabled);
   void setJitCallThreshold(std::uint32_t threshold);
   void setJitBackedgeThreshold(std::uint32_t threshold);
-  void setOptimizeThreshold(std::uint32_t threshold);
-  void setOptimizeGuardFailureThreshold(std::uint32_t threshold);
   JitRuntimeStats jitRuntimeStats() const;
   void setBaselineHelperProfilingEnabled(bool enabled) { helperProfilingEnabled_ = enabled; }
   bool baselineHelperProfilingEnabled() const { return helperProfilingEnabled_; }
@@ -213,7 +197,6 @@ class VM {
                                                        const std::string& methodName,
                                                        bool isStatic = false) const;
   const BaselineCode* debugGlobalFunctionBaselineCode(const std::string& name) const;
-  const OptimizedCode* debugGlobalFunctionOptimizedCode(const std::string& name) const;
   std::string debugGlobalFunctionJitCompileError(const std::string& name) const;
   Value debugExecuteGlobalFunctionBaseline(const std::string& name,
                                            const std::vector<Value>& arguments);
@@ -222,17 +205,6 @@ class VM {
                                                 BaselineEntry entry);
   PropertyInlineCacheStats debugPropertyInlineCacheStats() const;
   void debugResetPropertyInlineCacheStats();
-  void debugSetOptimizeSafepointStressEnabled(bool enabled) {
-    optimizeSafepointStressEnabled_ = enabled;
-    optimizeSafepointStressRootsSurvived_ = true;
-    optimizeSafepointStressCount_ = 0;
-  }
-  std::size_t debugOptimizeSafepointStressCount() const {
-    return optimizeSafepointStressCount_;
-  }
-  bool debugOptimizeSafepointStressRootsSurvived() const {
-    return optimizeSafepointStressRootsSurvived_;
-  }
 #endif
 
  private:
@@ -451,12 +423,6 @@ class VM {
   void recordLoopBackedge(ObjFunction& function);
   void maybeScheduleJit(BytecodeFunction& function);
   void compileScheduledJit(BytecodeFunction& function);
-  void maybeScheduleOptimize(BytecodeFunction& function);
-  void compileScheduledOptimize(BytecodeFunction& function);
-  bool executeOptimizedCode(const OptimizedCode& code, BytecodeFunction& function,
-                            std::size_t returnSlot, std::size_t argumentStart,
-                            std::size_t argumentCount);
-  static void runOptimizeSafepointStressHook(void* context);
   Value executeBaselineCode(const BaselineCode& code, CallFrame& frame);
   Value executeBaselineEntry(BaselineEntry entry, CallFrame& frame);
   ObjUpvalue* captureUpvalue(std::size_t stackIndex);
@@ -477,9 +443,6 @@ class VM {
   // 操作数栈，同时承载当前调用帧的参数和局部变量槽位。
   std::vector<Value> stack_;
   std::vector<CallFrame> frames_;
-  // Frames currently executing native optimized code. Their safepoint maps
-  // describe GC roots that may no longer be discoverable from future VM stacks.
-  std::vector<const OptimizedFrame*> optimizedFrames_;
   std::vector<ObjUpvalue*> openUpvalues_;
   std::unordered_map<std::string, Value> globals_;
   // 保护尚未放入 stack_/globals_/frame 的中间 GC 对象，避免连续分配时被提前回收。
@@ -495,11 +458,6 @@ class VM {
   bool inlineCachesEnabled_ = true;
   JitOptions jitOptions_;
   bool helperProfilingEnabled_ = false;
-  // Test-only behavior is selected through MINIJS_TESTING accessors, but these
-  // fields remain unconditional so every target sees the same VM class layout.
-  bool optimizeSafepointStressEnabled_ = false;
-  bool optimizeSafepointStressRootsSurvived_ = true;
-  std::size_t optimizeSafepointStressCount_ = 0;
   std::unordered_map<std::string, BaselineHelperStats> helperProfile_;
 
   template <typename T, typename... Args>

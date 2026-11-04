@@ -11,7 +11,6 @@ void runLexerTests();
 void runParserTests();
 void runInterpreterTests();
 void runBytecodeTests();
-void runOptimizerIrTests();
 
 void testGcStringValue() {
   minijs::ObjString gcString("Tom");
@@ -46,7 +45,6 @@ int main() {
   runParserTests();
   runInterpreterTests();
   runBytecodeTests();
-  runOptimizerIrTests();
 
   if (minijs::test::failures != 0) {
     std::cerr << minijs::test::failures << " test(s) failed\n";

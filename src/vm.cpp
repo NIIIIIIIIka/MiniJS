@@ -13,10 +13,6 @@
 #include "minijs/baseline_jit.h"
 #include "minijs/baseline_code.h"
 #include "minijs/gc_object.h"
-#include "minijs/optimized_code.h"
-#include "minijs/optimizer_deopt.h"
-#include "minijs/optimizer_jit.h"
-#include "minijs/optimizer_safepoint.h"
 #include "minijs/runtime_error.h"
 
 namespace minijs {
@@ -25,37 +21,6 @@ namespace {
 void incrementSaturating(std::uint32_t& value) {
   if (value != std::numeric_limits<std::uint32_t>::max()) {
     ++value;
-  }
-}
-
-ObservedType observedTypeOf(const Value& value) {
-  if (value.isNumber()) return ObservedType::Number;
-  if (value.isBoolean()) return ObservedType::Boolean;
-  if (value.isGcObject() || value.isGcInstance()) return ObservedType::Object;
-  return ObservedType::Other;
-}
-
-void recordOptimizeParameters(BytecodeFunction& function, const std::vector<Value>& stack,
-                              std::size_t argumentStart) {
-  if (argumentStart > stack.size() || function.params.size() > stack.size() - argumentStart) {
-    return;
-  }
-  auto& observed = function.jit.optimize.parameterTypes;
-  if (observed.empty()) {
-    observed.assign(function.params.size(), ObservedType::Uninitialized);
-  }
-  if (observed.size() != function.params.size()) {
-    observed.assign(function.params.size(), ObservedType::Polymorphic);
-    return;
-  }
-  for (std::size_t index = 0; index < observed.size(); ++index) {
-    const ObservedType current = observedTypeOf(stack[argumentStart + index]);
-    ObservedType& slot = observed[index];
-    if (slot == ObservedType::Uninitialized) {
-      slot = current;
-    } else if (slot != current) {
-      slot = ObservedType::Polymorphic;
-    }
   }
 }
 
@@ -679,24 +644,12 @@ void VM::setJitEnabled(bool enabled) {
   jitOptions_.enabled = enabled;
 }
 
-void VM::setOptimizeEnabled(bool enabled) {
-  jitOptions_.optimizeEnabled = enabled;
-}
-
 void VM::setJitCallThreshold(std::uint32_t threshold) {
   jitOptions_.callThreshold = threshold;
 }
 
 void VM::setJitBackedgeThreshold(std::uint32_t threshold) {
   jitOptions_.backedgeThreshold = threshold;
-}
-
-void VM::setOptimizeThreshold(std::uint32_t threshold) {
-  jitOptions_.optimizeThreshold = threshold;
-}
-
-void VM::setOptimizeGuardFailureThreshold(std::uint32_t threshold) {
-  jitOptions_.optimizeGuardFailureThreshold = threshold;
 }
 
 void VM::recordBaselineHelperProfile(const char* name, std::uint64_t nanoseconds) noexcept {
@@ -732,17 +685,6 @@ JitRuntimeStats VM::jitRuntimeStats() const {
     stats.calls += jit.callCount;
     stats.backedges += jit.backedgeCount;
     stats.baselineEntries += jit.baselineEntryCount;
-    stats.optimizeAttempts += jit.optimize.compileAttempts;
-    stats.optimizedEntries += jit.optimize.optimizedEntryCount;
-    stats.optimizeGuardFailures += jit.optimize.guardFailures;
-
-    switch (jit.optimize.state) {
-      case OptimizeState::Cold: ++stats.optimizeCold; break;
-      case OptimizeState::Scheduled: ++stats.optimizeScheduled; break;
-      case OptimizeState::Compiled: ++stats.optimizeCompiled; break;
-      case OptimizeState::Disabled: ++stats.optimizeDisabled; break;
-      case OptimizeState::Failed: ++stats.optimizeFailed; break;
-    }
 
     switch (jit.state) {
       case JitState::Cold:
@@ -818,11 +760,6 @@ const BaselineCode* VM::debugGlobalFunctionBaselineCode(const std::string& name)
     return nullptr;
   }
   return feedback->baselineCode.get();
-}
-
-const OptimizedCode* VM::debugGlobalFunctionOptimizedCode(const std::string& name) const {
-  const JitFeedback* feedback = debugGlobalFunctionJitFeedback(name);
-  return feedback == nullptr ? nullptr : feedback->optimize.code.get();
 }
 
 std::string VM::debugGlobalFunctionJitCompileError(const std::string& name) const {
@@ -2264,25 +2201,11 @@ void VM::callBytecodeClosure(ObjClosure* closure, std::size_t argCount, std::siz
                        std::to_string(function.params.size()) + " arguments");
   }
 
-  if (jitOptions_.enabled) {
-    recordOptimizeParameters(function, stack_, returnSlot + 1);
-  }
-
   const bool shouldEnterBaseline =
       jitOptions_.enabled && function.jit.state == JitState::Compiled &&
       function.jit.baselineCode != nullptr;
-  const bool shouldEnterOptimized =
-      jitOptions_.enabled && slotStart == returnSlot + 1 && !returnsReceiver &&
-      function.jit.optimize.state == OptimizeState::Compiled &&
-      function.jit.optimize.code != nullptr && function.jit.optimize.code->entry != nullptr;
 
   recordFunctionCall(*closure->function);
-
-  if (shouldEnterOptimized &&
-      executeOptimizedCode(*function.jit.optimize.code, function, returnSlot,
-                           returnSlot + 1, argCount)) {
-    return;
-  }
 
   if (shouldEnterBaseline) {
     frames_.push_back(CallFrame{
@@ -2308,7 +2231,6 @@ void VM::callBytecodeClosure(ObjClosure* closure, std::size_t argCount, std::siz
     }
 
     frames_.pop_back();
-    maybeScheduleOptimize(function);
     return;
   }
 
@@ -2330,10 +2252,6 @@ void VM::callBytecodeClosureSynchronously(ObjClosure* closure, std::size_t argCo
                        std::to_string(function.params.size()) + " arguments");
   }
 
-  if (jitOptions_.enabled) {
-    recordOptimizeParameters(function, stack_, returnSlot + 1);
-  }
-
   recordFunctionCall(*closure->function);
   if (jitOptions_.enabled && function.jit.state == JitState::Cold) {
     function.jit.state = JitState::Scheduled;
@@ -2343,14 +2261,6 @@ void VM::callBytecodeClosureSynchronously(ObjClosure* closure, std::size_t argCo
   if (!jitOptions_.enabled || function.jit.state != JitState::Compiled ||
       function.jit.baselineCode == nullptr) {
     throw RuntimeError("baseline call target is not compiled: " + function.name);
-  }
-
-  if (slotStart == returnSlot + 1 && !returnsReceiver &&
-      function.jit.optimize.state == OptimizeState::Compiled &&
-      function.jit.optimize.code != nullptr && function.jit.optimize.code->entry != nullptr &&
-      executeOptimizedCode(*function.jit.optimize.code, function, returnSlot,
-                           returnSlot + 1, argCount)) {
-    return;
   }
 
   frames_.push_back(CallFrame{
@@ -2376,7 +2286,6 @@ void VM::callBytecodeClosureSynchronously(ObjClosure* closure, std::size_t argCo
   }
 
   frames_.pop_back();
-  maybeScheduleOptimize(function);
 }
 
 void VM::recordFunctionCall(ObjFunction& function) {
@@ -2427,186 +2336,6 @@ void VM::compileScheduledJit(BytecodeFunction& function) {
   jit.baselineCode.reset();
   jit.compileError = std::move(result.error);
   jit.state = JitState::Failed;
-}
-
-void VM::maybeScheduleOptimize(BytecodeFunction& function) {
-  if (!jitOptions_.optimizeEnabled) return;
-  JitFeedback& jit = function.jit;
-  OptimizeFeedback& optimize = jit.optimize;
-  if (optimize.state != OptimizeState::Cold || jit.state != JitState::Compiled ||
-      jit.baselineCode == nullptr || jit.baselineEntryCount < jitOptions_.optimizeThreshold) {
-    return;
-  }
-
-  optimize.state = OptimizeState::Scheduled;
-  compileScheduledOptimize(function);
-}
-
-void VM::compileScheduledOptimize(BytecodeFunction& function) {
-  OptimizeFeedback& optimize = function.jit.optimize;
-  if (optimize.state != OptimizeState::Scheduled) {
-    return;
-  }
-
-  incrementSaturating(optimize.compileAttempts);
-  OptimizerCompileResult result = compileOptimized(function);
-  if (result.succeeded()) {
-    optimize.code = std::move(result.code);
-    optimize.compileError.clear();
-    optimize.state = OptimizeState::Compiled;
-    return;
-  }
-
-  optimize.code.reset();
-  optimize.compileError = std::move(result.error);
-  optimize.state = OptimizeState::Failed;
-}
-
-bool VM::executeOptimizedCode(const OptimizedCode& code, BytecodeFunction& function,
-                              std::size_t returnSlot, std::size_t argumentStart,
-                              std::size_t argumentCount) {
-  if (code.entry == nullptr || argumentStart > stack_.size() ||
-      argumentCount > stack_.size() - argumentStart) {
-    throw RuntimeError("invalid optimized entry frame");
-  }
-
-  OptimizedFrame frame;
-  frame.code = &code;
-  std::vector<Value> stressArguments;
-  const bool stressSpilled = optimizeSafepointStressEnabled_ && argumentCount != 0;
-  if (optimizeSafepointStressEnabled_) {
-    if (stressSpilled) {
-      stressArguments.assign(
-          stack_.begin() + static_cast<std::ptrdiff_t>(argumentStart),
-          stack_.begin() + static_cast<std::ptrdiff_t>(argumentStart + argumentCount));
-      for (std::size_t index = 0; index < argumentCount; ++index) {
-        stack_[argumentStart + index] = Value();
-      }
-      frame.arguments = stressArguments.data();
-    }
-    frame.safepointHookContext = this;
-    frame.safepointHook = &VM::runOptimizeSafepointStressHook;
-  }
-  if (!stressSpilled) {
-    frame.arguments = argumentCount == 0 ? nullptr : stack_.data() + argumentStart;
-  }
-  frame.argumentCount = argumentCount;
-  frame.safepointId = code.entrySafepointId;
-  optimizedFrames_.push_back(&frame);
-  try {
-    code.entry(&frame);
-  } catch (...) {
-    optimizedFrames_.pop_back();
-    if (stressSpilled) {
-      for (std::size_t index = 0; index < argumentCount; ++index) {
-        stack_[argumentStart + index] = stressArguments[index];
-      }
-    }
-    throw;
-  }
-  optimizedFrames_.pop_back();
-  if (stressSpilled) {
-    for (std::size_t index = 0; index < argumentCount; ++index) {
-      stack_[argumentStart + index] = stressArguments[index];
-    }
-  }
-  if (frame.directCall) {
-    if (frame.directCallTarget == nullptr || !code.methodCall.valid() ||
-        code.methodCall.receiverArgument >= argumentCount) {
-      throw RuntimeError("optimized direct method call metadata is invalid");
-    }
-    std::vector<Value> callValues;
-    callValues.reserve(code.methodCall.argumentIndices.size() + 1);
-    callValues.push_back(stack_[argumentStart + code.methodCall.receiverArgument]);
-    for (const std::uint32_t index : code.methodCall.argumentIndices) {
-      if (index >= argumentCount) {
-        throw RuntimeError("optimized direct method argument is out of bounds");
-      }
-      callValues.push_back(stack_[argumentStart + index]);
-    }
-    stack_.resize(returnSlot);
-    for (Value& value : callValues) push(std::move(value));
-    callBytecodeClosureSynchronously(frame.directCallTarget,
-                                     code.methodCall.argumentIndices.size(), returnSlot,
-                                     returnSlot, "method");
-    incrementSaturating(function.jit.optimize.optimizedEntryCount);
-    return true;
-  }
-  if (frame.completed) {
-    incrementSaturating(function.jit.optimize.optimizedEntryCount);
-    stack_.resize(returnSlot);
-    push(std::move(frame.result));
-    return true;
-  }
-  if (frame.guardFailed) {
-    std::vector<Value> arguments;
-    if (argumentCount != 0) {
-      arguments.assign(stack_.begin() + static_cast<std::ptrdiff_t>(argumentStart),
-                       stack_.begin() + static_cast<std::ptrdiff_t>(argumentStart + argumentCount));
-    }
-    const OptimizerDeoptMaterializationResult deopt =
-        materializeOptimizerDeoptFrame(code, frame.deoptId, arguments);
-    if (!deopt.valid || deopt.phase != DeoptPhase::Before ||
-        deopt.frameSlots.size() != argumentCount) {
-      throw RuntimeError(deopt.error.empty() ? "optimizer entry deopt metadata is invalid"
-                                             : deopt.error);
-    }
-    for (std::size_t index = 0; index < deopt.frameSlots.size(); ++index) {
-      stack_[argumentStart + index] = deopt.frameSlots[index];
-    }
-    incrementSaturating(function.jit.optimize.guardFailures);
-    if (function.jit.optimize.guardFailures >=
-        jitOptions_.optimizeGuardFailureThreshold) {
-      function.jit.optimize.state = OptimizeState::Disabled;
-    }
-    return false;
-  }
-  throw RuntimeError(frame.errorMessage.empty() ? "optimized entry failed"
-                                                : frame.errorMessage);
-}
-
-void VM::runOptimizeSafepointStressHook(void* context) {
-  auto* vm = static_cast<VM*>(context);
-  if (vm == nullptr) return;
-  ++vm->optimizeSafepointStressCount_;
-  vm->collectGarbage();
-
-  if (vm->optimizedFrames_.empty()) {
-    vm->optimizeSafepointStressRootsSurvived_ = false;
-    return;
-  }
-  const OptimizedFrame* frame = vm->optimizedFrames_.back();
-  const OptimizedSafepoint* safepoint =
-      frame == nullptr || frame->code == nullptr
-          ? nullptr
-          : findOptimizerSafepoint(*frame->code, frame->safepointId);
-  if (safepoint == nullptr) {
-    vm->optimizeSafepointStressRootsSurvived_ = false;
-    return;
-  }
-  auto objectFromValue = [](const Value& value) -> Obj* {
-    if (value.isGcString()) return value.asGcString();
-    if (value.isGcArray()) return value.asGcArray();
-    if (value.isGcObject()) return value.asGcObject();
-    if (value.isGcInstance()) return value.asGcInstance();
-    if (value.isGcBoundMethod()) return value.asGcBoundMethod();
-    if (value.isGcClass()) return value.asGcClass();
-    if (value.isGcClosure()) return value.asGcClosure();
-    if (value.isGcNativeFunction()) return value.asGcNativeFunction();
-    return nullptr;
-  };
-  for (const std::uint32_t argument : safepoint->liveGcArguments) {
-    if (frame->arguments == nullptr || argument >= frame->argumentCount) {
-      vm->optimizeSafepointStressRootsSurvived_ = false;
-      continue;
-    }
-    Obj* expected = objectFromValue(frame->arguments[argument]);
-    bool found = expected == nullptr;
-    for (Obj* object = vm->objects_; object != nullptr && !found; object = object->next) {
-      found = object == expected;
-    }
-    if (!found) vm->optimizeSafepointStressRootsSurvived_ = false;
-  }
 }
 
 Value VM::executeBaselineEntry(BaselineEntry entry, CallFrame& callFrame) {
@@ -2921,18 +2650,6 @@ void VM::markRoots() {
     markClosure(frame.closure);
   }
 
-  for (const OptimizedFrame* frame : optimizedFrames_) {
-    if (frame == nullptr || frame->code == nullptr) continue;
-    const OptimizedSafepoint* safepoint =
-        findOptimizerSafepoint(*frame->code, frame->safepointId);
-    if (safepoint == nullptr) continue;
-    for (const std::uint32_t argument : safepoint->liveGcArguments) {
-      if (argument < frame->argumentCount && frame->arguments != nullptr) {
-        markValue(frame->arguments[argument]);
-      }
-    }
-  }
-
   for (Obj* object : temporaryRoots_) {
     markObject(object);
   }
@@ -3071,12 +2788,6 @@ void VM::markObjectChildren(Obj* object) {
           markObject(entry.klass);
           markClosure(entry.method);
         }
-      }
-
-      if (function->function.jit.optimize.code != nullptr) {
-        markObject(function->function.jit.optimize.code->propertyAccess.shape);
-        markObject(function->function.jit.optimize.code->methodCall.klass);
-        markClosure(function->function.jit.optimize.code->methodCall.method);
       }
 
       break;
