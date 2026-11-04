@@ -53,7 +53,7 @@ VM 的运行时对象由 Mark-Sweep GC 管理。
 - [x]  实现类、继承、方法与 super
 - [x]  实现 Hidden Class 与 Inline Cache
 - [x]  实现 Baseline JIT（Windows x64 / ARM64 后端，平台验收范围见收口记录）
-- [x]  Optimize JIT 原型（SSA/lowering、入口 guard/deopt、property/method 特化与 safepoint）
+- [ ]  Optimize JIT（仅设计，未实现，不属于本阶段验收）
 
 ## 当前功能
 
@@ -122,7 +122,6 @@ cmake --build build
 .\build-ninja\minijs.exe --interp examples\basics.js
 .\build-ninja\minijs.exe --bytecode examples\closure_counter.js
 .\build-ninja\minijs.exe --benchmark-compare-jit examples\baseline_numeric_benchmark.js
-.\build-ninja\minijs.exe --benchmark-compare-optimize examples\optimize_numeric_call_benchmark.js
 ```
 
 ## 测试
